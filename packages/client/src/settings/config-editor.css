@@ -1,0 +1,131 @@
+/* ── Raw config.json editor ────────────────────────────────────────────────────
+ *
+ * Two blocks:
+ * (~/.agent/diagrams/palmux-ui-kit-proposals.html):
+ *
+ *   Monaco in the dock, inline validation — the panel: the `.dock-head`
+ *       (uppercase, wide-tracked, dim title with the Raw/Form toggle pushed
+ *       right), the editor filling everything between, and a status bar pinned
+ *       to the bottom holding a 7px dot, one line of text, and Save.
+ *
+ *   05B Error state — the SAME bar with the error palette: red dot, red
+ *       text, and a 12% red wash across the bar. Not a variant of 05A, the
+ *       state 05A has to have.
+ *
+ * COLOUR: the eight real tokens only. `--t-crust` does not exist here and
+ * maps to --t-base (recessed); its `--c-red` maps to --tab-c-ansi1, the theme's
+ * own ANSI red, which is the one red in the app that follows a theme switch.
+ * No literals.
+ *
+ * MOTION: --mo-micro only, on the status bar's colour flip. Nothing animates
+ * layout, and the editor host is never transitioned — Monaco owns its own box.
+ *
+ * The kit provides both controls (Segmented, Button), so nothing here restyles
+ * them; the toggle only gets a flex position.
+ */
+
+.config-editor {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--t-mantle);
+}
+
+/* ── Header (`.dock-head` + `.dock-title`) ───────────────────────────────── */
+.config-editor-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--t-surface);
+}
+
+.config-editor-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--t-subtext);
+  font-size: 10.5px;
+  letter-spacing: 0.13em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.config-editor-modes {
+  flex: 0 0 auto;
+}
+
+/* ── Body ─────────────────────────────────────────────────────────────────────
+   HIDDEN, not unmounted, in Form mode: destroying the host would take the
+   Monaco model with it and an unsaved edit would not survive a toggle. */
+.config-editor-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.config-editor-body[data-off] {
+  display: none;
+}
+
+/* Monaco measures its container, so the container must have a size of its own —
+   `min-height` is the floor for a host that does not stretch. */
+.config-editor-host {
+  flex: 1 1 auto;
+  min-height: 180px;
+  background: var(--t-base);
+}
+
+/* ── Status bar (05A valid · 05B error) ───────────────────────────────────── */
+.config-editor-status {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--t-surface);
+  background: var(--t-base);
+  transition: background-color var(--mo-micro) var(--mo-ease);
+}
+
+.config-editor-status[data-invalid] {
+  background-color: color-mix(in srgb, var(--tab-c-ansi1) 12%, transparent);
+}
+
+.config-editor-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--t-accent);
+  transition: background-color var(--mo-micro) var(--mo-ease);
+}
+
+.config-editor-status[data-invalid] .config-editor-dot {
+  background: var(--tab-c-ansi1);
+}
+
+.config-editor-message {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--t-subtext);
+  font-size: 10.5px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.config-editor-status[data-invalid] .config-editor-message {
+  color: var(--tab-c-ansi1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .config-editor-status,
+  .config-editor-dot {
+    transition-duration: 0.001ms !important;
+  }
+}

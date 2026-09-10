@@ -1,0 +1,60 @@
+/* ── Mobile drawer: view switcher ─────────────────────────────────────────────
+ *
+ * On mobile the drawer IS the container the desktop dock is, so it switches
+ * between the same four surfaces with a kit Segmented pinned to its top edge.
+ * This file owns that one row and nothing else: the bottom-anchored session
+ * list, the 4-cell footer, the scrim and the open transition all stay exactly
+ * where index.css puts them.
+ *
+ * Colour comes from the kit (`.ui-seg*` in ui/ui.css), which is already written
+ * against the eight --t-* tokens; there is no colour declared here at all.
+ */
+
+.drawer-views {
+  flex: 0 0 auto;
+  padding-bottom: 6px;
+}
+
+/* Compounded with `.ui-seg` so the override beats the kit rule whatever order
+   the two stylesheets end up in. The kit root is inline-flex and content-sized;
+   here the four segments must span the drawer, or the icons land at four
+   different tap widths. */
+.drawer-views-seg.ui-seg {
+  display: flex;
+  width: 100%;
+}
+
+.drawer-views-seg .ui-seg-item {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1 1 0;
+  min-width: 0;
+  /* The extra-keys key height, like every other control in the drawer. */
+  min-height: var(--mbtn-h);
+  padding: 0;
+}
+
+/* The icon is the whole label: four words do not fit across a 300px drawer, and
+   these are the icons the desktop rail already teaches. The name stays in the
+   accessibility tree so each segment still has a readable name. */
+.drawer-view-name {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* A hosted view's body, in place of the session list. Same metrics as the
+   settings body it sits alongside — it scrolls under the footer, which overlays
+   the bottom of the drawer. */
+.drawer-view-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 0;
+}

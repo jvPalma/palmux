@@ -1,0 +1,201 @@
+/* ── Settings view ────────────────────────────────────────────────────────────
+ *
+ * Two blocks:
+ * (~/.agent/diagrams/palmux-ui-kit-proposals.html):
+ *
+ *   01B Surfaces with depth — the control language. Depth is three
+ *       background levels and a 1px live border, never a shadow: recessed
+ *       (--t-base) for anything you type or pick into, default (--t-mantle) for
+ *       things you press, raised (--t-surface) for the border and the hover
+ *       tint. That language is already implemented by the kit (ui.css), so this
+ *       file spends no rules on it — it uses Button/Input/Switch/Segmented and
+ *       only styles the one control the kit has no primitive for, `select`.
+ *
+ *   03A Dock with icon rail — the `.srow` settings row. A row is a
+ *       hover-tinted, rounded block: label at full text weight, an optional
+ *       SECOND LINE under it in --t-subtext carrying the current value or the
+ *       consequence, and the control right-aligned. NO rule line between rows —
+ *       the rule-per-row treatment is what made a fifteen-row form read as a
+ *       spreadsheet.
+ *
+ * The row class is `.srow`; its label/sub-label classes are renamed
+ * `.srow-label`/`.srow-sub` because index.css is a global sheet and two-letter
+ * class names in it are a collision waiting to happen.
+ *
+ * COLOUR: only the eight real tokens. `--t-crust` does not exist here and
+ * maps to --t-base; its `--c-ov` maps to --t-subtext. No literals.
+ *
+ * MOTION: --mo-micro only (hover tint, focus border) with the reduced-motion
+ * escape at the bottom. Nothing here animates layout.
+ *
+ * SPECIFICITY: every rule is prefixed `.settings-view`, and the root rule is the
+ * compound `.settings-view.settings-form`, so it beats index.css's
+ * `.settings-form` block whatever order the bundler emits the two files in. The
+ * root keeps BOTH classes on purpose: `.drawer-settings-body .settings-form` in
+ * index.css is what gives the mobile drawer its gutter, and this file may not
+ * edit that sheet.
+ */
+
+.settings-view.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* ── Section (kit Collapsible) ────────────────────────────────────────────────
+   The trigger is a quiet section rule: 10px, uppercase, wide tracking, dim.
+   BOTH the resting and the hover colour are restated here: ui.css paints the
+   trigger --t-text and hovers it --t-accent, and once the resting rule is
+   outweighed from this file the kit's hover (a plain `.ui-collapsible-trigger:hover`)
+   no longer outweighs it — so leaving the hover out would kill it outright. */
+.settings-view .settings-section + .settings-section {
+  margin-top: 12px;
+}
+
+.settings-view .settings-section > .ui-collapsible-trigger {
+  min-height: 22px;
+  padding: 0 7px;
+  color: var(--t-subtext);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+.settings-view .settings-section > .ui-collapsible-trigger:hover {
+  color: var(--t-text);
+}
+
+.settings-view .settings-section > .ui-collapsible-content .ui-collapsible-inner {
+  display: flex;
+  flex-direction: column;
+  padding-top: 2px;
+}
+
+/* ── Row ──────────────────────────────────────────────────────────────────────
+   `flex-wrap` is the narrow-host answer: the dock is 280px and the mobile drawer
+   narrower still, so a three-option Segmented that cannot fit beside its label
+   drops to its own line and stays right-aligned, instead of squeezing the label
+   into a two-line stack of single words. */
+.settings-view .srow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  min-height: var(--mbtn-h, 30px);
+  padding: 5px 7px;
+  border-radius: 7px;
+  transition: background-color var(--mo-micro) ease;
+}
+
+.settings-view .srow:hover {
+  background-color: color-mix(in srgb, var(--t-surface) 55%, transparent);
+}
+
+/* A SMALL flex-basis, not `auto`: with `auto` the label's flex base size is its
+   MAX-CONTENT width, and in a two-line row the widest text is the sub-line — so
+   "Mobile mode / Auto follows a touch screen" claimed ~155px and the 128px
+   Segmented was pushed onto a line of its own. The basis only decides where the
+   line breaks (grow:1 still hands the label every leftover pixel), so keeping it
+   under the narrowest host's slack is what stops a row wrapping for no reason,
+   while a control that genuinely cannot fit still drops below. */
+.settings-view .srow-label {
+  flex: 1 1 40px;
+  min-width: 0;
+  color: var(--t-text);
+  font-size: 11.5px;
+  line-height: 1.3;
+}
+
+.settings-view .srow-sub {
+  display: block;
+  margin-top: 2px;
+  color: var(--t-subtext);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.settings-view .srow-control {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  margin-left: auto;
+}
+
+/* A row whose value needs the full width (a URL, an install command). */
+.settings-view .srow-stacked {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+/* The row's main axis is now vertical, so the label's `flex-basis` would be a
+   HEIGHT — 40px of empty space above the field. Reset it. */
+.settings-view .srow-stacked .srow-label {
+  flex: 0 0 auto;
+}
+
+.settings-view .srow-stacked .srow-control {
+  margin-left: 0;
+}
+
+.settings-view .srow-stacked .ui-input {
+  flex: 1 1 auto;
+}
+
+/* ── Select ───────────────────────────────────────────────────────────────────
+   The kit has no Select primitive (a themed listbox is a different piece of
+   work), so a native one is styled to the kit's Input: recessed --t-base, 1px
+   --t-surface border, 7px radius, accent border on focus. Padding-right leaves
+   room for the caret, which the platform draws inside the padding box.
+
+   The cap is a LENGTH, not the old `--set-control` (which the drawer sets to
+   55%): a percentage max-width resolves against a shrink-to-fit flex parent, so
+   the Font select — whose intrinsic width is the longest family name — ended up
+   240px wide and wrapped, while Theme stayed on its label line. Two identical
+   rows behaving differently reads as a bug. `--set-control` is now unread. */
+.settings-view .srow-select {
+  /* Both selects take the SAME width rather than their intrinsic one, so the
+     control column has one right edge; `flex-shrink` still lets them give way on
+     a narrower host. */
+  flex: 0 1 auto;
+  width: 180px;
+  max-width: 100%;
+  min-height: var(--mbtn-h, 30px);
+  min-width: 0;
+  padding: 3px 22px 3px 8px;
+  border: 1px solid var(--t-surface);
+  border-radius: 7px;
+  background: var(--t-base);
+  color: var(--t-text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color var(--mo-micro) ease;
+}
+
+.settings-view .srow-select:focus {
+  border-color: var(--t-accent);
+  outline: none;
+}
+
+.settings-view .srow-select:focus-visible {
+  outline: 2px solid var(--t-accent);
+  outline-offset: 2px;
+}
+
+/* A number field needs no more room than its digits, and right-aligning them
+   keeps the ones column still while the value grows. */
+.settings-view .srow-num {
+  width: 84px;
+  text-align: right;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-view .srow,
+  .settings-view .srow-select,
+  .settings-view .settings-section > .ui-collapsible-trigger {
+    transition-duration: 0.001ms !important;
+  }
+}

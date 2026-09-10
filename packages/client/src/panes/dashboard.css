@@ -1,0 +1,222 @@
+/* ── Dashboard / new-tab page ──────────────────────────────────────────────────
+ *
+ * A dense list with sections for the layout, plus the collapsible `.csec`
+ * card + count badge.
+ *
+ * Every rule is scoped under `.dash-dock`, a second static class on the body
+ * root. index.css still carries the OLD `.dash-*` rules and is not ours to
+ * touch; the two-class selector wins on specificity whatever the bundle order
+ * turns out to be, so nothing here depends on which stylesheet lands first.
+ *
+ * COLOUR. Eight theme tokens only, mapped as:
+ * `--t-crust` → `--t-base` (there is no ninth depth level), `--c-ov` →
+ * `--tab-c-ansi8`, `--c-teal` → `--tab-c-ansi6` — the theme's own ANSI slots,
+ * repainted by applyThemeTokens, each with a `--t-*` fallback for the frame
+ * before the theme is applied.
+ *
+ * MOTION. Only the ui.css tiers (`--mo-micro`, `--mo-surface`) with
+ * `--mo-ease`; prefers-reduced-motion is handled once, at their declaration.
+ */
+
+.dash-body.dash-dock {
+  gap: 7px;
+  padding: 10px 10px calc(10px + env(safe-area-inset-bottom, 0px));
+}
+
+/* ── Section card ─────────────────────────────────────────────────────────── */
+.dash-dock .dash-section {
+  gap: 0;
+  border: 1px solid var(--t-surface);
+  border-radius: 8px;
+  background: var(--t-base);
+  overflow: hidden;
+}
+
+/* Header: a background tint on hover, not a colour change —
+   the label is deliberately quiet at rest and stays quiet. */
+.dash-dock .ui-collapsible-trigger {
+  padding: 7px 9px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  transition:
+    background var(--mo-micro) ease,
+    color var(--mo-micro) ease;
+}
+
+.dash-dock .ui-collapsible-trigger:hover {
+  background: color-mix(in srgb, var(--t-surface) 45%, transparent);
+  color: var(--t-text);
+}
+
+.dash-sec-title {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dash-sec-label {
+  overflow: hidden;
+  color: var(--t-subtext);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dash-sec-count {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--t-surface);
+  color: var(--tab-c-ansi8, var(--t-subtext));
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+/* Body: the horizontal padding is always there, the
+   vertical padding only while open — padding is outside the grid row's 0fr, so
+   a closed section with vertical padding would never collapse to nothing. */
+.dash-dock .ui-collapsible-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 7px;
+}
+
+.dash-dock .ui-collapsible-content[data-state='open'] .ui-collapsible-inner {
+  padding: 2px 7px 8px;
+}
+
+/* ── Create: a 2×2 grid of tiles, primary filled ───────────────────────────── */
+.dash-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+/* A grid item's default `min-width: auto` is its min-content width, so a long
+   label ("📖 Markdown…") would widen the whole panel instead of clipping. */
+.dash-grid > .ui-btn {
+  overflow: hidden;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+/* Recessed, so the accent-filled primary is the only lit thing in the grid. */
+.dash-dock .dash-tile-recessed {
+  background: var(--t-base);
+}
+
+/* Disclosure rows (Open URL / Open markdown) and the add-link form. */
+.dash-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.dash-row .ui-input {
+  flex: 1 1 140px;
+}
+
+/* A row's label button takes the slack; the ✕ beside it stays square. */
+.dash-dock .dash-row > .dash-srow {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.dash-dock .dash-dashed {
+  border-style: dashed;
+}
+
+/* ── Dense rows ───────────────────────────────────────────────────────────── */
+.dash-list {
+  display: flex;
+  flex-direction: column;
+}
+
+/* The filter sits above a flush list of rows. */
+.dash-dock .dash-list > .ui-input {
+  margin-bottom: 6px;
+}
+
+.dash-dock .dash-srow {
+  gap: 10px;
+  justify-content: flex-start;
+  padding: 0 7px;
+  border-color: transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--t-text);
+  font-size: 11.5px;
+  font-weight: 500;
+  text-align: left;
+}
+
+.dash-dock .dash-srow:not(:disabled):hover {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--t-surface) 60%, transparent);
+  color: var(--t-text);
+}
+
+/* The one accent row: it creates rather than picks. */
+.dash-dock .dash-srow-new,
+.dash-dock .dash-srow-new:not(:disabled):hover {
+  color: var(--t-accent);
+}
+
+.dash-srow-icon {
+  flex: 0 0 auto;
+  font-size: 10px;
+}
+
+.dash-srow-icon-live {
+  color: var(--tab-c-ansi6, var(--t-accent));
+}
+
+.dash-srow-label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dash-srow-sub {
+  margin-left: 6px;
+  color: var(--tab-c-ansi8, var(--t-subtext));
+}
+
+.dash-srow-state {
+  flex: 0 0 auto;
+  color: var(--tab-c-ansi8, var(--t-subtext));
+  font-size: 9.5px;
+}
+
+/* Filled = a client is on that session, so opening it here detaches them. */
+.dash-srow-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--tab-c-ansi8, var(--t-subtext));
+  border-radius: 50%;
+}
+
+.dash-srow-dot.on {
+  border-color: var(--t-accent);
+  background: var(--t-accent);
+}
+
+/* A tmux host can have dozens of sessions; the panel is a popover, not a page. */
+.dash-dock .dash-list-scroll {
+  overflow-y: auto;
+  max-height: 40vh;
+}
+
+.dash-dock .dash-note {
+  padding: 5px 7px;
+  color: var(--t-subtext);
+  font-size: 11.5px;
+}

@@ -1,0 +1,195 @@
+/* ── Theme picker ──────────────────────────────────────────────────────────────
+ *
+ * Its own stylesheet, imported from the component, for the reason dock.css and
+ * dictation-view.css are: index.css is the file every feature would otherwise
+ * have to edit.
+ *
+ * COLOUR. The chrome — trigger, popup, group labels — uses the eight `--t-*`
+ * tokens like everything else. The SWATCHES do not, deliberately and uniquely:
+ * every colour in them is an inline style computed from the profile being
+ * previewed, because a swatch that obeyed the current theme would show you the
+ * current theme sixteen times.
+ */
+
+.tp-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  max-width: var(--set-control, 200px);
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--t-surface);
+  border-radius: 6px;
+  background: var(--t-base);
+  color: var(--t-text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tp-trigger:hover {
+  border-color: var(--t-accent);
+}
+
+.tp-trigger:focus-visible {
+  outline: 2px solid var(--t-accent);
+  outline-offset: 1px;
+}
+
+.tp-trigger [data-radix-select-value] {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tp-trigger-icon {
+  flex: 0 0 auto;
+  color: var(--t-subtext);
+  font-size: 10px;
+}
+
+.tp-content {
+  z-index: 95;
+  /* A swatch is three lines tall, so the list always scrolls — the height is a
+     budget, not a hope, and --radix-select-content-available-height keeps it
+     inside the viewport on a phone. */
+  max-height: min(60vh, var(--radix-select-content-available-height, 60vh));
+  width: var(--radix-select-trigger-width);
+  /* The popup is portalled, so it is free to be wider than the 300px dock the
+     trigger sits in — and the swatch needs every column it can get. */
+  min-width: 300px;
+  overflow: hidden;
+  border: 1px solid var(--t-surface);
+  border-radius: 8px;
+  background: var(--t-mantle);
+  box-shadow: 0 10px 30px color-mix(in srgb, var(--t-base) 72%, transparent);
+  animation: tp-in var(--mo-surface) var(--mo-ease) both;
+}
+
+@keyframes tp-in {
+  from {
+    transform: translateY(-4px);
+    opacity: 0;
+  }
+}
+
+.tp-viewport {
+  padding: 4px;
+}
+
+.tp-group {
+  padding: 8px 6px 4px;
+  color: var(--t-subtext);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.tp-item {
+  position: relative;
+  display: block;
+  margin-bottom: 4px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  outline: none;
+  cursor: pointer;
+  /* The swatch owns the fill, so the highlight has to be a RING — a background
+     would be painted over by the theme's own background and the keyboard
+     highlight would be invisible, which is the state arrow-key users live in. */
+  overflow: hidden;
+}
+
+.tp-item[data-highlighted] {
+  border-color: var(--t-accent);
+}
+
+.tp-item[data-state='checked'] {
+  border-color: var(--t-accent);
+  box-shadow: inset 0 0 0 1px var(--t-accent);
+}
+
+/* Radix clones ItemText into the trigger; inside the list the name lives in the
+   swatch, so the raw copy would render twice. */
+.tp-item > span:first-child:not([class]) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.tp-check {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  color: var(--t-accent);
+  font-size: 11px;
+  /* Over an unknown background, so it carries its own plate. */
+  padding: 0 3px;
+  border-radius: 4px;
+  background: var(--t-mantle);
+}
+
+/* ── The swatch: every colour here is inline, from the profile ─────────────── */
+
+.tp-swatch {
+  padding: 7px 9px;
+  border-radius: 6px;
+  font-family: var(--t-font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.tp-swatch-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 2px;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.tp-swatch-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A block where a terminal would leave its cursor. It does NOT blink: this is a
+   list of up to twenty of them, and twenty blinking cursors is a strobe. */
+.tp-swatch-cursor {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 13px;
+  border-radius: 1px;
+}
+
+.tp-swatch-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tp-scroll {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 18px;
+  background: var(--t-mantle);
+  color: var(--t-subtext);
+  font-size: 10px;
+  cursor: default;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tp-content {
+    animation-duration: 0.001ms !important;
+  }
+}

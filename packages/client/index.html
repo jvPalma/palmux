@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- interactive-widget=resizes-content: on Android the layout viewport
+         shrinks above the soft keyboard so the terminal + extra-keys bar stay
+         visible. iOS is handled via visualViewport in the mobile layer. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content"
+    />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#1e1e2e" />
+    <!-- PWA: installable app (manifest + icons). Browsers only offer the
+         standalone install from a secure context (HTTPS or localhost). -->
+    <!-- Bundled primary terminal font — preload so the first paint uses it. -->
+    <link
+      rel="preload"
+      href="/webfonts/jetbrainsmono-nf-regular.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <!-- `use-credentials` is load-bearing behind an authenticating proxy, and its
+         absence is invisible: a manifest link with no crossorigin attribute is
+         fetched with credentials mode OMIT, cookies and all stripped, even though
+         the file is same-origin. Palmux's own gate exempts the manifest for exactly
+         that reason — but an ingress in FRONT of palmux does not know about that
+         exemption. Measured on Cloud Workstations: an uncredentialed GET of
+         /manifest.webmanifest answers 302 to `_workstation/forwardAuthCookie` on a
+         DIFFERENT origin, so Chrome never sees a manifest, and Android Chrome (which
+         requires one, unlike desktop) offers no install at all — no error, just a
+         dead "Install" row. With credentials the proxy's cookie rides along and the
+         real manifest arrives; same-origin means no CORS response headers are needed,
+         and the server-side exemption still covers the unauthenticated case. -->
+    <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials" />
+    <link rel="icon" type="image/svg+xml" href="/icons/favicon.svg" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="palmux" />
+    <title>palmux</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

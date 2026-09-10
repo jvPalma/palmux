@@ -1,0 +1,262 @@
+/* ── Dictation: dock view + recording toast ────────────────────────────────────
+ *
+ * Its own stylesheet rather than a block in index.css, for the same reason
+ * dock.css is one: index.css is the file every feature has to edit, and that is
+ * what makes parallel UI work collide. Imported from DictationView.tsx and from
+ * RecordingToast.tsx — the toast is mounted independently of the view, and a CSS
+ * import is deduped by the bundler, so importing it in both is free and stops
+ * the toast from ever rendering unstyled.
+ *
+ * COLOUR. The eight tokens only — base, mantle, surface, text, subtext, accent,
+ * accent-alt, accent-ink — plus two theme ANSI slots where the design needs a
+ * hue the eight do not carry: --tab-c-ansi1 for the recording dot (the
+ * --c-red) and --tab-c-ansi3 for the "not transcribed" offer (its --c-peach).
+ * Those are theme-resolved like everything else, so a theme switch repaints
+ * them. There is no --t-crust in this app; --t-base is the recessed level.
+ *
+ * MOTION. Only the --mo-* tiers from ui/ui.css. The toast enters on the surface
+ * tier and leaves on the micro tier — an exit that outlasts its entrance reads
+ * as lag.
+ */
+
+/* ── Dock view ─────────────────────────────────────────────────────────────── */
+
+.dictation-view {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.dictation-record {
+  width: 100%;
+  min-height: 38px;
+  margin-bottom: 4px;
+  font-size: 12.5px;
+}
+
+.dictation-error {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--tab-c-ansi3);
+}
+
+/* A quiet section rule, not a heading. */
+.dictation-group {
+  margin: 12px 0 7px;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--t-subtext);
+}
+
+.dictation-empty {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--t-subtext);
+}
+
+/* A settings row as a card: recessed fill, so the panel reads as the
+   surface and each entry as something sitting in it. */
+.dictation-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 6px;
+  padding: 9px;
+  border: 1px solid var(--t-surface);
+  border-radius: 8px;
+  background: var(--t-base);
+  transition: background var(--mo-micro) ease;
+}
+
+.dictation-card:hover {
+  background: color-mix(in srgb, var(--t-surface) 55%, var(--t-base));
+}
+
+/* Audio on disk, no transcript. Dashed because the entry is INCOMPLETE, not
+   broken — the clip is written before the model is called, so a refusal costs
+   the words and keeps the recording. The peach is an offer, not an alarm. */
+.dictation-card-pending {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--tab-c-ansi3) 48%, transparent);
+}
+
+.dictation-card-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.dictation-card-text {
+  display: block;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--t-text);
+  overflow-wrap: anywhere;
+}
+
+.dictation-card-muted {
+  color: var(--t-subtext);
+}
+
+.dictation-card-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--t-subtext);
+}
+
+.dictation-card-warn {
+  color: var(--tab-c-ansi3);
+}
+
+.dictation-card-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+}
+
+/* ── Recording toast ───────────────────────────────────────────────────────────
+   Bottom-centre on every viewport. The wrapper spans the width so the toast can
+   centre without a transform, and takes NO pointer events: the terminal
+   underneath stays clickable, which is the whole difference between this and a
+   modal.
+
+   ABSOLUTE, inside .content-area — not fixed to the viewport. The mobile
+   extra-keys bar sits below the content area in normal flow, so a viewport-fixed
+   bottom placed the toast on top of it, and the bar's height is not a number
+   this stylesheet has. Anchoring to the content area makes "bottom" mean the
+   bottom of the terminal on both layouts. */
+
+.rec-toast-anchor {
+  position: absolute;
+  right: 0;
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  left: 0;
+  z-index: 61;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.rec-toast {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  max-width: calc(100vw - 24px);
+  padding: 10px 13px;
+  border: 1px solid color-mix(in srgb, var(--tab-c-ansi1) 42%, transparent);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--t-mantle) 94%, var(--t-base));
+  box-shadow: 0 12px 28px color-mix(in srgb, var(--t-base) 78%, transparent);
+  pointer-events: auto;
+  animation: rec-toast-in var(--mo-surface) var(--mo-ease) both;
+}
+
+/* Narrow viewport, AFTER the compaction delay: same anchor, smaller footprint.
+   The meter narrows to three bars in the markup rather than being hidden here —
+   a hidden rAF loop would still be running, and the spec asks the compact form
+   to keep a level indicator. */
+.rec-toast-compact {
+  gap: 8px;
+  padding: 7px 10px;
+}
+
+.rec-toast-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tab-c-ansi1);
+}
+
+/* Recording is red, transcribing is the accent: the colour alone says the mic is
+   closed and the work moved to the server. */
+.rec-toast-dot[data-phase='transcribing'] {
+  background: var(--t-accent);
+}
+
+/* The transcribing label stands where the meter did, so the toast keeps its
+   width instead of collapsing under the finger reaching for Stop. */
+.rec-toast-label {
+  flex: 1 1 auto;
+  min-width: 88px;
+  color: var(--t-text);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.rec-toast-wave {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 28px;
+}
+
+/* No keyframes here, deliberately. The height IS the measurement: --rec-level is
+   written per frame from the AnalyserNode, so a silent or dead microphone rests
+   at the 22% floor. A self-animating bar would claim the mic is live before
+   anything has been heard. */
+.rec-toast-bar {
+  width: 3px;
+  height: calc(22% + 78% * var(--rec-level, 0));
+  border-radius: 2px;
+  background: var(--t-accent);
+}
+
+.rec-toast-time {
+  font-size: 11px;
+  line-height: 1;
+  color: var(--t-subtext);
+  font-variant-numeric: tabular-nums;
+}
+
+.rec-toast-stop {
+  flex: 0 0 auto;
+}
+
+/* Announced once on mount; the visible parts carry no live text. */
+.rec-toast-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@keyframes rec-toast-in {
+  from {
+    transform: translateY(10px) scale(0.97);
+    opacity: 0;
+  }
+}
+
+@keyframes rec-toast-out {
+  to {
+    transform: translateY(6px) scale(0.97);
+    opacity: 0;
+  }
+}
+
+/* Exit on the micro tier — faster than the entrance. Driven by `data-state`, the
+   same contract ui.css uses for the Radix-backed tooltip and dialog, so a
+   presence wrapper around the toast animates it out for free. */
+.rec-toast[data-state='closed'] {
+  animation: rec-toast-out var(--mo-micro) ease both;
+}
+
+/* Both halves, as in ui.css: neutralising the tokens covers anything derived
+   from them, the explicit override covers a duration already resolved. The
+   waveform is NOT disabled here — it is measured data, and freezing it would
+   remove the only evidence the microphone is live. */
+@media (prefers-reduced-motion: reduce) {
+  .dictation-card,
+  .rec-toast,
+  .rec-toast[data-state='closed'] {
+    transition-duration: 0.001ms !important;
+    animation-duration: 0.001ms !important;
+  }
+}

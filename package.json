@@ -1,0 +1,40 @@
+{
+  "name": "palmux",
+  "version": "2.0.0",
+  "description": "Self-hostable GPU-accelerated web terminal, built to make driving tmux from a phone feel like Termux.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jvPalma/palmux.git"
+  },
+  "homepage": "https://github.com/jvPalma/palmux",
+  "license": "MIT",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "yarn workspace @palmux/shared build && yarn workspace @palmux/client build && yarn workspace @palmux/server build",
+    "dev:server": "yarn workspace @palmux/server dev",
+    "dev:client": "yarn workspace @palmux/client dev",
+    "start": "yarn workspace @palmux/server start",
+    "bundle": "node scripts/bundle.mjs",
+    "test": "yarn workspaces foreach -A --exclude palmux run test",
+    "typecheck": "yarn workspaces foreach -A --exclude palmux run typecheck",
+    "service:install": "node scripts/service.mjs install",
+    "service:update": "node scripts/service.mjs update",
+    "service:uninstall": "node scripts/service.mjs uninstall",
+    "service:status": "node scripts/service.mjs status",
+    "lint": "oxlint packages",
+    "lint:fix": "oxlint packages --fix",
+    "format": "oxfmt --write",
+    "format:check": "oxfmt --check"
+  },
+  "devDependencies": {
+    "oxfmt": "0.59.0",
+    "oxlint": "1.74.0"
+  },
+  "resolutions": {
+    "@xterm/xterm": "6.0.0"
+  },
+  "packageManager": "yarn@4.13.0"
+}

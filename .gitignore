@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Build output
+packages/*/dist/
+dist/
+*.tsbuildinfo
+
+# Yarn (Berry) — keep config, ignore the rest
+.yarn/*
+!.yarn/patches
+!.yarn/releases
+!.yarn/plugins
+!.yarn/sdks
+.pnp.*
+
+# Misc
+.DS_Store
+*.log
+.playwright-mcp/
+.superpowers/
+/bin
+/.vscode

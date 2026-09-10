@@ -1,0 +1,639 @@
+/* ── Component kit stylesheet ──────────────────────────────────────────────────
+ *
+ * Every rule here belongs to `client/src/ui/`. Selectors are all `.ui-*`, so this
+ * file is purely additive: importing it changes nothing that already renders.
+ *
+ * COLOUR. There are eight UI tokens (index.css `:root`, rewritten per theme by
+ * applyThemeTokens): --t-base --t-mantle --t-surface --t-text --t-subtext
+ * --t-accent --t-accent-alt --t-accent-ink. Nothing here may introduce a ninth,
+ * and no hex/rgb()/named colour is allowed — every value is a var() or a
+ * color-mix() over those tokens, which is what makes a theme switch repaint the
+ * kit with no reload. Depth is three background levels: --t-base is recessed
+ * (inputs, segmented track), --t-mantle is default (buttons, dialogs, tooltips),
+ * --t-surface is raised AND the border colour.
+ *
+ * DANGER. The eight tokens hold no red. The only red in the app is a hard-coded
+ * `#f38ba8` on `.sheet-btn.danger` in index.css — a literal that ignores the
+ * theme entirely, so it is not reusable here. `--ui-danger` therefore derives
+ * from --t-accent-alt, the theme's own warning hue.
+ *
+ * MOTION. Four tiers and one easing, declared once as custom properties so a
+ * component never picks a duration itself. Exits are shorter than entrances.
+ * Nothing in here is ever applied inside the terminal grid.
+ */
+
+:root {
+  /* Tier 1 — keyboard-driven state (tab switch, pane focus): no transition. */
+  --mo-0: 0ms;
+  /* Tier 2 — micro feedback (hover, press, switch track). Paired with `ease`. */
+  --mo-micro: 140ms;
+  /* Tier 3 — a surface entering or leaving (dialog, tooltip, collapse). */
+  --mo-surface: 240ms;
+  /* Tier 4 — a list appearing for the first time, staggered per item. */
+  --mo-enter: 380ms;
+  --mo-stagger: 40ms;
+  --mo-ease: cubic-bezier(0.2, 0.9, 0.3, 1);
+
+  /* The switch thumb travels on its own duration (kit contract), kept a token so
+     the reduced-motion block below can neutralise it like every other tier. */
+
+  /* Kit-local derivations. Not theme tokens — both resolve to --t-* values. */
+  --ui-danger: color-mix(in srgb, var(--t-accent-alt) 88%, var(--t-text));
+  --ui-danger-tint: color-mix(in srgb, var(--t-accent-alt) 20%, transparent);
+}
+
+/* ── Button ──────────────────────────────────────────────────────────────────
+   An inline control: border + background level, never a shadow. */
+.ui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--t-surface);
+  border-radius: 7px;
+  background: var(--t-mantle);
+  color: var(--t-text);
+  font: inherit;
+  font-weight: 600;
+  line-height: 1.1;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    background var(--mo-micro) ease,
+    border-color var(--mo-micro) ease,
+    color var(--mo-micro) ease;
+}
+
+.ui-btn-md {
+  min-height: var(--mbtn-h, 30px);
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+.ui-btn-sm {
+  min-height: calc(var(--mbtn-h, 30px) - 6px);
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+.ui-btn:focus-visible,
+.ui-icon-btn:focus-visible,
+.ui-input:focus-visible,
+.ui-switch:focus-visible,
+.ui-seg-item:focus-visible,
+.ui-collapsible-trigger:focus-visible {
+  outline: 2px solid var(--t-accent);
+  outline-offset: 2px;
+}
+
+.ui-btn:disabled,
+.ui-icon-btn:disabled,
+.ui-seg-item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.ui-btn-primary {
+  background: var(--t-accent);
+  border-color: var(--t-accent);
+  color: var(--t-accent-ink);
+}
+
+.ui-btn-primary:not(:disabled):hover {
+  background: color-mix(in srgb, var(--t-accent) 86%, var(--t-text));
+  border-color: color-mix(in srgb, var(--t-accent) 86%, var(--t-text));
+}
+
+.ui-btn-ghost {
+  background: transparent;
+  border-color: var(--t-surface);
+  color: var(--t-subtext);
+}
+
+.ui-btn-ghost:not(:disabled):hover {
+  background: var(--t-surface);
+  color: var(--t-text);
+}
+
+.ui-btn-danger {
+  background: transparent;
+  border-color: var(--ui-danger);
+  color: var(--ui-danger);
+}
+
+.ui-btn-danger:not(:disabled):hover {
+  background: var(--ui-danger-tint);
+}
+
+.ui-btn:not(:disabled):active {
+  transform: translateY(1px);
+}
+
+/* ── IconButton ───────────────────────────────────────────────────────────── */
+.ui-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: var(--mbtn-h, 30px);
+  height: var(--mbtn-h, 30px);
+  padding: 0;
+  border: 1px solid var(--t-surface);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--t-subtext);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    background var(--mo-micro) ease,
+    color var(--mo-micro) ease,
+    border-color var(--mo-micro) ease;
+}
+
+.ui-icon-btn-sm {
+  width: calc(var(--mbtn-h, 30px) - 6px);
+  height: calc(var(--mbtn-h, 30px) - 6px);
+  font-size: 11px;
+}
+
+.ui-icon-btn:not(:disabled):hover {
+  background: var(--t-surface);
+  color: var(--t-text);
+}
+
+.ui-icon-btn-primary {
+  background: var(--t-accent);
+  border-color: var(--t-accent);
+  color: var(--t-accent-ink);
+}
+
+.ui-icon-btn-primary:not(:disabled):hover {
+  background: color-mix(in srgb, var(--t-accent) 86%, var(--t-text));
+  color: var(--t-accent-ink);
+}
+
+.ui-icon-btn-danger {
+  border-color: var(--ui-danger);
+  color: var(--ui-danger);
+}
+
+.ui-icon-btn-danger:not(:disabled):hover {
+  background: var(--ui-danger-tint);
+  color: var(--ui-danger);
+}
+
+/* ── Input ────────────────────────────────────────────────────────────────────
+   Recessed: --t-base sits below the panel it lives on. */
+.ui-input {
+  min-height: var(--mbtn-h, 30px);
+  min-width: 0;
+  padding: 3px 8px;
+  border: 1px solid var(--t-surface);
+  border-radius: 7px;
+  background: var(--t-base);
+  color: var(--t-text);
+  font: inherit;
+  font-size: 12px;
+  transition: border-color var(--mo-micro) ease;
+}
+
+.ui-input::placeholder {
+  color: var(--t-subtext);
+}
+
+.ui-input:focus {
+  border-color: var(--t-accent);
+  outline: none;
+}
+
+.ui-input:disabled {
+  opacity: 0.5;
+}
+
+.ui-input-invalid {
+  border-color: var(--ui-danger);
+}
+
+/* ── Switch ─────────────────────────────────────────────────────────────────── */
+.ui-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  width: 42px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--t-text) 22%, transparent);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background var(--mo-micro) ease;
+}
+
+.ui-switch[data-state='checked'] {
+  background: var(--t-accent);
+}
+
+.ui-switch:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.ui-switch-thumb {
+  display: block;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--t-base);
+  transform: translateX(3px);
+  transition:
+    /* The thumb TRAVELS, so it is a surface move, not micro feedback. 220ms
+       felt right by eye but is a fifth tier, and a fifth tier is how a motion
+       contract stops being one. */
+    transform var(--mo-surface) var(--mo-ease),
+    background var(--mo-micro) ease;
+}
+
+.ui-switch[data-state='checked'] .ui-switch-thumb {
+  transform: translateX(21px);
+  background: var(--t-accent-ink);
+}
+
+/* ── Segmented ────────────────────────────────────────────────────────────── */
+.ui-seg {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--t-surface);
+  border-radius: 8px;
+  background: var(--t-base);
+}
+
+.ui-seg-item {
+  min-height: calc(var(--mbtn-h, 30px) - 6px);
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--t-subtext);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    background var(--mo-micro) ease,
+    color var(--mo-micro) ease;
+}
+
+.ui-seg-item:not(:disabled):hover {
+  color: var(--t-text);
+}
+
+.ui-seg-item[data-state='on'] {
+  background: var(--t-accent);
+  color: var(--t-accent-ink);
+}
+
+/* ── Collapsible ──────────────────────────────────────────────────────────────
+   The height animation is `grid-template-rows: 0fr → 1fr` on an always-mounted
+   content element, so content that grew while collapsed still opens to its full
+   height with no measured pixel value anywhere in our code. The inner wrapper
+   carries the overflow clip; `visibility` flips only once the collapse has
+   finished, which is what keeps closed content out of the tab order. */
+.ui-collapsible {
+  display: flex;
+  flex-direction: column;
+}
+
+.ui-collapsible-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: var(--mbtn-h, 30px);
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--t-text);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
+  transition: color var(--mo-micro) ease;
+}
+
+.ui-collapsible-trigger:hover {
+  color: var(--t-accent);
+}
+
+.ui-collapsible-chevron {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 10px;
+  color: var(--t-subtext);
+  transition: transform var(--mo-micro) ease;
+}
+
+.ui-collapsible-trigger[data-state='open'] .ui-collapsible-chevron {
+  transform: rotate(90deg);
+}
+
+/* The animation lives on `-track`, NOT on `-content`: Radix owns the content
+   node and its layout effect sets `transition-duration: 0s` +
+   `animation-name: none`, reads getBoundingClientRect() (forcing the very style
+   recalc at which a transition would start) and only then restores the inline
+   values — so a transition declared on that node never runs. Neither property
+   is inherited, so the wrapper Radix never touches keeps its own. */
+.ui-collapsible-content {
+  min-height: 0;
+}
+
+.ui-collapsible-track {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--mo-surface) var(--mo-ease);
+}
+
+.ui-collapsible-content[data-state='open'] .ui-collapsible-track {
+  grid-template-rows: 1fr;
+}
+
+.ui-collapsible-inner {
+  overflow: hidden;
+  min-height: 0;
+  visibility: hidden;
+  transition: visibility var(--mo-0) linear var(--mo-surface);
+}
+
+.ui-collapsible-content[data-state='open'] .ui-collapsible-inner {
+  visibility: visible;
+  transition: visibility var(--mo-0) linear var(--mo-0);
+}
+
+/* ── Tooltip ──────────────────────────────────────────────────────────────────
+   A floating surface, so a shadow is allowed here (and only here + Dialog). */
+.ui-tooltip {
+  max-width: 260px;
+  padding: 4px 8px;
+  border: 1px solid var(--t-surface);
+  border-radius: 6px;
+  background: var(--t-mantle);
+  color: var(--t-text);
+  font-size: 11px;
+  line-height: 1.35;
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--t-base) 70%, transparent);
+  animation: ui-surface-in var(--mo-surface) var(--mo-ease);
+}
+
+.ui-tooltip[data-state='closed'] {
+  animation: ui-surface-out var(--mo-micro) ease;
+}
+
+.ui-tooltip-arrow {
+  fill: var(--t-surface);
+}
+
+/* ── Dialog ───────────────────────────────────────────────────────────────────
+   Blocking confirms only (kill a tab, close a group) — not an app surface. */
+.ui-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: color-mix(in srgb, var(--t-base) 72%, transparent);
+  animation: ui-fade-in var(--mo-surface) var(--mo-ease);
+}
+
+.ui-dialog-overlay[data-state='closed'] {
+  animation: ui-fade-out var(--mo-micro) ease;
+}
+
+.ui-dialog-content {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 91;
+  width: min(420px, calc(100vw - 32px));
+  transform: translate(-50%, -50%);
+  padding: 16px;
+  border: 1px solid var(--t-surface);
+  border-radius: 12px;
+  background: var(--t-mantle);
+  color: var(--t-text);
+  font-size: 13px;
+  box-shadow: 0 18px 48px color-mix(in srgb, var(--t-base) 75%, transparent);
+  animation: ui-dialog-in var(--mo-surface) var(--mo-ease);
+}
+
+.ui-dialog-content[data-state='closed'] {
+  animation: ui-fade-out var(--mo-micro) ease;
+}
+
+.ui-dialog-title {
+  margin: 0 0 6px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.ui-dialog-description {
+  margin: 0 0 12px;
+  color: var(--t-subtext);
+  line-height: 1.4;
+}
+
+.ui-dialog-body {
+  margin-bottom: 12px;
+}
+
+.ui-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+@keyframes ui-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes ui-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes ui-surface-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+@keyframes ui-surface-out {
+  to {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+@keyframes ui-dialog-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% + 6px));
+  }
+}
+
+/* ── Reduced motion ──────────────────────────────────────────────────────────
+   Both halves matter: neutralising the tokens covers anything derived from them,
+   and the explicit override covers a duration a browser resolved before the
+   media query applied. Nothing here is left perceptible. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --mo-micro: 0.001ms;
+    --mo-surface: 0.001ms;
+    --mo-enter: 0.001ms;
+    --mo-stagger: 0.001ms;
+  }
+
+  .ui-btn,
+  .ui-icon-btn,
+  .ui-input,
+  .ui-switch,
+  .ui-switch-thumb,
+  .ui-seg-item,
+  .ui-collapsible-trigger,
+  .ui-collapsible-chevron,
+  .ui-collapsible-track,
+  .ui-collapsible-inner,
+  .ui-tooltip,
+  .ui-dialog-overlay,
+  .ui-dialog-content {
+    transition-duration: 0.001ms !important;
+    transition-delay: 0.001ms !important;
+    animation-duration: 0.001ms !important;
+  }
+
+  .ui-btn:not(:disabled):active {
+    transform: none;
+  }
+}
+
+/* ── ErrorBoundary ─────────────────────────────────────────────────────────── */
+/* A panel that broke, drawn as a panel — not as a blank space and not as the
+   whole app disappearing. Recessed, so it reads as "this area is out of order"
+   rather than as an alert stacked over the work. */
+.ui-error-boundary {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 8px;
+  padding: 12px;
+  border: 1px solid var(--t-surface);
+  border-radius: 8px;
+  background: var(--t-base);
+}
+
+.ui-error-boundary-title {
+  margin: 0;
+  color: var(--t-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.ui-error-boundary-msg {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--t-subtext);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+/* ── ContextMenu ───────────────────────────────────────────────────────────────
+   Right-click on a pointer, long-press on touch. The surface tier for the
+   entrance, and `--radix-context-menu-content-transform-origin` so it grows out
+   of the corner the pointer opened it from rather than the middle of nowhere. */
+
+.ui-menu {
+  min-width: 180px;
+  max-width: 260px;
+  padding: 4px;
+  border: 1px solid var(--t-surface);
+  border-radius: 8px;
+  background: var(--t-mantle);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--t-base) 70%, transparent);
+  z-index: 90;
+  animation: ui-menu-in var(--mo-surface) var(--mo-ease) both;
+  transform-origin: var(--radix-context-menu-content-transform-origin);
+}
+
+@keyframes ui-menu-in {
+  from {
+    transform: scale(0.96);
+    opacity: 0;
+  }
+}
+
+.ui-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  color: var(--t-text);
+  font-size: 12px;
+  line-height: 1.3;
+  cursor: pointer;
+  user-select: none;
+  outline: none;
+}
+
+/* Radix drives highlight with data-highlighted, which covers hover AND keyboard
+   roving focus — styling :hover alone would leave arrow-key navigation blind. */
+.ui-menu-item[data-highlighted] {
+  background: var(--t-surface);
+}
+
+.ui-menu-item[data-disabled] {
+  color: var(--t-subtext);
+  opacity: 0.5;
+  cursor: default;
+}
+
+.ui-menu-item.danger {
+  color: var(--tab-c-ansi1);
+}
+.ui-menu-item.danger[data-highlighted] {
+  background: color-mix(in srgb, var(--tab-c-ansi1) 16%, transparent);
+}
+
+.ui-menu-icon {
+  flex: 0 0 14px;
+  width: 14px;
+  text-align: center;
+  font-size: 11px;
+  opacity: 0.9;
+}
+
+.ui-menu-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ui-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--t-surface);
+}

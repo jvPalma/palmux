@@ -1,0 +1,359 @@
+/* ── Files: the dock tree and the file pane ───────────────────────────────────
+ *
+ * The tree lives in the dock and the file fills the pane: the tree is
+ * the dock body (.tn rows → .ft-row), the file takes the whole pane with one
+ * header carrying the path and the Read/Edit segmented control.
+ *
+ * The source palette is mapped onto the app tokens: --t-crust → --t-base,
+ * --c-blue → --tab-c-ansi4, --c-yellow/--c-peach → --tab-c-ansi3, --c-ov (dim)
+ * → --tab-c-ansi8. Nothing here holds a colour literal, so a theme change
+ * repaints it. Indentation is unbounded in a real tree, so fixed per-level
+ * classes become one --ft-depth custom property.
+ */
+
+/* ── dock tree ───────────────────────────────────────────────────────────────
+ *
+ * The tree is a VIEW, not a panel: the dock chrome (mantle background,
+ * left border, slide-in, the FILES title and ✕) is DockPanel's, and drawing it
+ * again here would double every one of them. So .ft-root carries layout only,
+ * and the header is the path line the dock's own title cannot show. */
+
+.ft-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.ft-head {
+  flex: 0 0 auto;
+  padding-bottom: 8px;
+}
+
+/* A tree with no visible root is disorienting, and the walk down is otherwise
+ * invisible — this is the one place the current path is stated. */
+.ft-path {
+  display: block;
+  font-size: 10.5px;
+  color: var(--t-subtext);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ft-path-name {
+  color: var(--t-text);
+  font-weight: 600;
+}
+
+.ft-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  font-size: 11.5px;
+}
+
+.ft-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 4px 7px 4px calc(7px + var(--ft-depth, 0) * 14px);
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--t-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background var(--mo-micro) ease,
+    color var(--mo-micro) ease;
+}
+
+.ft-row:hover {
+  background: color-mix(in srgb, var(--t-surface) 60%, transparent);
+}
+
+.ft-row:focus-visible {
+  outline: 2px solid var(--t-accent);
+  outline-offset: -2px;
+}
+
+.ft-row[data-selected='true'] {
+  background: color-mix(in srgb, var(--t-accent) 16%, transparent);
+  color: var(--t-accent);
+}
+
+.ft-caret {
+  flex: 0 0 8px;
+  width: 8px;
+  font-size: 9px;
+  color: var(--tab-c-ansi8);
+}
+
+/* Material Icon Theme, vendored into public/file-icons (see file-icons.ts).
+   Fixed 15px box whichever form renders, so the name column never shifts when
+   the index lands and the glyph is replaced by an image. The icons carry their
+   own colours by design — that is the entire reason for importing them — so the
+   theme's per-kind tint applies to the FALLBACK only. */
+.ft-glyph {
+  flex: 0 0 15px;
+  width: 15px;
+  height: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ft-glyph-fallback {
+  font-size: 10px;
+  color: var(--tab-c-ansi8);
+}
+
+.ft-row[data-kind='dir'] .ft-glyph-fallback,
+.ft-row[data-kind='code'] .ft-glyph-fallback {
+  color: var(--tab-c-ansi3);
+}
+
+.ft-row[data-kind='md'] .ft-glyph-fallback {
+  color: var(--tab-c-ansi4);
+}
+
+.ft-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* An in-tree line: loading, empty, or the reason a directory would not list.
+ * A failure has to READ as a failure — a silently empty folder is the one
+ * outcome indistinguishable from a broken feature. */
+.ft-note {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 4px 7px 4px calc(7px + var(--ft-depth, 0) * 14px);
+  color: var(--t-subtext);
+  font-size: 11px;
+}
+
+.ft-note-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ft-note[data-tone='error'] .ft-note-text {
+  color: var(--t-text);
+}
+
+/* ── file pane ─────────────────────────────────────────────────────────────── */
+
+.fp-frame {
+  background: var(--t-base);
+}
+
+.fp-head {
+  gap: 8px;
+  padding: 7px 11px;
+}
+
+.fp-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 10.5px;
+  color: var(--t-subtext);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fp-path-name {
+  color: var(--t-text);
+}
+
+.fp-state {
+  font-size: 10.5px;
+  color: var(--t-subtext);
+  white-space: nowrap;
+}
+
+/* A refused save is the one state the user cannot infer from the pane, so it
+ * takes the accent rather than the subtext colour and keeps its full message
+ * in the title attribute when the header is too narrow for it. */
+.fp-state[data-tone='error'] {
+  max-width: 40ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--t-accent-alt);
+}
+
+/* Last item in the header row, so it cannot overlap the Read/Edit control at
+ * any width — which is what a floating corner button did. */
+.fp-close {
+  flex: 0 0 auto;
+  font-size: 12px;
+}
+
+/* Both views stay mounted and stacked; the inactive one is hidden rather than
+ * unmounted, so switching to Read cannot throw away unsaved editor text. */
+.fp-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.fp-view {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.fp-view[data-active='false'] {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* MarkdownPane and EditorPane each render their own .pane-header. This pane
+ * owns the one header that matters (path + Read/Edit), so the nested ones
+ * are hidden here rather than by editing those components. */
+.fp-view .pane-header {
+  display: none;
+}
+
+/* ── Explorer roots ────────────────────────────────────────────────────────────
+   HOME plus every pinned folder, each its own collapsible section. The section
+   header is the root's own row, which is what makes a pinned project reachable
+   in one click instead of five expands. */
+
+.ft-sect + .ft-sect {
+  margin-top: 2px;
+  border-top: 1px solid var(--t-surface);
+}
+
+.ft-sect-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px 2px 0;
+}
+
+.ft-sect-trigger {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 2px;
+  border: 0;
+  background: none;
+  color: var(--t-text);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ft-sect-trigger:hover {
+  color: var(--t-accent);
+}
+
+.ft-sect-caret {
+  flex: 0 0 9px;
+  font-size: 9px;
+  color: var(--t-subtext);
+}
+
+.ft-sect-name {
+  flex: 0 0 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A pinned root shows the directory it lives IN, dimmed: two folders can share
+   a basename, and `projects` alone does not say which one is pinned. The full path
+   is on the title attribute — showing it here needed front-truncation, and the
+   `direction: rtl` trick that does that reorders the leading slash (measured:
+   `/home/user/projects` rendered as `home/user/projects/`). */
+.ft-sect-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--t-subtext);
+  font-size: 10px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.ft-sect-btn {
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--t-subtext);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ft-sect-btn:hover {
+  background: var(--t-surface);
+  color: var(--t-text);
+}
+
+.ft-sect-btn:focus-visible {
+  outline: 2px solid var(--t-accent);
+  outline-offset: 1px;
+}
+
+/* ── Selection ─────────────────────────────────────────────────────────────── */
+
+.ft-pick {
+  flex: 0 0 12px;
+  width: 12px;
+  font-size: 10px;
+  color: var(--t-subtext);
+}
+
+.ft-pick[data-checked='true'] {
+  color: var(--t-accent);
+}
+
+.ft-row[data-picked='true'] {
+  background: color-mix(in srgb, var(--t-accent) 14%, transparent);
+}
+
+/* Pinned to the bottom of the panel, not the viewport: the dock is layout, so
+   "bottom" here means the bottom of the panel on both hosts. */
+.ft-bulk {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 8px 6px;
+  border-top: 1px solid var(--t-surface);
+  background: var(--t-mantle);
+}
+
+.ft-bulk-count {
+  flex: 1 1 auto;
+  min-width: 60px;
+  color: var(--t-subtext);
+  font-size: 11px;
+}

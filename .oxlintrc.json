@@ -1,0 +1,31 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["react", "react-perf", "import", "unicorn", "oxc", "typescript"],
+  "categories": {
+    "correctness": "error",
+    "perf": "error",
+    "suspicious": "warn",
+    "pedantic": "off",
+    "style": "off"
+  },
+  "ignorePatterns": ["**/dist/**", "bin/**", "**/node_modules/**", "**/*.d.ts"],
+  "rules": {
+    "no-console": "off",
+    "react/react-in-jsx-scope": "off",
+
+    "no-control-regex": "off",
+    "import/default": "off",
+
+    "no-await-in-loop": "warn",
+    "oxc/no-map-spread": "warn",
+    "react/no-array-index-key": "warn",
+    "unicorn/prefer-array-find": "warn",
+
+    "react-perf/jsx-no-new-function-as-prop": "warn",
+    "react-perf/jsx-no-new-object-as-prop": "warn",
+    "react-perf/jsx-no-new-array-as-prop": "warn",
+    "react-perf/jsx-no-jsx-as-prop": "warn",
+    "unicorn/consistent-function-scoping": "warn",
+    "unicorn/no-useless-spread": "warn"
+  }
+}
