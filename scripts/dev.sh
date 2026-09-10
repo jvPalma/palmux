@@ -4,16 +4,16 @@
 # on :5173 (vite, proxies /ws,/auth,... to :44040). Ctrl+C stops both.
 #
 # Refuses to start if :44040 is already taken (the prod service or a supervised
-# instance) — dev's tsx-watch binds the same port. Free it first: ./stop.sh
+# instance) — dev's tsx-watch binds the same port. Free it first: ./scripts/stop.sh
 set -uo pipefail
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 # shellcheck source=scripts/palmux-env.sh
 . "$REPO/scripts/palmux-env.sh"
 
 if palmux_serving; then
-  echo "palmux dev: :$PALMUX_PORT is already serving — run ./stop.sh first" >&2
+  echo "palmux dev: :$PALMUX_PORT is already serving — run ./scripts/stop.sh first" >&2
   exit 1
 fi
 

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # ── palmux — stop ─────────────────────────────────────────────────────────────
-# Mirror of start.sh: hand off to systemd where it owns palmux, otherwise take
-# down the supervised process group started by ./start.sh (with a repo-scoped
+# Mirror of scripts/start.sh: hand off to systemd where it owns palmux, otherwise take
+# down the supervised process group started by ./scripts/start.sh (with a repo-scoped
 # pkill fallback so an orphaned server/supervisor is still reaped).
 set -euo pipefail
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 # shellcheck source=scripts/palmux-env.sh
 . "$REPO/scripts/palmux-env.sh"

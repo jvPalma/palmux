@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # ── palmux — restart ──────────────────────────────────────────────────────────
 # systemd restart where it owns palmux; otherwise stop + start the supervised
-# runtime (a short pause lets the port free before start.sh's serving check).
+# runtime (a short pause lets the port free before scripts/start.sh's serving check).
 set -euo pipefail
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 # shellcheck source=scripts/palmux-env.sh
 . "$REPO/scripts/palmux-env.sh"
@@ -15,6 +15,6 @@ if palmux_systemd_managed; then
   exit 0
 fi
 
-"$REPO/stop.sh"
+"$REPO/scripts/stop.sh"
 sleep 1
-"$REPO/start.sh"
+"$REPO/scripts/start.sh"

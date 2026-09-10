@@ -86,17 +86,94 @@ resolved result with `yarn start --print-config`.
 Invalid entries are reported and ignored at boot — a typo can't brick the server. Restart the
 service after editing (`yarn service:update` or `systemctl --user restart palmux`).
 
-### Run at boot (systemd user service)
+## Running it for real: two modes
+
+palmux is built for two kinds of host, and they install differently. Pick by one
+question: **does this machine have a working `systemctl --user`?**
+
+| | **service** | **process** |
+|---|---|---|
+| host | anything with systemd | containers, chroots, Google Cloud Workstations — anywhere without `systemctl` |
+| supervised by | systemd user unit | `scripts/run.sh` (restart loop, crash → relaunch after 2 s) |
+| starts at boot via | `systemctl --user enable` + linger | your own boot hook |
+| logs to | the journal (`yarn service:status`) | `$PALMUX_LOG`, default `<repo>/palmux.log` |
+
+You do not have to choose by hand at run time. `scripts/start.sh` detects which
+case it is in and does the right thing, so the same command works on both.
+
+### Mode 1 — service (systemd)
 
 ```sh
+yarn install
 yarn service:install     # build + generate the unit for THIS checkout/node + enable at boot
-yarn service:update      # rebuild client + restart the service (kills live sessions!)
+```
+
+Then manage it with:
+
+```sh
 yarn service:status      # health + recent logs
+yarn service:update      # rebuild client + restart the service (kills live sessions!)
 yarn service:uninstall   # stop, disable, remove
 ```
 
 The unit is regenerated from the current repo path and node binary on every install — after
 moving the repo or switching node versions, just re-run `yarn service:install`.
+
+**`KillMode=process` is deliberate and load-bearing.** A `tmux` server started from
+inside a palmux shell daemonizes but stays in this unit's cgroup, so the systemd
+default (`control-group`) killed every tmux session on the machine on each
+restart. Do not "tidy" it away.
+
+### Mode 2 — process (no systemd)
+
+```sh
+yarn install
+yarn build               # scripts/start.sh refuses to launch without a client bundle
+```
+
+Then point your boot hook at `scripts/start.sh`:
+
+```bash
+#!/usr/bin/env bash
+# ── palmux auto-start (self-hosted web terminal) ──────────────────────────────
+# All the logic — systemd vs supervised, node discovery, the already-serving
+# guard — lives in scripts/start.sh, so this stays a dumb, idempotent one-liner.
+( cd "$HOME/palmux" && ./scripts/start.sh >/dev/null 2>&1 & )
+```
+
+Idempotent on purpose: call it blindly at boot, or twice, and nothing doubles up.
+It exits quietly if something is already serving on the port.
+
+Underneath, `start.sh` hands off to `scripts/run.sh`, which runs the server in a
+restart loop (crash → relaunch after 2 s) and logs to `$PALMUX_LOG` (default
+`<repo>/palmux.log`). It needs only **Node ≥ 22** at run time, and refuses to
+start — with a clear log line rather than silently — if the client bundle is
+missing. With `bin/` committed (see below) there is no build step at all: just
+Node on the target.
+
+If `node` is not on `PATH` at boot (nvm, a container that skips profile files),
+export it first — or point straight at the binary:
+
+```bash
+export PATH="$HOME/.nvm/versions/node/vXX/bin:$PATH"
+# export PALMUX_NODE=/usr/local/bin/node
+# export PALMUX_CONFIG_DIR=/data/palmux    # if $HOME is ephemeral — keeps the auth token
+```
+
+> **Ephemeral filesystems:** if the box wipes `$HOME` on each boot, set
+> `PALMUX_CONFIG_DIR` to a persisted volume, or the token and your config
+> regenerate every restart.
+
+### The scripts
+
+All four live in `scripts/` and work from any directory:
+
+| | |
+|---|---|
+| `./scripts/start.sh` | idempotent start — systemd if it owns palmux, else the supervised runtime |
+| `./scripts/stop.sh` | its mirror: systemd where it applies, else the supervised process group |
+| `./scripts/restart.sh` | stop + start, or `systemctl restart` |
+| `./scripts/dev.sh` | both dev servers in the foreground (`:44040` + `:5173`), Ctrl+C stops both |
 
 ### Prebuilt runtime (`bin/`) — no build on the target
 
@@ -121,32 +198,6 @@ git add -f bin           # bin/build sits under a gitignored name; force-add onc
 
 With `bin/` committed to master, a fresh target just needs Node — clone and `./bin/palmux`. To ship
 multiple architectures, run `yarn bundle` on each and commit the results side by side.
-
-### Run at boot WITHOUT systemd (containers, minimal images)
-
-On a box with no `systemctl` (a Docker-style container, a chroot, anything that only gives you a
-boot hook such as `onBoot.sh`), use the supervised launcher `scripts/run.sh`. With `bin/` committed
-(above), there is **no setup step** — just Node on the target. (Without the bundle it falls back to
-the source path, which needs `corepack enable && yarn install && yarn build` once.)
-
-Then, from your boot hook (`onBoot.sh`), launch it **in the background**:
-
-```sh
-# onBoot.sh
-export PATH="$HOME/.nvm/versions/node/vXX/bin:$PATH"   # only if node isn't already on PATH at boot
-# export PALMUX_NODE=/usr/local/bin/node               # …or point straight at the node binary
-# export PALMUX_CONFIG_DIR=/data/palmux                # if $HOME is ephemeral (keeps the auth token!)
-nohup "$HOME/palmux/scripts/run.sh" >/dev/null 2>&1 &
-```
-
-`scripts/run.sh` runs the server in a restart loop (crash → relaunch after 2 s) and logs to
-`$PALMUX_LOG` (default `<repo>/palmux.log`). It only needs **Node ≥ 22** at runtime — it refuses to
-start (with a clear log line) if the client bundle is missing. The auth token is generated on first
-run at `$PALMUX_CONFIG_DIR/secret` (default `~/.config/palmux/secret`) — `cat` it to authenticate at
-`/auth`, and edit `config.json` there for host/port/`allowedIps`/`allowedOrigins`.
-
-> **Ephemeral filesystems:** if the container wipes `$HOME` on each boot, set `PALMUX_CONFIG_DIR` to a
-> persisted volume — otherwise the token (and your config) regenerate every restart.
 
 ### CLI flags & environment
 
@@ -179,14 +230,19 @@ PALMUX_PORT=9000 yarn start # listen on :9000
 
 ## Development
 
-Run the server in watch mode and the Vite dev server side by side:
+Both dev servers in one terminal, Ctrl+C stops both:
 
 ```sh
-# Terminal 1 — server on :44040 (tsx watch, restarts on change)
-yarn dev:server
+./scripts/dev.sh
+```
 
-# Terminal 2 — Vite dev server on :5173 with HMR
-yarn dev:client
+It refuses to start if `:44040` is already taken — the installed service and
+dev's `tsx watch` bind the same port, and the failure is otherwise silent. Free
+it with `./scripts/stop.sh` first. To run the halves separately:
+
+```sh
+yarn dev:server   # server on :44040 (tsx watch, restarts on change)
+yarn dev:client   # Vite on :5173 with HMR
 ```
 
 Open `http://localhost:5173`. Vite proxies `/ws`, `/auth`, `/logout`, and `/ping`
@@ -197,7 +253,10 @@ server with `--no-auth`.
 ```sh
 yarn test        # vitest across all packages
 yarn typecheck   # tsc --noEmit across all packages
+yarn lint        # oxlint
 ```
+
+There is no CI in this repository; those three are the gates.
 
 ## Mobile usage
 
