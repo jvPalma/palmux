@@ -32,7 +32,7 @@ describe('HintStore.sweep', () => {
     const dir = sandbox({
       'pts-1.restore': hint('NETCUP-0'),
       'pts-2.restore': hint('L0_PALMA-0'),
-      'pts-6.restore': hint('FORGE-0'),
+      'pts-6.restore': hint('build-0'),
       'pts-16.restore': hint('BUGS-REPORTER-0'),
     });
     const store = createHintStore(dir);
@@ -90,7 +90,7 @@ describe('HintStore.sweep', () => {
   // the pts is handed out again (lowest-free), and the new terminal inherits a
   // command for a session that is gone.
   it('stops a recycled pts inheriting a dead session', () => {
-    const dir = sandbox({ 'pts-2.restore': hint('FORGE-0') });
+    const dir = sandbox({ 'pts-2.restore': hint('build-0') });
     const store = createHintStore(dir);
     expect(store.read('pts/2')).not.toBeNull(); // what used to happen
     store.sweep([]); // boot, before any terminal exists

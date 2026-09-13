@@ -25,10 +25,20 @@ describe('parseByteSize', () => {
     expect(parseByteSize(1024.9)).toBe(1024);
   });
 
+  // An environment variable is ALWAYS a string, so without the string form
+  // `PALMUX_MAX_UPLOAD_BYTES=52428800` parsed to null and the caller kept its
+  // default — the operator believes they set a cap and have not. Measured
+  // against `yarn start --print-config` before the fix.
+  it('accepts a bare byte count as a string, which is all an env var can be', () => {
+    expect(parseByteSize('52428800')).toBe(52428800);
+    expect(parseByteSize('  1024  ')).toBe(1024);
+  });
+
   // 0 is the documented "no limit" setting, in both the upload and the download
   // caps. Rejecting it would silently restore the default — the opposite.
   it('keeps zero, which means NO LIMIT', () => {
     expect(parseByteSize(0)).toBe(0);
+    expect(parseByteSize('0')).toBe(0);
     expect(parseByteSize('0KB')).toBe(0);
   });
 

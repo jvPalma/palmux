@@ -3,7 +3,7 @@ import { isTmuxSessionName, listTmuxSessions, tmuxAttachCommand } from './tmux';
 
 describe('isTmuxSessionName', () => {
   it('accepts the shapes tmux sessions actually have', () => {
-    for (const name of ['work', 'DB_BACKFILL-0', 'L1_ORCHESTRATOR_BILLING-0', 'my notes', '0']) {
+    for (const name of ['work', 'JOB_RUNNER-0', 'W1_API_GATEWAY_AUTH-0', 'my notes', '0']) {
       expect(isTmuxSessionName(name), name).toBe(true);
     }
   });

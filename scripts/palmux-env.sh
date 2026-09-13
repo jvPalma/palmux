@@ -1,6 +1,8 @@
+# shellcheck shell=bash
 # ── palmux lifecycle helpers (sourced, never executed) ────────────────────────
-# Shared by the repo-root install/start/stop/restart/dev scripts so the node
-# discovery + "is it already running here?" guards live in exactly one place.
+# Shared by scripts/{start,stop,restart,dev}.sh so the node discovery and the
+# "is it already running, and is it OURS?" guards live in exactly one place.
+# Every caller sets $REPO to the repo root before sourcing this.
 # Sets no shell options on purpose — the caller owns `set -e` etc.
 
 PALMUX_PORT="${PALMUX_PORT:-44040}"
@@ -24,11 +26,26 @@ palmux_node() {
   ls -d "$HOME"/.nvm/versions/node/*/bin/node 2>/dev/null | sort -V | tail -1 || true
 }
 
-# True when a systemd user unit owns palmux on this machine (it then auto-starts
+# True when a systemd user unit owns palmux FOR THIS CHECKOUT (it then auto-starts
 # at boot via linger, so the boot hook must NOT launch a second copy).
+#
+# The checkout comparison is not pedantry. `palmux.service` is ONE machine-wide
+# name, so a bare is-enabled check makes every clone on the box claim the same
+# unit: a second checkout's stop.sh then stops the first one's live service, and
+# its restart.sh restarts a copy of palmux the user is not even looking at.
+# Measured — a throwaway `cp -a` of this repo under /tmp took down the real one.
+# Comparing WorkingDirectory keeps the answer true for the checkout that owns the
+# unit and false for every other, which drops them to the supervised path where
+# every kill is already scoped to $REPO.
 palmux_systemd_managed() {
-  command -v systemctl >/dev/null 2>&1 &&
-    systemctl --user is-enabled --quiet palmux.service 2>/dev/null
+  command -v systemctl >/dev/null 2>&1 || return 1
+  systemctl --user is-enabled --quiet palmux.service 2>/dev/null || return 1
+  # No $REPO means the caller did not scope itself; keep the historical answer.
+  [ -n "${REPO:-}" ] || return 0
+  _pmx_wd="$(systemctl --user show palmux.service -p WorkingDirectory --value 2>/dev/null)"
+  # An empty value means systemd could not tell us; do not silently disown a
+  # unit we cannot inspect.
+  [ -z "$_pmx_wd" ] || [ "$_pmx_wd" = "$REPO/packages/server" ] || [ "$_pmx_wd" = "$REPO" ]
 }
 
 # True when something already answers on the palmux port.

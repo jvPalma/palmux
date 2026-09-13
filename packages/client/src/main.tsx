@@ -20,7 +20,11 @@ if (!root) throw new Error('missing #root');
 
 // Skin the app to the persisted theme BEFORE the first paint — no flash of the
 // default palette when a non-default theme is saved.
-applyThemeTokens(getProfile(loadSettings().themeId));
+const booted = loadSettings();
+applyThemeTokens(getProfile(booted.themeId));
+// Same pre-paint reason as the theme: a markdown or tips surface restored at
+// boot would otherwise render once in the fallback face and correct itself.
+document.documentElement.style.setProperty('--font-mono', booted.fontFamily);
 
 // No StrictMode: the imperative xterm + WebSocket + native-listener wiring must
 // not be double-mounted.

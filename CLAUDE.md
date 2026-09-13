@@ -3,8 +3,8 @@
 A generic, self-hostable GPU-accelerated **web terminal**, built to make driving **tmux on mobile**
 feel like Termux. Full TypeScript stack — no Go, no Cloud Workstations coupling.
 
-- **Client**: React + [`react-xtermjs`](https://github.com/Qovery/react-xtermjs) over real
-  `@xterm/xterm` with the WebGL renderer (GPU). Vite build.
+- **Client**: React over `@xterm/xterm` 6, hosted directly by `terminal/useTerminal.ts` (no wrapper
+  library), with the WebGL renderer (GPU). Vite build.
 - **Server**: TypeScript (Node 24) — Fastify static host + `ws` + `node-pty`. **Workspace sessions**:
   a session is a numeric id (`0`, `1`, …); one persistent PTY per id in a registry
   (`server.ts`), attached via `/ws?session=<id>`. Sessions outlive client disconnects (512 KB replay
@@ -452,6 +452,96 @@ the single case, counts the bulk one, and always states that folders go with the
 contents (`explorer-actions.ts`, pure, because a confirm built inline is a string
 nobody tests).
 
+**The editor follows the palmux theme, and getting there needed three fixes, not
+one** (`panes/monaco-theme.ts`). Monaco has its own theme registry and does not read
+CSS variables, so it was skinned once at first load from `getComputedStyle` with
+`base: 'vs-dark'` hardcoded and `rules: []`. That meant: a theme change moved the
+whole app EXCEPT the editor; a LIGHT palmux theme still inherited VS Code's dark
+syntax colours (measured — app at `--t-base #eff1f5`, editor still `rgb(30,30,46)`,
+class `vs-dark`); and syntax highlighting never used the palette at all. Now `base`
+comes from `isLightBg(profile)` and the token rules come from the sixteen ANSI slots
+palmux already resolves — a theme's green IS its string green, which is the mapping a
+terminal colour scheme already implies. **`applyThemeTokens` publishes the profile**,
+so there is ONE owner for "skin the app": three call sites exist (boot, themeId
+change, a `themes` broadcast) and an editor wired to only some of them is the bug
+this replaced. The bridge (`setEditorProfile`) lives in a module that must NEVER
+import monaco — a static path from App to the loader would drag the 3.7 MB chunk into
+every terminal-only session. `defineTheme` alone does not repaint a live editor;
+Monaco re-reads only on `setTheme`, so both run, in that order.
+
+**`--font-mono` was read in four places and set in none.** The markdown code blocks
+and the tips panel fell back to `ui-monospace` while the terminal and the editor used
+the configured face — visible as a code block in the wrong font beside an editor in
+the right one. App now sets it from `settings.fontFamily`, pre-paint in `main.tsx`
+too so a restored markdown tab does not flash the fallback.
+
+**Monaco's gutter chrome is priced by PANE width, not by device**
+(`panes/editor-layout.ts`). Measured on a 390px phone: the text got 319px and the
+other 71px went to line numbers, folding, the decoration margin and the overview
+ruler. Below `NARROW_EDITOR_PX` (500) all of that goes and the text gets the full
+width. The threshold is the PANE's, not the viewport's, because the dock is 300px on
+a desktop too — a `mobileMode` check would have fixed the phone and left the dock
+just as cramped. `observeEditorWidth` reports only the CROSSING, never every resize:
+`updateOptions` re-lays out the editor, and firing it per frame of a dock animation
+is the resize storm the motion contract forbids. A hidden pane measures 0 and is
+explicitly not "very narrow" — panes stay mounted, so that happens on every tab
+switch.
+
+**The extra-keys bar is ALWAYS present on mobile, and that is a trap fix rather than
+a preference.** It used to hide unless the active tab was a terminal, which looked
+tidy and left no way out of an editor: mobile has no tab strip, and the bar's
+right→left swipe is the only route to the drawer. Measured on the reported path
+(Explorer → open a file): the pane header offered only Read/Edit, the bar was hidden,
+and nothing could switch tabs or close it. `FileTabPane` was also the one pane
+`PaneHost` never passed `onMenu` to — but the fix is the bar, not a `☰` button that
+exists nowhere else (owner decision).
+Its keys now drive an EDITOR when the tab is not a terminal (`mobile/editor-keys.ts`
++ `panes/editor-registry.ts`), because a bar of visible dead keys is a UI that lies.
+**They are routed as Monaco COMMANDS, not as keyboard events, and that is measured
+rather than chosen**: real key presses moved the cursor 408px → 448px, a synthetic
+`KeyboardEvent` carrying the same `key`/`code`/`keyCode` moved it nowhere. Monaco
+0.55 takes input through the **EditContext API** (`div.native-edit-context`, not a
+textarea), so it never sees an event the browser did not deliver — `editor.trigger()`
+is the only route, and needing the instance is why the registry exists.
+Two guards had to move with it. The routing decision reads the ACTIVE TAB's kind, not
+the pane registry: panes stay mounted, so a terminal from another tab is still
+registered and still "focused", and checking that sent every key to an invisible
+shell. And the bar got its own `barBlocked` — `kbdBlocked` refuses anything outside a
+terminal, which was right when the bar had one destination and now swallows every
+editor-bound key. CTRL takes its EDITOR meaning (Ctrl+A selects all, not
+start-of-line); ALT and unmapped control codes do nothing rather than type garbage
+into a file; a macro is never offered, being a shell idiom.
+
+**The markdown viewer's gaps were three different things.** Measured in a real
+browser, not reasoned about: `<details>`, `<summary>`, `<section>`, `<table>` and
+`<del>` all RENDER — they simply had no CSS, so they fell back to browser defaults
+inside a themed pane and read as broken. Task lists were genuinely broken:
+`FORBID_TAGS: ['input']` ate the checkbox GFM emits, leaving bare bullets (0
+`input[type=checkbox]` in the DOM). `input` is now allowed and narrowed by hand to a
+disabled checkbox with no other attributes — anything else is removed, which is what
+the denylist was actually protecting against. Syntax highlighting was absent
+outright: `language-*` classes were emitted and nothing coloured them.
+**VS Code's markdown preview is not reachable** — it is a separate extension
+(`markdown-language-features`) running markdown-it in a webview, not part of
+`monaco-editor`. What IS reachable is the tokenizer under it: `markdown-code.ts` runs
+`monaco.editor.colorize()` over each fenced block, reusing the 23 grammars already in
+the lazy chunk and the SAME `palmux` theme the editor uses. One source of colour for
+both, no new dependency, and a palette change repaints both. A highlighter with its
+own theme would have recreated the editor-theme bug one layer over. The cost is
+bounded: a document with a fenced block pulls the monaco chunk; one without does not.
+**`.md-body` needed `width: 100%`, and `min-width: 0` does nothing here.** Measured
+at 390px: 506.6px before, 506.6px with `min-width: 0`, 390px with `width: 100%`. The
+cause is `margin: 0 auto` — auto margins on the cross axis cancel the flex stretch,
+so the item sizes to its content and a code block drags the pane past the screen.
+
+**The desktop settings-as-JSON modal is gone** (`SettingsEditor` deleted, with its
+`openSettingsJson` keybinding). It edited the CLIENT settings blob while the dock's
+Raw view edits the SERVER's `config.json` — two different documents behind one word,
+which is most of why it was confusing. Nothing is lost: 16 of the 18 client settings
+are in `SettingsFields`, and the two that are not (`quickLinks`, `explorerPins`) have
+their own UI in the dashboard and the Explorer. `Ctrl+,` opens Settings; a persisted
+binding for a removed action is ignored, because `loadBindings` iterates `ACTIONS`.
+
 **Monaco carries ~23 monarch GRAMMARS, not one.** Tokenizers are a few KB each and
 run on the main thread; the 7 MB the loader's comment warns about is the language
 SERVICES (ts.worker, the json/css/html validators), which are still excluded.
@@ -549,8 +639,8 @@ pinned on top. Picking one spawns the terminal straight inside it. Three things 
    of use. A name tmux allows but palmux could not safely type is dropped from the listing rather
    than offered.
 Sorting is case-insensitive but PUNCTUATION-SIGNIFICANT: `localeCompare` at base sensitivity treats
-`_`/`-` as ignorable, which collated `L1_ORCHESTRATOR-0` as `L1ORCHESTRATOR0` and scattered it past
-the whole `L1_ORCHESTRATOR_*` group it belongs with. The list is fetched when the picker OPENS and
+`_`/`-` as ignorable, which collated `api_gateway-0` as `apigateway0` and scattered it past
+the whole `api_gateway_*` group it belongs with. The list is fetched when the picker OPENS and
 never cached (it belongs to a tmux server palmux does not manage), scrolls, and grows a filter past
 8 entries — a real host had 26. tmux missing entirely (`ENOENT`) hides the section; a tmux with no
 server running is a working tmux with an empty list, and the `＋ New` row still starts one.
@@ -635,12 +725,32 @@ yarn start                 # server on :44040 (prints token); visit /auth to aut
 PALMUX_NO_AUTH=1 yarn start
 ```
 
-Dev with hot reload:
+Dev with hot reload — `scripts/dev.sh` runs both and refuses if :44040 is already
+being served (the installed service and dev's `tsx watch` bind the same port, and
+without the guard the failure is silent):
 
 ```bash
-yarn dev:server            # tsx watch, backend on :44040
+./scripts/dev.sh           # both, one terminal, Ctrl+C stops both
+yarn dev:server            # or separately: tsx watch, backend on :44040
 yarn dev:client            # vite on :5173, proxies /ws,/auth,/logout,/ping to :44040
 ```
+
+**The lifecycle scripts live in `scripts/`, and the only tricky part is deciding
+WHOSE palmux they act on.** `start`/`stop`/`restart` hand off to systemd where a unit
+owns this checkout and fall back to the supervised `run.sh` otherwise, so one command
+serves both deployment modes. Two guards make that safe and both were written after
+the failure, not before it:
+- **`palmux_systemd_managed` compares the unit's `WorkingDirectory` to `$REPO`.**
+  `palmux.service` is ONE machine-wide name, so a bare `is-enabled` check made every
+  clone on the box claim it — a throwaway `cp -a` of this repo under /tmp stopped the
+  real service, and a dev clone's `restart.sh` would restart production.
+- **`stop.sh` confirms the pid file's pid is still OURS** via `/proc/<pid>/cmdline`
+  before signalling. A pid file outlives a crash and Linux recycles pids from a low
+  number after a reboot; without the check a stale file pointed at an unrelated
+  `sleep` and stop.sh killed it, reporting "palmux: stopped". The `pkill` fallback
+  below it was already repo-scoped — this closed the asymmetry.
+
+All four resolve `$REPO` through symlinks, so linking one into `~/.local/bin` works.
 
 Self-contained runtime (for machines without a toolchain): `yarn bundle` (`scripts/bundle.mjs`)
 esbuild-bundles the server + client + node-pty native into `bin/` (committed to master, force-add
@@ -654,7 +764,13 @@ number of bytes OR `"<n><KB|MB|GB>"` (`shared/byte-size.ts`, binary units, also 
 no `1G`, no `KiB`, no `1 gigabyte` — because this value decides whether a request is
 rejected, and a typo silently read as a different magnitude is exactly what
 strictness prevents; anything unparseable keeps the default. **0 means NO LIMIT** for
-both. Download defaults to 1 GB and is streamed. **Upload stays at 50 MB on purpose**:
+both. **A bare byte count must parse from a STRING too**, not only from a JSON number:
+an environment variable is only ever a string, so while `SIZE_RE` demanded a unit
+`PALMUX_MAX_UPLOAD_BYTES=52428800` parsed to null and the caller silently kept its
+default — the operator believes they capped it and have not — and `=0` could not
+express "no limit" at all. Measured against `--print-config`. This does not loosen the
+grammar above: a bare integer names one magnitude and only one, which is why the
+number form was always accepted. Download defaults to 1 GB and is streamed. **Upload stays at 50 MB on purpose**:
 the body is accumulated IN MEMORY on its way to the temp file, so `"1GB"` really means
 one request may cost a gigabyte of RSS. That is the operator's trade to make
 knowingly, not one the parser can make for them.
@@ -928,9 +1044,10 @@ user-facing interaction.
 - **Inline images** (`@xterm/addon-image` + `terminal/image-support.ts`, `settings.inlineImages`,
   DEFAULT ON): real pixels in the terminal — **SIXEL** and **iTerm2 IIP**, drawn onto the addon's own
   `xterm-image-layer` canvas above the WebGL one (verified live: `timg -ps` renders in colour with
-  WebGL active). Version is LOCKSTEP with xterm — `addon-image@0.8.0` ↔ `@xterm/xterm@5.5.0`; bumping
-  one without the other is the whole compatibility story. **Kitty's protocol is out**: it exists only
-  in the addon's `0.10.0-beta` line, which peer-depends on `xterm@6.1.0-beta`, two majors ahead.
+  WebGL active). Version is LOCKSTEP with xterm — `addon-image@0.9.0` ↔ `@xterm/xterm@6.0.0`; bumping
+  one without the other is the whole compatibility story, and the addon declares NO peerDependencies,
+  so the root `resolutions` pin is the only thing enforcing it. **Kitty's protocol is out**: the
+  shipped addon has no Kitty handler at all (measured: zero references in its build).
   The addon is loaded in its OWN effect (`useTerminal`) because the setting is a live toggle and
   loading is not a private act — it claims `DCS q` + `OSC 1337`, turns on the CSI 14t/16t/18t pixel
   reports, and REPLACES the DA1 answer with `CSI ?62;4;9;22c`. Only `dispose()` unregisters those, so
@@ -1023,7 +1140,7 @@ power cut, and until the KillMode fix every `systemctl restart`) skipped the
 clear entirely. Measured on the owner's host: **17 files, the oldest three weeks
 old, seven naming tmux sessions that no longer existed.** The bite is that pts
 numbers are handed out LOWEST-FREE, so a restart frees the low numbers and a
-brand-new terminal lands on `pts/2` and inherits `tmux attach-session -t FORGE-0`
+brand-new terminal lands on `pts/2` and inherits `tmux attach-session -t build-0`
 — and the hint BEATS the /proc capture, so the correct reading is discarded in
 favour of the ghost. `HintStore.sweep(liveTtys)` is the counterpart the snapshots
 always had: it runs at boot (AFTER the handoff adopt, so an adopted terminal
@@ -1116,7 +1233,7 @@ null once the process is gone, so nothing after the exit could find it.
   entry is only affordable WITH ranges — audio has its own 100 MB budget, so without them each row
   would pull a whole clip. Note the panel's timestamps are NOT off: the stamp id is the SERVER's
   local time (UTC here) and the client renders the epoch in the browser's zone, so a `1311` file
-  correctly reads 14:11 in Lisbon.
+  correctly reads 14:11 in a UTC+1 browser.
 - **Settings form** (`settings/SettingsFields.tsx` + `.settings-form` in index.css). One `.settings-form`
   wrapper owns row metrics, controls and section rhythm for BOTH hosts (desktop DOCK, mobile drawer —
   the modal is gone); a host only sets the gutter and `--set-control` (how wide a control may grow).
@@ -1237,7 +1354,5 @@ files — but do not touch CI without an explicit request).
 
 ## Known follow-ups
 
-- `.github/workflows/` still targets the removed Go build/release — stale until CI is intentionally
-  rewritten (left untouched on purpose).
 - No layout editor for the extra-keys bar yet (defaults + server-synced config only).
 - Touch selection / mouse-encoding assumptions need real-device verification.

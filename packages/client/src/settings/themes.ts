@@ -8,6 +8,7 @@
 
 import type { ITheme } from '@xterm/xterm';
 import { deriveUiTokens, hex, isLightBg, luminance, type ColorProfile } from '@palmux/shared';
+import { setEditorProfile } from '../panes/monaco-theme';
 
 export {
   ACCENT_NAMES,
@@ -113,4 +114,12 @@ export function applyThemeTokens(profile: ColorProfile): void {
   // in index.html). Runs pre-paint in main.tsx and on every live theme change.
   setMetaContent('theme-color', hex(profile.bg));
   setMetaContent('color-scheme', scheme);
+  // Monaco does not read CSS variables — it has its own theme registry — so the
+  // editor is skinned HERE rather than at each of this function's callers. Three
+  // of them exist (boot, themeId change, a `themes` broadcast) and an editor
+  // that followed only some of them is the bug this replaced: the theme was
+  // built once at first load and every later change moved the whole app EXCEPT
+  // the editor. One owner for "skin the app" cannot drift that way. The bridge
+  // does not import monaco, so this costs a terminal-only session nothing.
+  setEditorProfile(profile);
 }

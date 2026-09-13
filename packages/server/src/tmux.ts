@@ -36,7 +36,7 @@ export interface TmuxListing {
  */
 export function isTmuxSessionName(name: string): boolean {
   // Hyphens, underscores and spaces are all legal and all common
-  // (DB_BACKFILL-0), so only tmux's own target punctuation and control
+  // (JOB_RUNNER-0), so only tmux's own target punctuation and control
   // characters are excluded.
   // oxlint-disable-next-line no-control-regex
   return name.length > 0 && name.length <= 128 && !/[.:\u0000-\u001f\u007f]/.test(name);
@@ -138,8 +138,8 @@ export async function listTmuxSessions(): Promise<TmuxListing> {
   }
   // Case-insensitive but PUNCTUATION-SIGNIFICANT. `localeCompare` at base
   // sensitivity treats `_` and `-` as ignorable, which scattered a real host's
-  // names: L1_ORCHESTRATOR-0 collated as L1ORCHESTRATOR0 and landed after the
-  // whole L1_ORCHESTRATOR_* group it belongs with, which reads as a bug.
+  // names: api_gateway-0 collated as apigateway0 and landed after the
+  // whole api_gateway_* group it belongs with, which reads as a bug.
   sessions.sort((a, b) => {
     const x = a.name.toLowerCase();
     const y = b.name.toLowerCase();

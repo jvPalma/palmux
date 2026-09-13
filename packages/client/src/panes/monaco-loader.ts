@@ -48,8 +48,25 @@ import 'monaco-editor/esm/vs/basic-languages/powershell/powershell.contribution.
 
 import * as monaco from 'monaco-editor/esm/vs/editor/editor.api.js';
 import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
+import { buildMonacoTheme, editorProfile, onEditorProfile } from './monaco-theme';
 
 let configured = false;
+
+/**
+ * Register `palmux` from whatever palette App last published.
+ *
+ * `defineTheme` alone does not repaint a LIVE editor — Monaco re-reads the data
+ * only on `setTheme` — so a change needs both, in this order.
+ */
+function applyTheme(): void {
+  const profile = editorProfile();
+  if (!profile) return; // App has not published one yet; the base default stands
+  monaco.editor.defineTheme(
+    'palmux',
+    buildMonacoTheme(profile) as monaco.editor.IStandaloneThemeData,
+  );
+  monaco.editor.setTheme('palmux');
+}
 
 /** Monaco with the palmux theme registered and workers wired (idempotent). */
 export function getMonaco(): typeof monaco {
@@ -62,20 +79,13 @@ export function getMonaco(): typeof monaco {
     getWorker: () => new EditorWorker(),
   };
 
-  const css = getComputedStyle(document.documentElement);
-  const token = (name: string, fallback: string) => css.getPropertyValue(name).trim() || fallback;
-  monaco.editor.defineTheme('palmux', {
-    base: 'vs-dark',
-    inherit: true,
-    rules: [],
-    colors: {
-      'editor.background': token('--t-base', '#1e1e2e'),
-      'editor.foreground': token('--t-text', '#cdd6f4'),
-      'editorLineNumber.foreground': token('--t-subtext', '#9399b2'),
-      'editorCursor.foreground': token('--t-accent', '#a6e3a1'),
-      'editor.selectionBackground': `${token('--t-surface', '#313244')}cc`,
-      'editorWidget.background': token('--t-mantle', '#181825'),
-    },
-  });
+  applyTheme();
+  // From here on the app's theme changes reach the editor. Registering only
+  // once Monaco exists is what keeps the editor chunk out of a terminal-only
+  // session: until then `setEditorProfile` just remembers the palette.
+  onEditorProfile(applyTheme);
   return monaco;
 }
+
+/** True once Monaco is in memory — lets a caller skip work that would load it. */
+export const monacoLoaded = (): boolean => configured;

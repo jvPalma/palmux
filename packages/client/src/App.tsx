@@ -20,7 +20,6 @@ import { FileTree } from './panes/FileTree';
 import { DictationView } from './dictation/DictationView';
 import { RecordingToast } from './dictation/RecordingToast';
 import { KeybindingsPanel } from './settings/KeybindingsPanel';
-import { SettingsEditor } from './settings/SettingsEditor';
 import { buildDiagnosticsReport } from './diagnostics/diagnostics-report';
 import { copyText } from './mobile/clipboard';
 import { hasNativeSelection } from './mobile/native-selection';
@@ -83,6 +82,9 @@ import { NewTabChooser } from './panes/NewTabChooser';
 import { ErrorBoundary } from './ui/ErrorBoundary';
 import { closeManyMessage } from './session/close-many';
 import { DashboardBody, type CreateSpec } from './panes/DashboardBody';
+import { focusedEditor } from './panes/editor-registry';
+import { editorKeyAction } from './mobile/editor-keys';
+import type { KeyMods } from './mobile/key-encoder';
 
 function downloadText(filename: string, text: string): void {
   const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
@@ -132,7 +134,6 @@ type Panel =
   | 'tips'
   | 'keybindings'
   | 'commandPalette'
-  | 'settingsJson'
   | 'dictationHistory';
 
 /**
@@ -315,6 +316,14 @@ export function App() {
   useLayoutEffect(() => {
     applyThemeTokens(getProfile(settings.themeId));
   }, [settings.themeId]);
+
+  // `--font-mono` was READ in four places (markdown code blocks, the tips panel)
+  // and SET in none, so all of them silently fell back to `ui-monospace` while
+  // the terminal and the editor used the configured face. Same shape as the
+  // editor-theme bug: a surface quietly ignoring the user's setting.
+  useLayoutEffect(() => {
+    document.documentElement.style.setProperty('--font-mono', settings.fontFamily);
+  }, [settings.fontFamily]);
 
   // Split is a desktop-only feature: the hook forces zero pairings
   // while the mobile layer is active. Any number of pairings coexist; a tab is
@@ -507,8 +516,8 @@ export function App() {
     () => panelRef.current !== 'none' || newTabOpenRef.current || chooserPageRef.current,
     [],
   );
-  // The mobile input surfaces are additionally blocked when no terminal is on
-  // screen (the focused slot's kind isn't terminal).
+  // The soft KEYBOARD is additionally blocked when no terminal is on screen: it
+  // types into a PTY, and an editor tab has Monaco's own input instead.
   const kbdBlocked = useCallback(
     () =>
       panelRef.current !== 'none' ||
@@ -517,12 +526,50 @@ export function App() {
       activeKindRef.current !== 'terminal',
     [],
   );
+  // The BAR is not, and that difference is the whole point of it being always
+  // present: it now has a second destination (an editor, via `sendKeyToEditor`),
+  // so "this tab is not a terminal" no longer means "there is nowhere to send
+  // this". It shares the panel/chooser guards, which still mean exactly that.
+  const barBlocked = useCallback(
+    () => panelRef.current !== 'none' || newTabOpenRef.current || chooserPageRef.current,
+    [],
+  );
 
   // Shared input surfaces (soft keyboard, extra-keys bar) route to the focused
   // terminal pane. Reading the registry at call time keeps these stable.
   const sendInput = useCallback(
     (t: string) => registry.focusedApi()?.sendInput(t) ?? false,
     [registry],
+  );
+  /**
+   * The extra-keys bar offers every key here BEFORE encoding it to PTY bytes.
+   *
+   * On a terminal tab this returns false immediately and nothing changes. On an
+   * editor tab it drives Monaco by COMMAND — measured: Monaco 0.55 takes input
+   * through the EditContext API and ignores synthetic keyboard events entirely,
+   * so there is no event to forward and `editor.trigger` is the only route.
+   * The bar is always present on mobile now (it is the only way to the drawer),
+   * so without this its keys would be visible and dead on half the tabs.
+   */
+  const sendKeyToEditor = useCallback(
+    (name: string, mods: KeyMods) => {
+      // The ACTIVE TAB decides, not the pane registry. Panes stay mounted while
+      // their tab exists, so a terminal from another tab is still registered and
+      // still "focused" — checking that sent every key to an invisible shell and
+      // the editor never saw one. Measured: END did nothing on an editor tab.
+      if (activeKindRef.current === 'terminal') return false;
+      const editor = focusedEditor();
+      if (!editor) return false;
+      const action = editorKeyAction(name, mods);
+      if (action.kind === 'none') return false;
+      if (action.kind === 'type') editor.type(action.text);
+      else editor.run(action.id);
+      // The press moved DOM focus onto the bar's button; put it back or the
+      // NEXT press has nothing to act on.
+      editor.focus();
+      return true;
+    },
+    [],
   );
   const onPasteImage = useCallback(
     (file: File) => registry.focusedApi()?.pasteImage(file),
@@ -1070,7 +1117,6 @@ export function App() {
       setDrawerView('settings');
       setDrawerOpen(true);
     },
-    openSettingsJson: () => setPanel('settingsJson'),
     tips: () => setPanel('tips'),
     diagnostics: copyDiagnostics,
     exportScrollback: () => {
@@ -1711,9 +1757,16 @@ export function App() {
         <ExtraKeysBar
           ref={barRef}
           config={extraKeys}
-          visible={extraKeys.enabled && activeKind === 'terminal'}
+          // ALWAYS present on mobile, whatever the tab is. It used to hide on a
+          // non-terminal tab, which looked tidy and was a TRAP: the bar is the
+          // only route to the drawer (right→left swipe), and mobile has no tab
+          // strip, so opening a file from the Explorer left no way to switch
+          // tabs, close it, or reach anything else. Measured: header showed only
+          // Read/Edit, bar hidden, no exit.
+          visible={extraKeys.enabled}
           send={sendInput}
-          isBlocked={kbdBlocked}
+          sendKey={sendKeyToEditor}
+          isBlocked={barBlocked}
           onHeightChange={onBarHeight}
           onAction={(a) => {
             if (a === 'keyboard') kbd.toggle();
@@ -1768,9 +1821,6 @@ export function App() {
             else if (!api.paste(text)) showToast('Terminal not connected');
           }}
         />
-      )}
-      {panel === 'settingsJson' && (
-        <SettingsEditor onApply={updateSettings} onClose={() => setPanel('none')} />
       )}
       {panel === 'commandPalette' && (
         <CommandPalette

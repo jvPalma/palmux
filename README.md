@@ -5,8 +5,8 @@ the host running the server. Built to be genuinely usable on mobile to drive `tm
 
 ## What it is
 
-- **Client** — a React app built on [`react-xtermjs`](https://github.com/Qovery/react-xtermjs)
-  wrapping `@xterm/xterm`, rendered with the WebGL addon. xterm.js provides VT parsing,
+- **Client** — a React app hosting [`@xterm/xterm`](https://github.com/xtermjs/xterm.js) 6 directly,
+  rendered with the WebGL addon. xterm.js provides VT parsing,
   scrollback, mouse reporting, text selection, search, and clickable links natively.
 - **Server** — a TypeScript [Fastify](https://fastify.dev) app that serves the built client,
   upgrades `/ws` with [`ws`](https://github.com/websockets/ws), and bridges each socket to a
@@ -16,6 +16,55 @@ the host running the server. Built to be genuinely usable on mobile to drive `tm
   long-press select + copy) make running `tmux` from a phone practical.
 
 It is coupled to no cloud and no host: anywhere Node 22 and a shell run, palmux runs.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td colspan="2">
+      <img src="docs/screenshots/terminal-tabs-split.png" alt="Two terminals side by side in a split, inside a colour-coded tab group" width="100%">
+      <p><b>A real terminal, with tabs that behave like a browser's.</b><br>
+      <sub>GPU-rendered xterm.js over a persistent PTY. Name and colour tabs, gather them into collapsible groups, drag to reorder, and split two side by side — the pair fuses into one tab.</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/dictation.png" alt="Dictation panel with a record button and a history of transcriptions" width="62%">
+      <p><b>Voice dictation into the shell.</b><br>
+      <sub>Speak, and the cleaned-up text is typed at the prompt. Transcription uses Gemini today, with separate models for the audio and the clean-up pass. Every clip is kept, so a failed transcription can be retried.</sub></p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/settings-and-editor.png" alt="Settings panel beside a code editor" width="100%">
+      <p><b>Configuration that reaches past the browser.</b><br>
+      <sub>Themes (import any Gogh scheme), fonts, cursor, scrollback, SIXEL and iTerm2 inline images, rebindable keys, and an installable PWA. The theme can also drive your shell prompt and tmux bar through an exported palette file.</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/mobile-terminal.png" alt="palmux on a phone with the extra-keys bar" width="49%">
+      <img src="docs/screenshots/mobile-drawer.png" alt="palmux on a phone with the tab drawer open" width="49%">
+      <p><b>Built for a phone first.</b><br>
+      <sub>A Termux-style extra-keys bar with sticky CTRL/ALT/SHIFT, native text selection, pinch-to-zoom and swipe-to-scroll into tmux. Swipe the bar to open the drawer with every tab, group and panel.</sub></p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/new-tab-types.png" alt="New tab chooser listing terminal, editor, URL, markdown, tmux sessions and listening ports" width="100%">
+      <p><b>More than terminals in a tab.</b><br>
+      <sub>Open a shell, attach straight into an existing tmux session, start a scratch editor, frame a URL or a dev server running on the host, keep bookmarks, and see which ports are listening.</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/explorer-markdown.png" alt="File explorer beside a rendered markdown document" width="100%">
+      <p><b>A file explorer like VS Code's.</b><br>
+      <sub>Pin folders as roots, open files as tabs, and read markdown rendered with task lists, collapsible blocks and syntax-highlighted code. Download a file, or a whole folder as a zip, from the tree.</sub></p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/editor.png" alt="Monaco editor with syntax highlighting" width="100%">
+      <p><b>Full editing, in your theme.</b><br>
+      <sub>Monaco with syntax highlighting for 20+ languages, coloured from the same palette as the terminal. Saves are atomic, and it never creates a file you did not open.</sub></p>
+    </td>
+  </tr>
+</table>
 
 ## Requirements
 
@@ -62,10 +111,14 @@ resolved result with `yarn start --print-config`.
   "allowedIps": [],
   "allowedOrigins": [],
   "scrollbackBytes": 524288,
+  "restoreSessions": true,
   "cookieDays": 365,
-  "maxUploadBytes": 52428800,
+  "maxUploadBytes": "50MB",
+  "maxDownloadBytes": "1GB",
+  "idleTimeoutMs": 0,
   "webApps": [],
-  "markdownRoots": []
+  "markdownRoots": [],
+  "dictation": { "apiKey": "", "model-audio": "gemini-3.5-flash", "model-text": "gemini-3.7-flash" }
 }
 ```
 
@@ -79,9 +132,14 @@ resolved result with `yarn start --print-config`.
 | `allowedOrigins`  | allowed `Origin` values for WebSocket upgrades — `"term.example.com"`, `"https://term.example.com"`, `"*.example.com"` (subdomain wildcard), `"host:44040"` (port-exact). Empty = allow all                  |
 | `scrollbackBytes` | per-session output ring buffer replayed on reconnect                                                                                                                                                         |
 | `cookieDays`      | session-cookie lifetime                                                                                                                                                                                      |
-| `maxUploadBytes`  | max size of a pasted/dropped/picked upload (default 50 MB). Enforced server-side (413) and pre-checked client-side                                                                                           |
+| `maxUploadBytes`  | max size of a pasted/dropped/picked upload (default 50 MB). Accepts bytes or `"<n><KB\|MB\|GB>"`. **0 means no limit**; the body is buffered in memory, so a large cap really costs RSS. Enforced server-side (413) and pre-checked client-side                                                                                           |
 | `webApps`         | apps offered on the new-tab page — `[{ "name": "SilverBullet", "url": "https://sb.local", "icon": "📓" }]`. `icon` is optional. Opening one creates a pre-named web tab                                      |
 | `markdownRoots`   | directories the **markdown viewer** can browse (`~` expanded). Listing is confined to these; opening a file by absolute path is not (same trust as the shell). Empty = browsing off, direct paths still work |
+| `restoreSessions` | rebuild terminals after a restart — cwd + the foreground command, replayed as scrollback. `false` disables it entirely                                                                             |
+| `maxDownloadBytes`| cap on `GET /download` (default 1 GB, streamed). Accepts bytes or `"<n><KB\|MB\|GB>"`. **0 means no limit**                                                                                             |
+| `idleTimeoutMs`   | evict a session with no attached client after this long. `0` (default) never evicts                                                                                                                    |
+| `selfUpdate`      | opt-in self-update (`enabled: false` by default, and inert with no `repo`). Off means the server never reaches the network on its own                                                                    |
+| `dictation`       | voice dictation, **inert until `apiKey` is set** (Gemini). `model-audio` transcribes, `model-text` cleans up — they are separate because a model can serve text while rejecting audio                    |
 
 Invalid entries are reported and ignored at boot — a typo can't brick the server. Restart the
 service after editing (`yarn service:update` or `systemctl --user restart palmux`).
@@ -201,26 +259,49 @@ multiple architectures, run `yarn bundle` on each and commit the results side by
 
 ### CLI flags & environment
 
+Verbatim from `yarn start --help`:
+
 ```
 Usage: palmux [options]
 
+Options:
   -p, --port <n>     Port to listen on (default 44040, env PALMUX_PORT)
       --host <addr>  Bind address (default 0.0.0.0, env PALMUX_HOST)
-      --no-auth      Disable token auth (localhost dev only; env PALMUX_NO_AUTH=1)
+      --no-auth      Disable token auth (trusted networks only; env PALMUX_NO_AUTH=1)
       --new-token    Rotate the session token and exit
+      --print-config Print the resolved configuration and exit
+  -v, --version      Print the build version and exit
   -h, --help         Show this help
 ```
 
-| Variable            | Default            | Purpose                                                |
-| ------------------- | ------------------ | ------------------------------------------------------ |
-| `PALMUX_PORT`       | `44040`            | Listening port                                         |
-| `PALMUX_HOST`       | `0.0.0.0`          | Bind address                                           |
-| `PALMUX_CONFIG_DIR` | `~/.config/palmux` | Where the secret, settings, and extra-keys config live |
-| `PALMUX_NO_AUTH`    | unset              | Set to `1` to disable auth (same as `--no-auth`)       |
+Every `PALMUX_*` variable overrides its `config.json` counterpart and is itself
+overridden by a CLI flag.
+
+| Variable                       | Default            | Purpose                                                     |
+| ------------------------------ | ------------------ | ----------------------------------------------------------- |
+| `PALMUX_PORT`                  | `44040`            | Listening port                                              |
+| `PALMUX_HOST`                  | `0.0.0.0`          | Bind address                                                |
+| `PALMUX_CONFIG_DIR`            | `~/.config/palmux` | Where the secret, settings, and extra-keys config live      |
+| `PALMUX_NO_AUTH`               | unset              | Set to `1` to disable auth (same as `--no-auth`)            |
+| `PALMUX_FONT_DIRS`             | `~/.fonts`         | Colon-separated directories scanned for servable fonts      |
+| `PALMUX_MAX_UPLOAD_BYTES`      | `50MB`             | Upload cap; bytes or `<n><KB\|MB\|GB>`, `0` = no limit      |
+| `PALMUX_MAX_DOWNLOAD_BYTES`    | `1GB`              | Download cap, same grammar                                  |
+| `PALMUX_IDLE_TIMEOUT_MS`       | `0`                | Evict a session idle this long; `0` never evicts            |
+| `PALMUX_DICTATION_API_KEY`     | unset              | Gemini key — dictation stays inert without it               |
+| `PALMUX_DICTATION_MODEL_AUDIO` | `gemini-3.5-flash` | Model for the transcription pass                            |
+| `PALMUX_DICTATION_MODEL_TEXT`  | `gemini-3.7-flash` | Model for the clean-up pass                                 |
+
+Two more are read by the launcher rather than the server: `PALMUX_NODE` (use this
+node binary instead of discovering one) and `PALMUX_LOG` (where `scripts/run.sh`
+writes, default `<repo>/palmux.log`).
 
 - **`--no-auth`** skips the token entirely. Use it only when binding to `localhost` for
   local development — there is no other access control.
 - **`--new-token`** rotates the secret, invalidating every existing browser session, then exits.
+- **`--print-config`** resolves flags, env and `config.json` and prints the result — the fastest
+  way to find out why a setting is not taking effect.
+- **`--version`** prints `<package version>+<git sha>`. Quote it in bug reports; it is the only
+  thing that says which build you are actually running.
 
 ```sh
 yarn start --no-auth            # localhost dev, no token
@@ -413,7 +494,7 @@ Yarn 4 workspaces monorepo (`node-modules` linker):
 packages/
 ├── shared/   wire protocol as plain-TS discriminated unions (no codegen)
 ├── server/   Fastify static host + ws upgrade + node-pty, token-cookie auth, config persistence
-└── client/   React + Vite + react-xtermjs (webgl/fit/search/web-links/clipboard/unicode11)
+└── client/   React + Vite + @xterm/xterm 6 (webgl/fit/search/web-links/clipboard/unicode11)
 ```
 
 ### Workspaces

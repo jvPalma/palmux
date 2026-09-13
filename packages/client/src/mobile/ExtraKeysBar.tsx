@@ -104,6 +104,13 @@ export interface ExtraKeysBarProps {
    * Horizontal swipe across the bar, by GESTURE DIRECTION ('right' = left→right).
    * The bar has no opinion on what each direction does — App maps them.
    */
+  /**
+   * Offered the key BEFORE it is encoded to bytes. Returns true when something
+   * other than a PTY consumed it — today an editor pane, which cannot be driven
+   * by keyboard events at all (see mobile/editor-keys.ts). False falls through
+   * to `send`, so a terminal tab behaves exactly as it always did.
+   */
+  sendKey?: (name: string, mods: KeyMods) => boolean;
   onSwipe?: (dir: 'left' | 'right') => void;
   /**
    * Re-raise the soft keyboard. Android can dismiss the IME during a long press
@@ -156,8 +163,17 @@ const keyboardVanished = (g: Gesture): boolean =>
 
 export const ExtraKeysBar = forwardRef<ExtraKeysBarHandle, ExtraKeysBarProps>(
   function ExtraKeysBar(props, ref) {
-    const { config, visible, send, isBlocked, onHeightChange, onAction, onSwipe, onRaiseKeyboard } =
-      props;
+    const {
+      config,
+      visible,
+      send,
+      sendKey,
+      isBlocked,
+      onHeightChange,
+      onAction,
+      onSwipe,
+      onRaiseKeyboard,
+    } = props;
     // `mods` drives the render; `modsRef` is the SYNCHRONOUS source of truth so a
     // key read immediately after arming a modifier (armed alt → arrow) sees it
     // without waiting for a re-render — the tap path used to lose that race.
@@ -208,12 +224,17 @@ export const ExtraKeysBar = forwardRef<ExtraKeysBarHandle, ExtraKeysBarProps>(
     const emitKey = (spec: ExtraKeySpec) => {
       if (isBlocked?.()) return;
       const key = toExtraKey(spec);
+      const mods = toKeyMods(modsRef.current);
       let out = '';
       if (key.macro) out = encodeMacro(key.macro);
-      else if (key.key) out = encodeExtraKey(key.key, toKeyMods(modsRef.current));
+      else if (key.key) out = encodeExtraKey(key.key, mods);
       if (MOD_NAMES.some((m) => modsRef.current[m] === 'armed')) {
         setMods(consumeOneShot(modsRef.current));
       }
+      // A single key may be claimed by a non-terminal pane. A MACRO is a shell
+      // idiom (a tmux prefix chord) with no editor meaning, so it is never
+      // offered — it would arrive as nonsense keystrokes in a file.
+      if (!key.macro && key.key && sendKey?.(key.key, mods)) return;
       if (out) send(out);
     };
 

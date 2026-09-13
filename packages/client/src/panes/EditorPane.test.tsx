@@ -21,7 +21,19 @@ const model = {
   getValue: () => value,
   onDidChangeContent: (cb: () => void) => contentListeners.push(cb),
 };
-const fakeEditor = { getModel: () => model, dispose: vi.fn(), addCommand: vi.fn() };
+// `updateOptions` is real Monaco API — the pane re-applies the width-dependent
+// options through it when a pane crosses the narrow threshold, so the fake needs
+// it or the whole setup effect throws before any of it is wired.
+const fakeEditor = {
+  getModel: () => model,
+  dispose: vi.fn(),
+  addCommand: vi.fn(),
+  updateOptions: vi.fn(),
+  // The pane registers itself for the extra-keys bar and follows DOM focus.
+  onDidFocusEditorText: vi.fn(),
+  trigger: vi.fn(),
+  focus: vi.fn(),
+};
 const fakeMonaco = {
   editor: { create: vi.fn(() => fakeEditor) },
   KeyMod: { CtrlCmd: 2048 },

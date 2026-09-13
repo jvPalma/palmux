@@ -14,7 +14,6 @@ export type Action =
   | 'nextTab'
   | 'prevTab'
   | 'settings'
-  | 'openSettingsJson'
   | 'tips'
   | 'diagnostics'
   | 'exportScrollback'
@@ -38,7 +37,6 @@ export const ACTIONS: readonly Action[] = [
   'nextTab',
   'prevTab',
   'settings',
-  'openSettingsJson',
   'tips',
   'diagnostics',
   'exportScrollback',
@@ -63,7 +61,6 @@ export const ACTION_LABELS: Record<Action, string> = {
   nextTab: 'Next tab',
   prevTab: 'Previous tab',
   settings: 'Open settings',
-  openSettingsJson: 'Open settings (JSON)',
   tips: 'Open tips',
   diagnostics: 'Copy diagnostics report',
   exportScrollback: 'Export scrollback',
@@ -97,7 +94,6 @@ export const DEFAULT_BINDINGS: Record<Action, Chord> = {
   nextTab: { key: 'Tab', ctrl: true },
   prevTab: { key: 'Tab', ctrl: true, shift: true },
   settings: { key: ',', ctrl: true },
-  openSettingsJson: { key: 'j', ctrl: true, shift: true },
   tips: { key: '/', ctrl: true },
   diagnostics: { key: 'i', ctrl: true, shift: true },
   exportScrollback: { key: 's', ctrl: true, shift: true },

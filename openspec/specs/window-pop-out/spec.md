@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Any tab can be mirrored into a chrome-less separate browser window (drag-out or menu), sized smallest-client-wins, with an origin-validated return path; only the OS-focused window answers terminal queries.
+Any tab can be opened in a chrome-less separate browser window (drag-out or menu). A terminal has ONE active view, so the pop-out TAKES THE SESSION OVER rather than mirroring it, and the window it left offers Take back. An origin-validated return path brings the tab home.
 
 ## Requirements
 
@@ -10,14 +10,16 @@ Any tab can be mirrored into a chrome-less separate browser window (drag-out or 
 
 The tab context menu (desktop), the long-press sheet (mobile), and a pane-header ⧉ action SHALL
 offer "Open in new window", opening `/popout/<id>` via `window.open` as a popup. The popped
-window is a full client attached to the same tab — for a terminal, both windows mirror the same
-shell live. `/popout/<id>` SHALL be a real route served by the server, not a query flag on a tab
-path, so the pop-out address does not depend on per-tab paths existing.
+window is a full client attached to the same tab. For a TERMINAL that attach EVICTS the previous
+one — a PTY holds a single attachment and the last attach wins — so the pane left behind freezes on
+its last frame and offers Take back. `/popout/<id>` SHALL be a real route served by the server, not
+a query flag on a tab path, so the pop-out address does not depend on per-tab paths existing.
 
-#### Scenario: Terminal mirrors across windows
+#### Scenario: A popped-out terminal takes the session over
 
-- **WHEN** the user pops terminal tab 3 out and types in the new window
-- **THEN** the same output appears in both windows (one PTY, two attached clients)
+- **WHEN** the user pops terminal tab 3 out
+- **THEN** the popup owns the shell, and the pane in the main window freezes with
+  "Opened somewhere else." and a Take back action that re-claims it
 
 #### Scenario: Works for panes too
 
@@ -95,47 +97,45 @@ the PTY/note lives on the server. See `docs/popout-protocol.md`.
 - **WHEN** the user invokes "Open in new window" for a tab that is already popped out
 - **THEN** the existing popup is focused/reused (the `palmux-<id>` window name), not duplicated
 
-### Requirement: Mirrored windows resize the PTY smallest-client-wins
+### Requirement: The sole attached client drives the PTY size
 
-The server SHALL size a multi-attach PTY to `min(cols)` × `min(rows)` across all live attaches
-(NOT last-writer-wins) — tracking each client's last-reported size and recomputing on attach,
-detach, and every client resize — so the pop-out mirror (or the same session opened twice) stays
-readable in every window. This keeps both windows readable (the larger letterboxes to the
-smaller), matching tmux multi-attach behavior.
+The server SHALL size a terminal's PTY from its ONE active attachment. Smallest-client-wins is
+deliberately gone: sizing to `min(cols, rows)` across several clients meant attaching from a phone
+silently shrank the same shell on a desktop, and with take-over there is never more than one live
+view to reconcile. `resizeClient` SHALL ignore a client that is not the active one, because an
+evicted socket can still have a resize in flight and honouring it would reshape the grid under the
+client that just took over.
 
-#### Scenario: Two differently-sized windows stay readable
+#### Scenario: A pop-out resizes the shell to its own window
 
-- **WHEN** a terminal is open in a large main window and a smaller popup attaches to the same
-  session
-- **THEN** the PTY is sized to the smaller window's grid and both windows render the shell without
-  wrapped garbage
+- **WHEN** a terminal is taken over by a smaller popped-out window
+- **THEN** the PTY is sized to that window's grid, not to the larger window it left
 
-#### Scenario: Closing the smaller window relaxes the size
+#### Scenario: An evicted client's late resize is ignored
 
-- **WHEN** the smaller of two mirrored windows closes
-- **THEN** the PTY resizes up to the remaining window's grid
+- **WHEN** a resize arrives from a socket that has already been evicted
+- **THEN** the PTY keeps the active client's grid
 
-### Requirement: Popping out a tab in a split keeps the split (stay + mirror)
+### Requirement: Popping out a tab in a split keeps the split
 
 Popping out a tab that occupies a split slot SHALL NOT collapse the main window's split — the main
-window keeps the slot and the popup mirrors the same session (subject to the resize policy above).
-"Return to main" SHALL apply the strip-selection rule (Rule R) to decide the target slot.
+window keeps the slot, showing the taken-over state for a terminal. "Return to main" SHALL apply the
+strip-selection rule (Rule R) to decide the target slot.
 
 #### Scenario: Pop out a split slot's tab
 
 - **WHEN** the user pops out the tab shown in one slot of a split
-- **THEN** the main window still shows the split with that slot, and the popup mirrors it
+- **THEN** the main window still shows the split with that slot, and that slot shows the
+  taken-over state with Take back
 
 ### Requirement: Only the OS-focused window answers terminal queries
 
-With one session mirrored across the main window and a popout, each window's pane SHALL keep the
-per-document `hasFocus()` report gate, so a DA/DSR query emitted by the shell is answered by
-exactly one window.
+Each window's pane SHALL keep the per-document `hasFocus()` report gate, so a DA/DSR query emitted
+by a shell is answered by exactly one window even while several windows hold panes.
 
 #### Scenario: No duplicate answers across windows
 
-- **WHEN** a terminal is mirrored in a popped-out window and its shell emits a Device Attributes
-  query
+- **WHEN** a shell emits a Device Attributes query while panes are open in more than one window
 - **THEN** only the window that has OS focus forwards the answer; no "?1;2c" junk appears
 
 ### Requirement: No fake drag-back-in

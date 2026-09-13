@@ -17,7 +17,7 @@ describe('fetchTmuxSessions', () => {
         available: true,
         sessions: [
           { name: 'work', attached: true },
-          { name: 'DB_BACKFILL-0', attached: false },
+          { name: 'JOB_RUNNER-0', attached: false },
         ],
       }),
     }));
@@ -25,7 +25,7 @@ describe('fetchTmuxSessions', () => {
       available: true,
       sessions: [
         { name: 'work', attached: true },
-        { name: 'DB_BACKFILL-0', attached: false },
+        { name: 'JOB_RUNNER-0', attached: false },
       ],
     });
   });
@@ -61,7 +61,7 @@ describe('fetchTmuxSessions', () => {
 
 describe('filterSessions', () => {
   const list = [
-    { name: 'DB_BACKFILL-0', attached: false },
+    { name: 'JOB_RUNNER-0', attached: false },
     { name: 'L0_PALMA-0', attached: true },
     { name: 'palmux', attached: false },
   ];

@@ -43,6 +43,7 @@ export const MarkdownPane = ({ tab, onChangePath, onMenu }: MarkdownPaneProps) =
   const [browseDir, setBrowseDir] = useState<string | null>(null);
   const [listing, setListing] = useState<Listing | null>(null);
   const [html, setHtml] = useState('');
+  const bodyRef = useRef<HTMLDivElement>(null);
   // Prose base size follows the terminal font size (matches the editor's +1),
   // so the markdown tab scales like every other tab. All prose uses em units,
   // so setting the base scales headings/code/etc. proportionally.
@@ -146,6 +147,24 @@ export const MarkdownPane = ({ tab, onChangePath, onMenu }: MarkdownPaneProps) =
       .map((seg, i) => ({ label: seg, path: `/${all.slice(0, i + 1).join('/')}`, depth: i + 1 }))
       .filter((c) => c.depth >= rootSegs); // root crumb + everything below it
   })();
+
+  // Colour fenced code AFTER the html is in the DOM. Deliberately a separate
+  // pass rather than part of renderMarkdown: it is async and it loads monaco,
+  // so the prose must be readable first and the colour arrive when it arrives.
+  // A document with no fenced block loads nothing.
+  useEffect(() => {
+    const host = bodyRef.current;
+    if (!host || !html) return;
+    let stale = false;
+    void (async () => {
+      const { highlightCodeBlocks } = await import('./markdown-code');
+      if (stale || !bodyRef.current) return;
+      await highlightCodeBlocks(bodyRef.current);
+    })();
+    return () => {
+      stale = true;
+    };
+  }, [html]);
 
   return (
     <div className="pane-frame" data-testid="markdown-pane">
@@ -252,11 +271,13 @@ export const MarkdownPane = ({ tab, onChangePath, onMenu }: MarkdownPaneProps) =
         <p className="pane-loading">Loading…</p>
       ) : (
         <div
+          ref={bodyRef}
           className="md-body"
           data-testid="md-body"
           style={{ fontSize: mdFontSize }}
           onClick={onBodyClick}
-          // Rendered through marked → DOMPurify → link rewriting (markdown-render.ts).
+          // Rendered through marked → DOMPurify → link rewriting (markdown-render.ts),
+          // then coloured in place by Monaco's tokenizer (markdown-code.ts).
           dangerouslySetInnerHTML={{ __html: html }}
         />
       )}

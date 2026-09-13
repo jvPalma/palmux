@@ -4,7 +4,7 @@
 // into something that silently stops colouring.
 
 import { describe, expect, it } from 'vitest';
-import { languageOf } from './EditorPane';
+import { languageOf } from './editor-language';
 
 describe('languageOf', () => {
   it('resolves the kinds a terminal user opens', () => {

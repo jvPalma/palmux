@@ -18,6 +18,9 @@
 import { useEffect, useRef, useState } from 'react';
 import type * as Monaco from 'monaco-editor';
 import { loadSettings, onSettingsChange } from '../settings/settings';
+import { languageOf } from './editor-language';
+import { editorLayoutOptions, observeEditorWidth } from './editor-layout';
+import { focusEditor, registerEditor, unregisterEditor } from './editor-registry';
 
 const AUTOSAVE_MS = 2000;
 // The editor tracks the terminal font size, a touch larger for readability.
@@ -34,99 +37,6 @@ const editorFontSize = (): number => loadSettings().fontSize + EDITOR_FONT_OFFSE
  * holds, so the editor and the terminal read as one program.
  */
 const editorFontFamily = (): string => loadSettings().fontFamily;
-
-/**
- * Extension → Monaco language id, for the grammars `monaco-loader` actually
- * registers. Anything absent resolves to `plaintext`, which is what an
- * unregistered id would silently do anyway — naming it keeps that explicit.
- *
- * Two entries are deliberate substitutions rather than matches. `json` has no
- * basic-language grammar (its colouring lives in the language SERVICE, which is
- * a worker palmux does not load), so it borrows `javascript` — a superset of
- * every valid JSON document. `toml` has no grammar at all, and `ini` gets its
- * comments, sections and key/value pairs close enough to be worth having.
- */
-const LANGUAGE_BY_EXT: Record<string, string> = {
-  md: 'markdown',
-  markdown: 'markdown',
-  json: 'javascript',
-  jsonc: 'javascript',
-  json5: 'javascript',
-  yaml: 'yaml',
-  yml: 'yaml',
-  toml: 'ini',
-  ini: 'ini',
-  cfg: 'ini',
-  conf: 'ini',
-  properties: 'ini',
-  sh: 'shell',
-  bash: 'shell',
-  zsh: 'shell',
-  fish: 'shell',
-  ps1: 'powershell',
-  ts: 'typescript',
-  tsx: 'typescript',
-  mts: 'typescript',
-  cts: 'typescript',
-  js: 'javascript',
-  jsx: 'javascript',
-  mjs: 'javascript',
-  cjs: 'javascript',
-  py: 'python',
-  pyi: 'python',
-  rb: 'ruby',
-  php: 'php',
-  java: 'java',
-  go: 'go',
-  rs: 'rust',
-  lua: 'lua',
-  c: 'cpp',
-  h: 'cpp',
-  cc: 'cpp',
-  cpp: 'cpp',
-  hpp: 'cpp',
-  css: 'css',
-  scss: 'css',
-  less: 'css',
-  html: 'html',
-  htm: 'html',
-  vue: 'html',
-  svelte: 'html',
-  xml: 'xml',
-  svg: 'xml',
-  plist: 'xml',
-  sql: 'sql',
-  graphql: 'graphql',
-  gql: 'graphql',
-  tf: 'hcl',
-  tfvars: 'hcl',
-  hcl: 'hcl',
-};
-
-/** Files whose NAME carries the language, with no extension to read. */
-const LANGUAGE_BY_NAME: Record<string, string> = {
-  dockerfile: 'dockerfile',
-  containerfile: 'dockerfile',
-  '.bashrc': 'shell',
-  '.bash_profile': 'shell',
-  '.zshrc': 'shell',
-  '.profile': 'shell',
-  '.env': 'ini',
-  '.gitconfig': 'ini',
-  '.editorconfig': 'ini',
-  '.tmux.conf': 'shell',
-};
-
-export const languageOf = (path: string): string => {
-  const name = (path.split('/').pop() ?? '').toLowerCase();
-  const byName = LANGUAGE_BY_NAME[name];
-  if (byName) return byName;
-  // A leading dot is part of the NAME, not an extension — `.zshrc` must not be
-  // looked up as the extension `zshrc`, which is the same trap the file icons hit.
-  const dot = name.lastIndexOf('.');
-  const ext = dot > 0 ? name.slice(dot + 1) : '';
-  return LANGUAGE_BY_EXT[ext] ?? 'plaintext';
-};
 
 /** The server's own message for a failed request, or a status the user can quote. */
 const errorOf = async (res: Response): Promise<string> => {
@@ -175,9 +85,13 @@ export const EditorPane = ({
   const src = filePath
     ? `/file?path=${encodeURIComponent(filePath)}`
     : `/pane-file?tab=${encodeURIComponent(tabId)}`;
+  // The registry key. `src` and not `tabId`: one tab can hold a note OR a file,
+  // and the effect below re-creates the editor when it changes.
+  const regId = src;
 
   useEffect(() => {
     let disposed = false;
+    let stopWidthWatch: (() => void) | null = null;
     let instance: Monaco.editor.IStandaloneCodeEditor | undefined;
     let autosave: ReturnType<typeof setTimeout> | undefined;
     // A new source starts from scratch: the previous file's error must not
@@ -215,14 +129,28 @@ export const EditorPane = ({
           language: filePath ? languageOf(filePath) : 'markdown',
           theme: 'palmux',
           automaticLayout: true, // handles pane show/hide + window resizes
-          wordWrap: 'on',
           minimap: { enabled: false },
           fontSize: editorFontSize(),
           fontFamily: editorFontFamily(),
           padding: { top: 8 },
+          // Gutter chrome is affordable on a desktop pane and not on a 390px
+          // phone or a 300px dock — see editor-layout.ts for the measurement.
+          ...editorLayoutOptions(hostRef.current.getBoundingClientRect().width),
         });
         instance = editor;
         editorRef.current = editor;
+        // Re-apply when the pane crosses the narrow threshold: a phone rotating,
+        // the dock opening beside a split, a window resize. Only the crossing
+        // fires, so a drag does not re-lay-out the editor on every frame.
+        stopWidthWatch = observeEditorWidth(hostRef.current, (opts) => editor.updateOptions(opts));
+        // Reachable by the extra-keys bar, which on a phone is the only source
+        // of ESC / arrows / HOME / END / TAB there is.
+        registerEditor(regId, {
+          run: (handlerId) => editor.trigger('extra-keys', handlerId, null),
+          type: (text) => editor.trigger('extra-keys', 'type', { text }),
+          focus: () => editor.focus(),
+        });
+        editor.onDidFocusEditorText(() => focusEditor(regId));
         const model = editor.getModel();
         if (!model) return;
         let savedVersion = model.getAlternativeVersionId();
@@ -299,10 +227,12 @@ export const EditorPane = ({
       disposed = true;
       clearTimeout(autosave);
       document.removeEventListener('visibilitychange', onHide);
+      stopWidthWatch?.();
+      unregisterEditor(regId);
       editorRef.current = null;
       instance?.dispose();
     };
-  }, [src, filePath, tabId]);
+  }, [src, regId, filePath, tabId]);
 
   // Follow the terminal font live (settings pub/sub → updateOptions).
   useEffect(

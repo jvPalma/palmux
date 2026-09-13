@@ -25,16 +25,19 @@ fresh respawn.
 - **WHEN** a session had mouse reporting / a custom title before handoff
 - **THEN** those are restored to reattaching clients from the manifest
 
-### Requirement: Handoff is multi-client aware
+### Requirement: Handoff carries the session's geometry, and the reattaching client owns it
 
-Because a palmux PTY may have multiple simultaneously attached clients, the handoff manifest SHALL
-carry the aggregated (smallest-client-wins) size rather than a single client geometry, and the
-successor SHALL recompute size as clients reattach — preserving palmux's multi-client mirroring.
+The manifest SHALL carry each session's `cols`/`rows` so the successor's PTY keeps a sane grid
+before anyone attaches. A palmux PTY has ONE active attachment, so there is no aggregate to
+compute: the first client to attach after the handoff resizes the PTY to its own grid, and an
+evicted client's late resize is ignored. (This requirement previously described a
+smallest-client-wins aggregate across mirrored clients; that model was removed with the move to
+single-active-client, and the manifest never carried more than one geometry.)
 
-#### Scenario: Size recomputed after reattach
+#### Scenario: A reattaching client sets the size
 
-- **WHEN** two clients were attached at different sizes before handoff and one reattaches after
-- **THEN** the PTY size reflects the reattached client(s) via smallest-client-wins, not a stale single geometry
+- **WHEN** a session is handed off and a client attaches at a different size
+- **THEN** the PTY takes that client's grid, not the pre-handoff one
 
 ### Requirement: Handoff degrades safely
 

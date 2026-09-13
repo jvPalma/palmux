@@ -24,6 +24,8 @@
 #   PALMUX_PORT / PALMUX_HOST / PALMUX_NO_AUTH  as documented in the README
 set -eu
 
+# shellcheck disable=SC1007  # `CDPATH= cd` is the idiom, not a typo: it blanks
+# CDPATH for this one command so a user's CDPATH cannot redirect the cd.
 REPO="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 LOG="${PALMUX_LOG:-$REPO/palmux.log}"
 ENTRY="$REPO/packages/server/src/index.ts"

@@ -21,11 +21,26 @@ const UNITS: Record<string, number> = {
 const SIZE_RE = /^(\d+(?:\.\d+)?)\s*(KB|MB|GB)$/i;
 
 /**
+ * A bare byte count, as a STRING.
+ *
+ * The number branch below already takes `52428800` from config.json, but an
+ * environment variable is only ever a string — so without this
+ * `PALMUX_MAX_UPLOAD_BYTES=52428800` parsed to null and the caller silently kept
+ * its default, which is the worst shape this failure can take: the operator
+ * believes they set a cap and did not. `=0` (no limit) was unreachable the same
+ * way. This does not loosen the grammar the header argues for: a bare integer
+ * names one magnitude and only one, which is exactly why the number form was
+ * always allowed.
+ */
+const BARE_BYTES_RE = /^\d+$/;
+
+/**
  * Bytes for a config size, or null if the value is not a usable size.
  *
- * Accepts a non-negative number (bytes, as before) or a `"<n><KB|MB|GB>"`
- * string. **Zero means NO LIMIT** wherever palmux reads one of these, which is
- * why 0 is valid rather than rejected — see the `maxUploadBytes` handling in
+ * Accepts a non-negative number (bytes), the same count as a decimal STRING
+ * (what an environment variable always is), or a `"<n><KB|MB|GB>"` string.
+ * **Zero means NO LIMIT** wherever palmux reads one of these, which is why 0 is
+ * valid rather than rejected — see the `maxUploadBytes` handling in
  * app-config.ts. Anything else — a negative, a NaN, `"1G"`, `"1 gigabyte"`,
  * `""` — is null, and the caller keeps its default.
  */
@@ -34,7 +49,9 @@ export function parseByteSize(value: unknown): number | null {
     return Number.isFinite(value) && value >= 0 ? Math.floor(value) : null;
   }
   if (typeof value !== 'string') return null;
-  const m = SIZE_RE.exec(value.trim());
+  const trimmed = value.trim();
+  if (BARE_BYTES_RE.test(trimmed)) return Number(trimmed);
+  const m = SIZE_RE.exec(trimmed);
   if (!m) return null;
   const n = Number(m[1]);
   const unit = UNITS[m[2]!.toUpperCase()];

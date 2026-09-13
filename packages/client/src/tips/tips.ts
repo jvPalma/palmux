@@ -20,7 +20,7 @@ export const TIPS: Tip[] = [
     category: 'Mobile',
     title: 'Sessions drawer',
     description:
-      'Swipe RIGHT→LEFT across the extra-keys bar to pull the drawer in from the right edge. Its header switches between four views — Sessions, Settings, Files and Dictation — all as drawer items, never a modal stacked over the terminal. From the session list, + New tab opens the chooser in place of the list (‹ New tab goes back); a tmux session, a URL or a note all start from there. Tap outside to get back to the terminal.',
+      'The extra-keys bar is always there on mobile, whatever the tab is — it is how you reach everything else. Swipe RIGHT→LEFT across it to pull the drawer in from the right edge. Its header switches between four views — Sessions, Settings, Files and Dictation — all as drawer items, never a modal stacked over the terminal. From the session list, + New tab opens the chooser in place of the list (‹ New tab goes back); a tmux session, a URL or a note all start from there. Tap outside to get back to the terminal.',
   },
   {
     category: 'Mobile',
@@ -183,6 +183,12 @@ export const TIPS: Tip[] = [
     title: 'Collapse a group',
     description:
       'Click a group button to collapse it — its members fold away and it shows a count; click again to expand. If you were viewing a member, it hops to the nearest tab outside the group first. Selecting a collapsed member (a split, a closed neighbour, anything) auto-expands the group. Collapse state is per device; on mobile the same groups appear as tappable headers in the drawer.',
+  },
+  {
+    category: 'Mobile',
+    title: 'The extra keys work in editors too',
+    description:
+      'On a file, a note or the config editor, the bar drives the EDITOR: arrows move the cursor, SHIFT+arrow extends the selection, HOME/END jump along the line, PGUP/PGDN by a screen, TAB indents and SHIFT+TAB outdents. CTRL takes its editor meaning — CTRL+A selects the whole file, CTRL+Z undoes, CTRL+F opens find — not the shell one.',
   },
   {
     category: 'Tabs',

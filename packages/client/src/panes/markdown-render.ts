@@ -55,12 +55,36 @@ export async function renderMarkdown(text: string, currentPath?: string): Promis
 
   const raw = marked.parse(text, { gfm: true, async: false });
   const clean = DOMPurify.sanitize(raw, {
-    FORBID_TAGS: ['style', 'form', 'input', 'button', 'select', 'textarea'],
+    // `input` is NOT in this list, and that is deliberate. GFM renders a task
+    // list (`- [ ]`) as `<input type="checkbox" disabled>`, so forbidding the
+    // tag silently deleted every checkbox and left bare bullets — measured: 0
+    // `input[type=checkbox]` in the rendered DOM. The hook below narrows the
+    // exception to exactly that shape, which is what the denylist was protecting
+    // against: a live form control inside rendered markdown.
+    FORBID_TAGS: ['style', 'form', 'button', 'select', 'textarea'],
     ADD_ATTR: ['target'],
   });
 
   const tpl = document.createElement('template');
   tpl.innerHTML = clean;
+
+  // Allowing `input` back costs nothing only if it stays a task-list checkbox.
+  // Anything else — a text field, an enabled checkbox, one carrying a name or a
+  // value — is removed here rather than trusted, so a hostile document cannot
+  // put a real control in the reader's way.
+  for (const el of tpl.content.querySelectorAll('input')) {
+    const ok = el.getAttribute('type') === 'checkbox';
+    if (!ok) {
+      el.remove();
+      continue;
+    }
+    for (const attr of [...el.attributes]) {
+      if (attr.name !== 'type' && attr.name !== 'checked' && attr.name !== 'disabled') {
+        el.removeAttribute(attr.name);
+      }
+    }
+    el.setAttribute('disabled', ''); // a rendered document is never interactive
+  }
 
   for (const a of tpl.content.querySelectorAll('a[href]')) {
     const href = a.getAttribute('href') ?? '';

@@ -23,6 +23,11 @@ import type * as Monaco from 'monaco-editor';
 import { Button, Segmented } from '../ui';
 import { loadSettings } from './settings';
 import './config-editor.css';
+import { editorLayoutOptions, observeEditorWidth } from '../panes/editor-layout';
+import { focusEditor, registerEditor, unregisterEditor } from '../panes/editor-registry';
+
+/** One config editor exists at a time — the dock hosts exactly one. */
+const REG_ID = 'config-editor';
 
 export type ConfigEditorMode = 'raw' | 'form';
 
@@ -148,6 +153,7 @@ export const ConfigEditor = ({ mode, onMode }: ConfigEditorProps) => {
 
   useEffect(() => {
     let disposed = false;
+    let stopWidthWatch: (() => void) | null = null;
     let instance: Monaco.editor.IStandaloneCodeEditor | undefined;
 
     void (async () => {
@@ -175,7 +181,6 @@ export const ConfigEditor = ({ mode, onMode }: ConfigEditorProps) => {
           theme: 'palmux',
           automaticLayout: true,
           minimap: { enabled: false },
-          scrollBeyondLastLine: false,
           fontSize: 12,
           // Explicit, for the same reason EditorPane sets it: Monaco's default
           // stack resolves to a proportional serif on a host without Menlo or
@@ -183,9 +188,26 @@ export const ConfigEditor = ({ mode, onMode }: ConfigEditorProps) => {
           fontFamily: loadSettings().fontFamily,
           tabSize: 2,
           padding: { top: 8 },
+          // The dock is 300px wide on every device, so this editor is ALWAYS in
+          // the narrow case — including on a desktop, which a mobile-mode check
+          // would have missed.
+          ...editorLayoutOptions(hostRef.current.getBoundingClientRect().width),
         });
         instance = editor;
         editorRef.current = editor;
+        // The dock's editor is reachable by the extra-keys bar too — on mobile
+        // it is a full-screen surface with the same missing keys as any other.
+        registerEditor(REG_ID, {
+          run: (handlerId) => editor.trigger('extra-keys', handlerId, null),
+          type: (text) => editor.trigger('extra-keys', 'type', { text }),
+          focus: () => editor.focus(),
+        });
+        editor.onDidFocusEditorText(() => focusEditor(REG_ID));
+        // The observer is not optional here, unlike in a pane that mounts
+        // visible: the dock creates this editor while the Form view is showing,
+        // so the host measures 0 at create time and takes the WIDE defaults. The
+        // first real measurement arrives only when Raw is selected.
+        stopWidthWatch = observeEditorWidth(hostRef.current, (opts) => editor.updateOptions(opts));
         setText(content);
         setPath(typeof body['path'] === 'string' ? body['path'] : '');
         setLoad('ready');
@@ -201,6 +223,8 @@ export const ConfigEditor = ({ mode, onMode }: ConfigEditorProps) => {
 
     return () => {
       disposed = true;
+      stopWidthWatch?.();
+      unregisterEditor(REG_ID);
       editorRef.current = null;
       monacoRef.current = null;
       instance?.dispose();
