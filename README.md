@@ -1,7 +1,7 @@
 # palmux
 
 A self-hostable, GPU-accelerated web terminal. Open a browser tab, get a real shell on
-the host running the server. Built to be genuinely usable on mobile to drive `tmux`.
+the host running the server. No multiplexer required — and when you do run `tmux`, the mobile layer is built to make it genuinely usable.
 
 ## What it is
 
@@ -13,7 +13,7 @@ the host running the server. Built to be genuinely usable on mobile to drive `tm
   PTY via [`node-pty`](https://github.com/microsoft/node-pty). Run directly with `tsx`.
 - **Mobile** — the headline feature. A Termux-style extra-keys bar (sticky `CTRL`/`ALT`/`SHIFT`,
   arrows, tmux prefix combos) plus touch gestures (pinch-zoom, tap-to-focus-pane, swipe-scroll,
-  long-press select + copy) make running `tmux` from a phone practical.
+  long-press select + copy) make even `tmux` practical from a phone.
 
 It is coupled to no cloud and no host: anywhere Node 22 and a shell run, palmux runs.
 
@@ -71,7 +71,7 @@ It is coupled to no cloud and no host: anywhere Node 22 and a shell run, palmux 
 - **Node 22+** (Node 24 works)
 - **Yarn 4** (the repo pins `yarn@4.13.0` via `packageManager`)
 - A shell (`$SHELL`, falling back to a login shell)
-- **`tmux`** — optional, but the mobile layer is designed around driving it
+- **`tmux`** — optional companion; the mobile layer is built for it
 
 ## Quick start
 
