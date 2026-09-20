@@ -27,6 +27,8 @@ const { sockets } = vi.hoisted(() => ({
     reorders: string[][];
     groupCreates: unknown[];
     groupUpdates: Array<Record<string, unknown>>;
+    active: number;
+    openCb: (() => void) | null;
   }>,
 }));
 
@@ -39,6 +41,8 @@ vi.mock('./lib/ws', () => ({
     reorders: string[][] = [];
     groupCreates: unknown[] = [];
     groupUpdates: Array<Record<string, unknown>> = [];
+    active = 0;
+    openCb: (() => void) | null = null;
     constructor(url: string) {
       this.url = url;
       sockets.push(this);
@@ -47,7 +51,15 @@ vi.mock('./lib/ws', () => ({
       this.handler = cb;
     }
     onBinary() {}
-    onOpen() {}
+    // Stored, not discarded: the open handler is focus-gated, so a test has to
+    // be able to fire it with `document.hasFocus` stubbed either way.
+    onOpen(cb: () => void) {
+      this.openCb = cb;
+    }
+    sendActive() {
+      this.active += 1;
+      return true;
+    }
     connect() {}
     destroy() {}
     stopReconnect() {}
@@ -791,5 +803,72 @@ describe('restoring the keyboard after a native text selection', () => {
   it('ignores growth too small to be an IME', () => {
     expect(shouldRestoreKeyboard(true, 844, 844 - 100)).toBe(false);
     expect(shouldRestoreKeyboard(true, 844, 844 - 101)).toBe(true);
+  });
+});
+
+// ── `palmux <path>` from a shell in this window ───────────────────────────────
+//
+// The CLI's whole promise is that the window you typed in reacts. It reaches the
+// browser as two messages on the control socket: the `sessions` broadcast that
+// announces the tab, then `focusTab`. Both land in the same task, so anything
+// these read that is only updated by a RENDER sees the world before the tab.
+describe('a `palmux` command arriving on the control socket', () => {
+  /** Several server messages in ONE task, as `POST /cli` sends them. */
+  const sendBurst = (msgs: Array<Record<string, unknown>>) =>
+    act(() => {
+      for (const m of msgs) server().handler!(m);
+    });
+
+  it('opens and follows a tab announced in the same burst (the CLI race)', () => {
+    setup();
+    const tabs = ['0', '1', '2'].map((id) => ({ id, kind: 'terminal' }));
+    sendBurst([
+      { type: 'sessions', tabs: [...tabs, { id: '5', kind: 'editor', url: '/tmp/a.txt' }] },
+      { type: 'focusTab', id: '5' },
+    ]);
+    // An editor tab has no terminal pane, so the discriminator is which pane
+    // mounted: still on tab 0, the terminal slot; moved, the host.
+    expect(screen.queryByTestId('term-pane-a')).toBeNull();
+    expect(screen.getByTestId('pane-host')).toBeTruthy();
+  });
+
+  it('follows the tab when the origin names THIS window', () => {
+    setup();
+    send({ type: 'focusTab', id: '2', from: '0' });
+    expect(active()).toBe('2');
+  });
+
+  it('follows the tab when the origin is the UNFOCUSED half of the split', () => {
+    setup();
+    openSplitVia('1'); // (0|1), focused b → sessionId 1
+    send({ type: 'focusTab', id: '2', from: '0' });
+    expect(active()).toBe('2');
+    expect(panes()).toEqual([{ slot: 'a', session: '2', focused: false }]);
+  });
+
+  it('stays put when the origin names a tab this window does not show', () => {
+    setup();
+    openSplitVia('1'); // (0|1) — tab 2 exists but is not on screen here
+    send({ type: 'focusTab', id: '2', from: '2' });
+    expect(active()).toBe('1');
+  });
+
+  // The open handler is focus-gated. Every socket reconnects at once after a
+  // server self-update, so an ungated claim would make "last to reconnect" — a
+  // background window as often as not — the fallback target for a `palmux`
+  // command run from outside palmux.
+  it('claims the active window on open only while focused', () => {
+    // Assigned, not spied: jsdom's `hasFocus` is an own property of the document,
+    // so a Document.prototype spy never intercepts and the gate reads as open.
+    const hasFocus = document.hasFocus;
+    document.hasFocus = () => false;
+    setup();
+    act(() => server().openCb!());
+    expect(server().active).toBe(0);
+
+    document.hasFocus = () => true;
+    act(() => server().openCb!());
+    expect(server().active).toBe(1);
+    document.hasFocus = hasFocus;
   });
 });

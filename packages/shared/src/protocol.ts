@@ -230,6 +230,22 @@ export interface UpdatingMessage {
   version?: string;
 }
 
+/**
+ * An out-of-band source (the `palmux` CLI) wants a window to show `id`. Sent to
+ * control sockets only, after the tab exists in the strip.
+ *
+ * `from` is the tab the request ORIGINATED in — the `PALMUX_TAB_ID` of the shell
+ * that ran the command. Each client compares it against its own active tab and
+ * ignores the message on a mismatch, because selection is per-window browser
+ * state the server deliberately does not track. An absent `from` (the command ran
+ * outside palmux) names no window, so the server picks one instead.
+ */
+export interface FocusTabMessage {
+  type: 'focusTab';
+  id: string;
+  from?: string;
+}
+
 export type ServerMessage =
   | ReadyMessage
   | SettingsMessage
@@ -242,6 +258,7 @@ export type ServerMessage =
   | SnapshotMessage
   | SessionsMessage
   | TabCreatedMessage
+  | FocusTabMessage
   | PongMessage
   | UpdatingMessage;
 
@@ -331,6 +348,17 @@ export interface GroupUpdateMessage {
   order?: string[];
 }
 
+/**
+ * "This window is the one the user is looking at" — sent on control-socket open,
+ * on window focus, and when a hidden window becomes visible. Deliberately carries
+ * NO tab id: which tab a window shows is browser-local state the server must not
+ * hold, and this only needs to answer "which window is in front". That is the
+ * fallback target for a `focusTab` with no `from` (a command run outside palmux).
+ */
+export interface ActiveMessage {
+  type: 'active';
+}
+
 /** Liveness probe; the server replies with `pong`. Used to detect a zombie
  *  socket (readyState OPEN but the connection is dead — common on mobile). */
 export interface PingMessage {
@@ -355,6 +383,7 @@ export type ClientMessage =
   | GroupCreateMessage
   | GroupUpdateMessage
   | ImportThemeMessage
+  | ActiveMessage
   | PingMessage;
 
 // ── Encode / decode helpers ───────────────────────────────────────────────────
@@ -496,6 +525,15 @@ export function parseServerMessage(data: string): ServerMessage | null {
       return { type: 'pong' };
     case 'tabCreated':
       return typeof raw['id'] === 'string' ? { type: 'tabCreated', id: raw['id'] } : null;
+    case 'focusTab': {
+      if (typeof raw['id'] !== 'string') return null;
+      const from = raw['from'];
+      return {
+        type: 'focusTab',
+        id: raw['id'],
+        ...(typeof from === 'string' ? { from } : {}),
+      };
+    }
     case 'updating': {
       const stage = raw['stage'];
       if (
@@ -570,6 +608,8 @@ export function parseClientMessage(data: string): ClientMessage | null {
   }
   if (!isRecord(raw) || typeof raw['type'] !== 'string') return null;
   switch (raw['type']) {
+    case 'active':
+      return { type: 'active' };
     case 'resize':
       if (typeof raw['cols'] === 'number' && typeof raw['rows'] === 'number') {
         return { type: 'resize', cols: raw['cols'], rows: raw['rows'] };

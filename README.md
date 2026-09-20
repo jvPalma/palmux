@@ -309,6 +309,46 @@ yarn start --new-token          # rotate the token and exit
 PALMUX_PORT=9000 yarn start # listen on :9000
 ```
 
+## Controlling a running instance
+
+The same command drives a palmux that is already running, the way `code` drives a
+running VS Code:
+
+```sh
+palmux ~/.tmux.conf    # open that file in an editor tab
+palmux tabs            # list tabs, in strip order, grouped
+palmux groups          # list tab groups
+palmux settings        # print the merged settings
+palmux status          # version, port, tab and window counts
+```
+
+`palmux <path>` opens the file **in the window you ran the command from**. Palmux
+exports each shell's tab id into its environment, so the command knows which tab
+its terminal belongs to and the client showing that tab is the one that navigates.
+Run the command from outside palmux — SSH, a desktop terminal — and it targets the
+most recently focused window instead. If no window is showing the source tab, the
+tab still appears in every strip and no window moves; guessing would move a view
+you did not ask to move.
+
+Opening a file that an editor tab already shows moves to that tab rather than
+opening a second one over the same path. A path that does not exist, or one that is
+a directory, is refused with a message and creates nothing.
+
+**A file named like a subcommand** needs the explicit form: `palmux tabs` lists
+tabs, so `palmux open ./tabs` is how you open a file actually named `tabs`.
+
+The command reaches the server over its normal cookie-authenticated route, reading
+the secret from `PALMUX_CONFIG_DIR` and the port from `PALMUX_PORT` or
+`config.json`. It runs on the same host as the server. If the server is not
+running, or is running an older palmux that predates this command, the error says
+which of those it is.
+
+`palmux serve [flags]` runs the server, and a bare `palmux` with no arguments
+prints help — the launcher behaviour from before this command existed is
+unchanged, so `--print-config`, `--new-token` and the systemd unit all still work.
+
+From a source checkout, `yarn palmux <args>` runs the same command through `tsx`.
+
 ## Development
 
 Both dev servers in one terminal, Ctrl+C stops both:

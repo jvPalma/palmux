@@ -135,6 +135,35 @@ describe('parseServerMessage', () => {
     expect(parseServerMessage(JSON.stringify({ type: 'tabCreated', id: 3 }))).toBeNull();
   });
 
+  // `from` decides WHICH window reacts, so a dropped or mangled value does not
+  // fail loudly — it moves the wrong window, or every window at once.
+  it('round-trips a focusTab with and without an origin', () => {
+    const withFrom: ServerMessage = { type: 'focusTab', id: '5', from: '2' };
+    expect(parseServerMessage(encodeServerMessage(withFrom))).toEqual(withFrom);
+
+    const withoutFrom: ServerMessage = { type: 'focusTab', id: '5' };
+    expect(parseServerMessage(encodeServerMessage(withoutFrom))).toEqual(withoutFrom);
+  });
+
+  it('drops a non-string origin rather than coercing it', () => {
+    // `from: undefined` and an absent `from` must be indistinguishable, so the
+    // key is left off entirely — a literal `undefined` would survive JSON as a
+    // dropped key but still read as "present" to any `in` check.
+    expect(parseServerMessage(JSON.stringify({ type: 'focusTab', id: '5', from: 2 }))).toEqual({
+      type: 'focusTab',
+      id: '5',
+    });
+    expect(parseServerMessage(JSON.stringify({ type: 'focusTab', id: '5', from: null }))).toEqual({
+      type: 'focusTab',
+      id: '5',
+    });
+  });
+
+  it('rejects a focusTab with no id (there is nothing to navigate to)', () => {
+    expect(parseServerMessage(JSON.stringify({ type: 'focusTab' }))).toBeNull();
+    expect(parseServerMessage(JSON.stringify({ type: 'focusTab', id: 5 }))).toBeNull();
+  });
+
   it('round-trips an exit message with numeric code/signal', () => {
     const msg: ServerMessage = { type: 'exit', code: 0, signal: null };
     expect(parseServerMessage(encodeServerMessage(msg))).toEqual(msg);
@@ -263,6 +292,16 @@ describe('parseClientMessage', () => {
   it('returns null for a non-object frame', () => {
     expect(parseClientMessage('[]')).toBeNull();
     expect(parseClientMessage('true')).toBeNull();
+  });
+
+  // The "I am the window in front" ping. It carries no fields by design — the
+  // tab a window shows is browser-local state the server must not hold — so the
+  // only thing to pin is that a stray payload is ignored rather than rejected.
+  it('accepts an active ping and ignores any payload riding with it', () => {
+    expect(parseClientMessage(JSON.stringify({ type: 'active' }))).toEqual({ type: 'active' });
+    expect(parseClientMessage(JSON.stringify({ type: 'active', tabId: '3' }))).toEqual({
+      type: 'active',
+    });
   });
 });
 

@@ -50,6 +50,16 @@ export type WorkspaceEvent =
   | { type: 'dropSlot'; id: string; slot: SlotId }
   | { type: 'eject'; keep?: SlotId | undefined }
   | { type: 'tabCreated'; id: string }
+  /**
+   * The `palmux` CLI wants a window to show `id` — the tab is already in the
+   * strip (the server broadcasts the list before it sends this). `from` is the
+   * tab the command ran in; the server cannot address a window, because which
+   * tab one shows is browser-local state it does not hold, so it sends this to
+   * every window and each decides. An absent `from` means the command ran
+   * outside palmux and the server picked the window itself — this client only
+   * has to accept it.
+   */
+  | { type: 'focusTab'; id: string; from?: string | undefined }
   /** A `sessions` broadcast — only the close-navigation decision (App applies the
    *  rest). `tabs` is the NEW list; `ctx.tabs` is the OLD one. */
   | { type: 'sessionsBroadcast'; tabs: TabMeta[] };
@@ -98,6 +108,16 @@ function fuseSync(ctx: WorkspaceCtx, keepId: string, moveId: string): WorkspaceE
     moveGid: ctx.groupOf(moveId) ?? null,
     targetGid: ctx.groupOf(keepId) ?? null,
   };
+}
+
+/**
+ * Whether this window is SHOWING a tab — its focused tab, or either half of the
+ * split it is tiling. Only the active pairing is on screen; a tab in some other
+ * pairing is a strip button, not a view.
+ */
+function displays(ctx: WorkspaceCtx, pairing: SplitState | null, id: string): boolean {
+  if (id === ctx.sessionId) return true;
+  return pairing !== null && (pairing.a.tabId === id || pairing.b.tabId === id);
 }
 
 export function decide(event: WorkspaceEvent, ctx: WorkspaceCtx): WorkspaceEffect[] {
@@ -210,6 +230,28 @@ export function decide(event: WorkspaceEvent, ctx: WorkspaceCtx): WorkspaceEffec
       out.push({ type: 'chooserPage', value: false });
       out.push({ type: 'navigate', id: event.id });
       return out;
+    }
+
+    case 'focusTab': {
+      // A pop-out has no strip, so there is nothing here to move — and its
+      // window is never the one the user means.
+      if (ctx.popout) return [];
+      // Not the window the command ran in. This is the whole reason the server
+      // broadcasts instead of addressing: it cannot know which window shows
+      // `from`, so the filter happens here, where that state lives.
+      //
+      // "Shows" is the TILED tabs, not just the focused one: a split shows two,
+      // and the shell a command runs in may be the unfocused half. Comparing
+      // against `sessionId` alone would leave that window unmoved while some
+      // other window — the fallback's guess — moved instead.
+      if (event.from !== undefined && !displays(ctx, activePairing, event.from)) return [];
+      // The tab must exist. The list broadcast precedes this message, so a miss
+      // means it was closed in between — navigating would mount a pane on a dead
+      // id and respawn its terminal.
+      if (!ctx.tabs.some((t) => t.id === event.id)) return [];
+      // Showing a tab is one act however it is asked for, so this IS selection —
+      // a pairing member focuses its own slot, and the chooser page clears.
+      return decide({ type: 'selectTab', id: event.id }, ctx);
     }
 
     case 'sessionsBroadcast': {

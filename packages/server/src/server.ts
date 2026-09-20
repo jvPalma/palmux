@@ -97,6 +97,7 @@ import { listMdDir, readMdFile } from './markdown';
 import { deletePaths, listDir } from './files';
 import { readTextFile, writeTextFile } from './file-rw';
 import { themedManifest } from './manifest';
+import { registerCliRoutes } from './cli-api';
 import { registerConfigFileRoutes } from './config-file';
 import { registerPortsRoutes } from './ports';
 import { discoverFonts } from './fonts';
@@ -473,6 +474,10 @@ export function createSessionRegistry(
         ...(cfg.shell ? { shell: cfg.shell } : {}),
         ...(snap?.cwd ? { cwd: snap.cwd } : cfg.cwd ? { cwd: cfg.cwd } : {}),
         scrollbackBytes: cfg.scrollbackBytes,
+        // Which tab this shell lives in, so the `palmux` CLI can name its origin
+        // window (see FocusTabMessage). `id` is the registry id this PTY is being
+        // spawned FOR, so it cannot drift from the tab it names.
+        tabId: id,
         ...(restoreEnabled ? { hintDir: hints.dir() } : {}),
         ...(restore ? { restore } : {}),
       }),
@@ -1437,11 +1442,41 @@ export async function createServer(
     );
   }
 
-  attachWebSocket(app, authCfg, fonts.faces, cfg, registry, killTab);
+  const sockets = attachWebSocket(app, authCfg, fonts.faces, cfg, registry, killTab);
+  // Registered HERE rather than beside the other route registrations above: the
+  // CLI's open path has to reach the sockets to move a window, and those do not
+  // exist until this line.
+  registerCliRoutes(app, { registry, cfg, ...sockets });
   return app;
 }
 
 // ── WebSocket ↔ PTY bridge ──────────────────────────────────────────────────────
+
+/**
+ * What the socket layer hands back to the HTTP layer. The `palmux` CLI's routes
+ * need to reach INTO the sockets (a tab it creates must reach the browser), and
+ * the sockets are built after the routes, so the capability is passed across
+ * rather than decorated onto `app` — a return value keeps it typed without
+ * module augmentation.
+ */
+export interface SocketLayer {
+  /** Ask browser windows to show `id`; see the `focusTab` protocol message. */
+  focusTab: (id: string, from?: string) => void;
+  /** Open browser windows — how many there are to move. */
+  windowCount: () => number;
+}
+
+/**
+ * The per-socket facts `focusTab` needs, and nothing else. Every other part of
+ * this module treats the collection as a flat set of sockets.
+ */
+interface ConnectionMeta {
+  isControl: boolean;
+  /** A pop-out has no strip to move, so it never counts as a window. */
+  isPopout: boolean;
+  /** When this window last claimed to be in front; 0 = it never has. */
+  lastActiveAt: number;
+}
 
 function attachWebSocket(
   app: FastifyInstance,
@@ -1450,15 +1485,71 @@ function attachWebSocket(
   cfg: AppConfig,
   registry: SessionRegistry,
   killTab: (id: string) => void,
-): void {
+): SocketLayer {
   const wss = new WebSocketServer({ noServer: true });
-  const connections = new Set<WebSocket>();
+  const connections = new Map<WebSocket, ConnectionMeta>();
 
   // Persisted config changes in one browser propagate to every open socket.
   const broadcast = (msg: string, except?: WebSocket) => {
-    for (const ws of connections) {
+    for (const ws of connections.keys()) {
       if (ws !== except && ws.readyState === ws.OPEN) ws.send(msg);
     }
+  };
+
+  /**
+   * Ask a browser window to show `id`, after the tab exists in the strip.
+   *
+   * `from` is the tab the request originated in (the CLI's `$PALMUX_TAB_ID`).
+   * Which tab a window displays is browser-local state the server deliberately
+   * does not hold, so it CANNOT address the matching window — it broadcasts to
+   * every control socket and each client compares `from` against its own active
+   * tab. A window that is not showing it simply ignores the message.
+   *
+   * No `from` (the command ran outside palmux) names no window, so the most
+   * recently active one is chosen. `lastActiveAt` is fed by the `active` client
+   * message, which carries no tab id.
+   *
+   * When nothing matches, nothing navigates and the new tab simply appears in
+   * every strip. That is the safe failure: guessing a different window would
+   * move a view the user did not ask to move.
+   */
+  const focusTab = (id: string, from?: string) => {
+    const msg = encodeServerMessage({
+      type: 'focusTab',
+      id,
+      ...(from !== undefined ? { from } : {}),
+    });
+    const claiming = (): [WebSocket, ConnectionMeta][] =>
+      [...connections].filter(
+        ([ws, meta]) => meta.isControl && !meta.isPopout && ws.readyState === ws.OPEN,
+      );
+
+    if (from !== undefined) {
+      // Control sockets only. A pane's data socket has no strip, so it could
+      // never act on this — and a pop-out is excluded for the same reason.
+      for (const [ws] of claiming()) ws.send(msg);
+      return;
+    }
+    // A window is a candidate only once it has CLAIMED to be in front. Seeding
+    // this with the connect time instead would make "the last window to load"
+    // the target, which a background tab or a post-update reconnect wins by
+    // accident.
+    let newest: WebSocket | undefined;
+    let newestAt = 0;
+    for (const [ws, meta] of claiming()) {
+      if (meta.lastActiveAt > newestAt) {
+        newestAt = meta.lastActiveAt;
+        newest = ws;
+      }
+    }
+    // Nothing has claimed — a fresh page nobody has focused yet, or a client
+    // older than this feature. One window is still a better answer than none,
+    // because none is indistinguishable from "the command did nothing".
+    if (!newest) {
+      const windows = claiming();
+      if (windows.length === 1) newest = windows[0]?.[0];
+    }
+    newest?.send(msg);
   };
 
   // Let the self-update runner (owned by index.ts) tell every client that the
@@ -1469,7 +1560,7 @@ function attachWebSocket(
   // `State 'stop-sigterm' timed out. Killing.` 90s after SIGTERM, followed by a
   // SIGKILL of the whole cgroup — which is every shell the user had running.
   app.decorate('closeSockets', () => {
-    for (const ws of connections) {
+    for (const ws of connections.keys()) {
       try {
         ws.terminate();
       } catch {
@@ -1558,6 +1649,9 @@ function attachWebSocket(
     // mounted (a pane-only split, or a lone non-terminal tab). It gets the full
     // handshake + broadcasts and handles control messages, but never a PTY.
     const isControl = params.get('control') === '1';
+    // A pop-out is a window, but not one of the strip's: it shows a single tab
+    // with no chrome, so `focusTab` must never spend its one guess on it.
+    const isPopout = params.get('popout') === '1';
     const sid = params.get('session') ?? '0';
     const sessionId = isTabId(sid) ? sid : '0';
     // Stable per-pane identity (see PtySession.attach). Length-capped: it is
@@ -1582,7 +1676,7 @@ function attachWebSocket(
         ? (claimedKind as TabKind)
         : undefined;
     wss.handleUpgrade(req, socket, head, (ws) => {
-      connections.add(ws);
+      connections.set(ws, { isControl, isPopout, lastActiveAt: 0 });
       handleConnection(ws, sessionId, expectKind, isControl, clientKey, tmuxTarget, {
         broadcast,
         fonts,
@@ -1591,10 +1685,27 @@ function attachWebSocket(
         killTab,
         maxUploadBytes: cfg.maxUploadBytes,
         webApps: cfg.webApps,
+        touchActive: (sock) => {
+          const meta = connections.get(sock);
+          if (meta) meta.lastActiveAt = Date.now();
+        },
       });
       ws.on('close', () => connections.delete(ws));
     });
   });
+
+  return {
+    focusTab,
+    // Windows, not sockets: a pop-out cannot show a strip, so counting it would
+    // overstate what `palmux status` reports and what the fallback can target.
+    windowCount: () => {
+      let n = 0;
+      for (const [ws, meta] of connections) {
+        if (meta.isControl && !meta.isPopout && ws.readyState === ws.OPEN) n += 1;
+      }
+      return n;
+    },
+  };
 }
 
 interface ConnectionDeps {
@@ -1605,6 +1716,8 @@ interface ConnectionDeps {
   killTab: (id: string) => void;
   maxUploadBytes: number;
   webApps: WebAppLink[];
+  /** Record this window as the most recently focused one (`focusTab` fallback). */
+  touchActive: (ws: WebSocket) => void;
 }
 
 function handleConnection(
@@ -1714,6 +1827,12 @@ function handleConnection(
         // Liveness reply — lets the client detect a zombie socket (readyState
         // OPEN but dead) after a mobile background / network switch.
         ws.send(encodeServerMessage({ type: 'pong' }));
+        break;
+      case 'active':
+        // "This window is the one in front." The whole payload is the fact that
+        // it arrived; it deliberately names no tab, because which tab a window
+        // shows is browser-local state the server must not hold.
+        deps.touchActive(ws);
         break;
       case 'resize':
         // Clamp untrusted client dimensions, then contribute to the min size.

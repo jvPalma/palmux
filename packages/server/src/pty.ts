@@ -33,6 +33,11 @@ export interface PtyOptions {
    * named after the caller's own tty.
    */
   hintDir?: string;
+  /**
+   * The workspace tab this PTY belongs to, exported as `$PALMUX_TAB_ID` so the
+   * `palmux` CLI can report which tab a command originated in.
+   */
+  tabId?: string;
 }
 
 /**
@@ -69,14 +74,27 @@ const MULTIPLEXER_VARS = ['TMUX', 'TMUX_PANE', 'STY', 'WINDOW'] as const;
 /** The child shell's environment: inherited, minus multiplexer context, with TERM forced. */
 export function buildShellEnv(
   base: NodeJS.ProcessEnv = process.env,
-  hintDir?: string,
+  opts: { hintDir?: string; tabId?: string } = {},
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base };
   for (const key of MULTIPLEXER_VARS) delete env[key];
   env['TERM'] = 'xterm-256color';
   env['COLORTERM'] = 'truecolor';
   env['TERM_PROGRAM'] = 'palmux';
-  if (hintDir) env['PALMUX_RESTORE_HINT_DIR'] = hintDir;
+  if (opts.hintDir) env['PALMUX_RESTORE_HINT_DIR'] = opts.hintDir;
+  // Which TAB this shell lives in. The `palmux` CLI reads it and reports it as
+  // the request's origin, so the browser window showing that tab is the one that
+  // navigates (see FocusTabMessage). Free to provide: the spawn path holds the
+  // registry id already, and a terminal's PTY is only ever spawned by an attach
+  // to /ws?session=<id>, so the id cannot drift from the tab it names.
+  //
+  // Deleted before the set rather than merely overwritten. This env is INHERITED,
+  // and a `tmux` server started from a palmux shell keeps a copy — every pane of
+  // every future attach then hands that id on, from any tab on any host. A stale
+  // id is worse than none: the CLI reads it as "the window I ran from" and moves
+  // a window that has nothing to do with the command.
+  delete env['PALMUX_TAB_ID'];
+  if (opts.tabId) env['PALMUX_TAB_ID'] = opts.tabId;
   return env;
 }
 
@@ -158,7 +176,10 @@ export class PtySession {
         cols: this.cols,
         rows: this.rows,
         cwd: opts.cwd || homedir(),
-        env: buildShellEnv(process.env, opts.hintDir),
+        env: buildShellEnv(process.env, {
+          ...(opts.hintDir !== undefined ? { hintDir: opts.hintDir } : {}),
+          ...(opts.tabId !== undefined ? { tabId: opts.tabId } : {}),
+        }),
       });
       // Cold-start restore. The ring goes in FIRST so it sits below everything
       // the new shell prints, exactly like scrollback from before the restart.

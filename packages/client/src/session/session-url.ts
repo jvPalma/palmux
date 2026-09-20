@@ -98,10 +98,15 @@ export function wsUrlFor(
 }
 
 /** The control WebSocket URL — a tab-unbound attach carrying the app's tab-list,
- *  settings, fonts and control channel (no PTY). */
-export function wsControlUrl(): string {
+ *  settings, fonts and control channel (no PTY).
+ *
+ *  `popout` is declared rather than inferred because the server cannot tell a
+ *  chrome-less window from a normal one, and it must: a `palmux` command with no
+ *  origin asks the SERVER to pick a window, and a pop-out has no strip to move,
+ *  so spending that one guess on one would silently do nothing. */
+export function wsControlUrl(popout: boolean): string {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  return `${proto}://${location.host}/ws?control=1`;
+  return `${proto}://${location.host}/ws?control=1${popout ? '&popout=1' : ''}`;
 }
 
 /**

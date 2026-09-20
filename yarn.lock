@@ -1381,6 +1381,18 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@palmux/cli@workspace:packages/cli":
+  version: 0.0.0-use.local
+  resolution: "@palmux/cli@workspace:packages/cli"
+  dependencies:
+    "@palmux/shared": "workspace:*"
+    "@types/node": "npm:^22.10.5"
+    tsx: "npm:^4.19.2"
+    typescript: "npm:^5.6.3"
+    vitest: "npm:^2.1.8"
+  languageName: unknown
+  linkType: soft
+
 "@palmux/client@workspace:packages/client":
   version: 0.0.0-use.local
   resolution: "@palmux/client@workspace:packages/client"

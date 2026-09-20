@@ -5,10 +5,11 @@
 // target — no yarn, no build step, no toolchain:
 //
 //   bin/palmux.mjs            single ESM server bundle (fastify/ws/fontkit/… inlined)
+//   bin/palmux-cli.mjs        the client-side `palmux` command (node builtins only)
 //   bin/build/Release/pty.node  the node-pty native addon (dynamically required at boot;
 //                               node-pty checks ./build/Release when bundled)
 //   bin/client/               the built web client (served via PALMUX_CLIENT_DIR)
-//   bin/palmux                launcher: sets PALMUX_CLIENT_DIR and runs the bundle
+//   bin/palmux                launcher: picks a bundle from argv, sets PALMUX_CLIENT_DIR
 //
 // Run it on a build machine of the SAME os/arch as the target (the .node is
 // native). Commit bin/ to master:  git add -f bin  (bin/build is under a
@@ -67,19 +68,45 @@ await build({
   logLevel: 'info',
 });
 
-// 3. Vendor the native addon where node-pty looks for it when bundled.
+// 3. Bundle the CLI. Its own entry, because the two programs share no code and
+//    the CLI's whole value is that it starts in milliseconds — bundling it INTO
+//    the server bundle would make every `palmux ~/.tmux.conf` load Fastify,
+//    node-pty and the registry to send one HTTP request and exit.
+log('bundling cli (esbuild)…');
+await build({
+  entryPoints: [join(repo, 'packages', 'cli', 'src', 'index.ts')],
+  bundle: true,
+  platform: 'node',
+  target: 'node22',
+  format: 'esm',
+  outfile: join(bin, 'palmux-cli.mjs'),
+  logLevel: 'info',
+});
+
+// 4. Vendor the native addon where node-pty looks for it when bundled.
 log('vendoring node-pty native addon…');
 mkdirSync(join(bin, 'build', 'Release'), { recursive: true });
 cpSync(nativeSrc, join(bin, 'build', 'Release', 'pty.node'));
 
-// 4. Launcher.
+// 5. Launcher.
+//
+// The dispatch is TWO cases, and deliberately not a third that checks whether
+// the argument exists on disk. Anything that is not `serve` and not a flag is a
+// PATH: `palmux tabs` means the subcommand and a file literally named `tabs`
+// needs `palmux open ./tabs`, but `palmux nonesuch` still says "no such file"
+// rather than silently starting a server — the CLI resolves the path and the
+// server stats it, so an on-disk test here would only duplicate that.
 const launcher = `#!/usr/bin/env sh
 # palmux self-contained runtime. Only needs Node >= 22 on PATH.
 # Honors PALMUX_PORT / PALMUX_HOST / PALMUX_NO_AUTH / PALMUX_CONFIG_DIR (see README).
 set -eu
 DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 export PALMUX_CLIENT_DIR="\${PALMUX_CLIENT_DIR:-$DIR/client}"
-exec "\${PALMUX_NODE:-node}" "$DIR/palmux.mjs" "$@"
+case "\${1:-}" in
+  ''|-*)  exec "\${PALMUX_NODE:-node}" "$DIR/palmux.mjs" "$@" ;;
+  serve)  shift; exec "\${PALMUX_NODE:-node}" "$DIR/palmux.mjs" "$@" ;;
+  *)      exec "\${PALMUX_NODE:-node}" "$DIR/palmux-cli.mjs" "$@" ;;
+esac
 `;
 writeFileSync(join(bin, 'palmux'), launcher);
 chmodSync(join(bin, 'palmux'), 0o755);

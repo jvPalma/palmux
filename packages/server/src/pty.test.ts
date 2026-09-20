@@ -36,6 +36,20 @@ describe('buildShellEnv', () => {
     buildShellEnv(base);
     expect(base.TMUX).toBe('x');
   });
+
+  // The `palmux` CLI reads this to name the window a command came from, so a
+  // wrong value moves a window the user is not looking at.
+  it('reports the tab this shell lives in', () => {
+    expect(buildShellEnv({}, { tabId: '3' })['PALMUX_TAB_ID']).toBe('3');
+  });
+
+  // The env is inherited, and a tmux server started from a palmux shell keeps a
+  // copy for every pane of every future attach — so an inherited id can name a
+  // tab from another session entirely. No id is better than a wrong one.
+  it('drops an inherited PALMUX_TAB_ID when this spawn names no tab', () => {
+    expect(buildShellEnv({ PALMUX_TAB_ID: '0' })['PALMUX_TAB_ID']).toBeUndefined();
+    expect(buildShellEnv({ PALMUX_TAB_ID: '0' }, { tabId: '7' })['PALMUX_TAB_ID']).toBe('7');
+  });
 });
 
 describe('PtySession', () => {

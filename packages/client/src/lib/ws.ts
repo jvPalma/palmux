@@ -228,6 +228,15 @@ export class WsClient {
   sendImportTheme(source: string): boolean {
     return this.sendMessage({ type: 'importTheme', source });
   }
+  /**
+   * "This window is the one in front." Carries no tab id on purpose — which tab
+   * a window shows is browser-local state the server never holds. It only marks
+   * this window as the target for a `focusTab` that named no origin (a `palmux`
+   * command run outside palmux).
+   */
+  sendActive(): boolean {
+    return this.sendMessage({ type: 'active' });
+  }
   sendCreateTab(spec: { kind: TabKind; url?: string; name?: string; color?: string }): boolean {
     return this.sendMessage({ type: 'createTab', ...spec });
   }

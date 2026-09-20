@@ -17,6 +17,7 @@
     "dev:server": "yarn workspace @palmux/server dev",
     "dev:client": "yarn workspace @palmux/client dev",
     "start": "yarn workspace @palmux/server start",
+    "palmux": "node --import tsx packages/cli/src/index.ts",
     "bundle": "node scripts/bundle.mjs",
     "test": "yarn workspaces foreach -A --exclude palmux run test",
     "typecheck": "yarn workspaces foreach -A --exclude palmux run typecheck",

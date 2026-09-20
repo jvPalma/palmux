@@ -305,6 +305,52 @@ describe('tabCreated', () => {
   });
 });
 
+describe('focusTab (a `palmux` command asking for a tab)', () => {
+  it('with no origin, the tab is selected — selection is one act however asked', () => {
+    expect(run({ type: 'focusTab', id: '2' })).toEqual([
+      { type: 'chooserPage', value: false },
+      { type: 'navigate', id: '2' },
+    ]);
+  });
+
+  it('an origin naming the FOCUSED tab moves this window', () => {
+    expect(run({ type: 'focusTab', id: '2', from: '0' })).toEqual([
+      { type: 'chooserPage', value: false },
+      { type: 'navigate', id: '2' },
+    ]);
+  });
+
+  it('an origin naming the UNFOCUSED half of the split moves it too', () => {
+    // The shell the command ran in is on screen either way — a window tiling
+    // 0 and 1 is the window showing tab 1, whatever the focused slot is.
+    const out = run(
+      { type: 'focusTab', id: '2', from: '0' },
+      { sessionId: '1', pairings: [split('0', '1')] },
+    );
+    expect(out).toEqual([
+      { type: 'chooserPage', value: false },
+      { type: 'navigate', id: '2' },
+    ]);
+  });
+
+  it('an origin this window does not show is ignored', () => {
+    // Another window ran the command. This is the whole reason the server
+    // broadcasts instead of addressing: it cannot know who shows `from`.
+    expect(run({ type: 'focusTab', id: '2', from: '1' }, { sessionId: '0' })).toEqual([]);
+  });
+
+  it('a pop-out never acts, whatever the origin', () => {
+    expect(run({ type: 'focusTab', id: '2' }, { popout: true })).toEqual([]);
+    expect(run({ type: 'focusTab', id: '2', from: '0' }, { popout: true })).toEqual([]);
+  });
+
+  it('a target the list does not contain is ignored', () => {
+    // The broadcast precedes this message, so a miss means the tab was closed
+    // in between — navigating would mount a pane on a dead id and respawn it.
+    expect(run({ type: 'focusTab', id: '9' })).toEqual([]);
+  });
+});
+
 describe('sessionsBroadcast (close-navigation)', () => {
   it('the active tab closed → navigate to its LEFT neighbor', () => {
     // old tabs [0,1,2], active 1 closed → left neighbor 0

@@ -975,8 +975,29 @@ export function App() {
   // The always-on control socket: tab list, settings, fonts, control acks. It
   // owns app state; TerminalPane sockets ignore these broadcasts.
   useEffect(() => {
-    const ws = new WsClient(wsControlUrl());
+    const ws = new WsClient(wsControlUrl(popout));
     wsControlRef.current = ws;
+    // Which window is in FRONT. This is the fallback target for a `palmux`
+    // command run outside palmux (SSH, a desktop terminal), which names no origin
+    // tab. It carries NO tab id — which tab this window shows stays browser-local
+    // — so it answers only "who is in front", never "what are you looking at". A
+    // pop-out never claims it: it has no strip, so being chosen would swallow the
+    // request rather than act on it.
+    const claimActive = () => ws.sendActive();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') claimActive();
+    };
+    if (!popout) {
+      // On OPEN the claim is gated on focus, because every socket reconnects at
+      // once after a server self-update — ungated, "the window that was last to
+      // reconnect" becomes the fallback target for a `palmux` command run from
+      // outside palmux, which is a background window more often than not.
+      ws.onOpen(() => {
+        if (document.hasFocus()) claimActive();
+      });
+      window.addEventListener('focus', claimActive);
+      document.addEventListener('visibilitychange', onVisibilityChange);
+    }
     ws.onMessage((msg) => {
       if (msg.type === 'ready') {
         setMaxUploadBytes(msg.maxUploadBytes);
@@ -998,6 +1019,10 @@ export function App() {
         }
       } else if (msg.type === 'tabCreated') {
         dispatch({ type: 'tabCreated', id: msg.id });
+      } else if (msg.type === 'focusTab') {
+        // A `palmux` command asked for a tab. The controller decides whether
+        // THIS window is the one it meant.
+        dispatch({ type: 'focusTab', id: msg.id, from: msg.from });
       } else if (msg.type === 'sessions') {
         // Accumulate seen-terminals + prune BEFORE deciding close-nav (the
         // controller reads seenTermIds); `setTabs` is async so `tabsRef.current`
@@ -1034,6 +1059,12 @@ export function App() {
           // On-screen splits reconcile in their own effect.
           dispatch({ type: 'sessionsBroadcast', tabs: msg.tabs });
         }
+        // AFTER the close-nav dispatch, which needs the list as it was, and
+        // before anything that could arrive in this same task. `setTabs` only
+        // schedules a render, so without this the next message reads a stale
+        // list — and `POST /cli` sends `sessions` then `focusTab` back to back,
+        // so the tab it just created looks unknown and nothing navigates.
+        tabsRef.current = msg.tabs;
         setTabs(msg.tabs);
       } else if (msg.type === 'settings') applySettings(msg.settings);
       else if (msg.type === 'extraKeys') applyExtraKeys(msg.extraKeys);
@@ -1072,6 +1103,8 @@ export function App() {
     });
     ws.connect();
     return () => {
+      window.removeEventListener('focus', claimActive);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
       if (wsControlRef.current === ws) wsControlRef.current = null;
       ws.destroy();
     };
@@ -1084,6 +1117,7 @@ export function App() {
     dispatch,
     showToast,
     boot.kind,
+    popout,
   ]);
 
   // The chooser is never a floating box: it opens in whichever CONTAINER this
