@@ -185,6 +185,9 @@ fonts/
 # Credentials that tools sometimes park here.
 *-key.json
 *credentials*.json
+
+# API keys loaded into the palmux process at boot (see ensureEnvFile).
+env
 `;
 
 /**
@@ -209,6 +212,45 @@ export function ensureExtraKeysFile(): void {
   if (existsSync(path)) return;
   ensureConfigDir();
   writeFileSync(path, JSON.stringify(DEFAULT_EXTRA_KEYS_FILE, null, 2) + '\n', { mode: 0o644 });
+}
+
+/**
+ * The .gitignore is written once and never overwritten, so an install from
+ * before a line was added never gains it — which would quietly put the env
+ * file (API keys) into a dotfiles repo. Append the one line it must have.
+ */
+export function ensureGitignoreLine(line: string): void {
+  const path = join(configDir(), '.gitignore');
+  try {
+    const existing = existsSync(path) ? readFileSync(path, 'utf8') : '';
+    if (existing.split('\n').some((l) => l.trim() === line)) return;
+    writeFileSync(path, `${existing.replace(/\n*$/, '\n')}\n${line}\n`);
+  } catch {
+    /* unwritable config dir — the user's dotfiles repo is their business */
+  }
+}
+
+const ENV_FILE_STARTER = `# palmux loads this file into the process at every boot, so variables here
+# reach any run mode (tsx, the bundle, the systemd unit). One KEY=VALUE per
+# line; # comments and blank lines are ignored. Then reference them from
+# config.json with a $ prefix:
+#
+#   "dictation": { "apiKey": "$OPEN_ROUTER_API_KEY", ... }
+#
+# OPEN_ROUTER_API_KEY=sk-or-v1-…
+# GEMINI_API_KEY=AIza…
+`;
+
+/** Write a starter env file (commented template) if the user has none. */
+export function ensureEnvFile(): void {
+  const path = join(configDir(), 'env');
+  if (existsSync(path)) return;
+  try {
+    ensureConfigDir();
+    writeFileSync(path, ENV_FILE_STARTER, { mode: 0o600 });
+  } catch {
+    /* unwritable config dir — keys can still come from the process environment */
+  }
 }
 
 /**

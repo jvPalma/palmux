@@ -63,7 +63,8 @@ describe('renderMarkdown — task lists', () => {
   it('keeps the disabled checkbox and wraps the whole item text in ONE block', async () => {
     const li = taskItem(await renderMarkdown('- [ ] **bold** and plain text', PATH));
     expect(li?.children).toHaveLength(2);
-    const [input, text] = [...(li?.children ?? [])];
+    // Exactly two children — asserted above — so the tuple cast is honest.
+    const [input, text] = [...(li?.children ?? [])] as [Element, Element];
     expect(input.tagName).toBe('INPUT');
     expect(input.getAttribute('type')).toBe('checkbox');
     expect(input.getAttribute('disabled')).toBe('');

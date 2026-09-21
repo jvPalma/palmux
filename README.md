@@ -33,7 +33,7 @@ It is coupled to no cloud and no host: anywhere Node 22 and a shell run, palmux 
     <td width="50%" valign="top">
       <img src="docs/screenshots/dictation.png" alt="Dictation panel with a record button and a history of transcriptions" width="62%">
       <p><b>Voice dictation into the shell.</b><br>
-      <sub>Speak, and the cleaned-up text is typed at the prompt. Transcription uses Gemini today, with separate models for the audio and the clean-up pass. Every clip is kept, so a failed transcription can be retried.</sub></p>
+      <sub>Speak, and the cleaned-up text is typed at the prompt. Bring your own provider — Gemini, any OpenAI-compatible API such as OpenRouter, or Anthropic for the clean-up — with separate models for the audio and the clean-up pass. Every clip is kept, so a failed transcription can be retried.</sub></p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/screenshots/settings-and-editor.png" alt="Settings panel beside a code editor" width="100%">
@@ -120,7 +120,7 @@ resolved result with `yarn start --print-config`.
   "idleTimeoutMs": 0,
   "webApps": [],
   "markdownRoots": [],
-  "dictation": { "apiKey": "", "model-audio": "gemini-3.5-flash", "model-text": "gemini-3.7-flash" }
+  "dictation": { "apiKey": "", "provider": "gemini", "model-audio": "gemini-3.5-flash", "model-text": "gemini-3.7-flash" }
 }
 ```
 
@@ -141,10 +141,136 @@ resolved result with `yarn start --print-config`.
 | `maxDownloadBytes`| cap on `GET /download` (default 1 GB, streamed). Accepts bytes or `"<n><KB\|MB\|GB>"`. **0 means no limit**                                                                                             |
 | `idleTimeoutMs`   | evict a session with no attached client after this long. `0` (default) never evicts                                                                                                                    |
 | `selfUpdate`      | opt-in self-update (`enabled: false` by default, and inert with no `repo`). Off means the server never reaches the network on its own                                                                    |
-| `dictation`       | voice dictation, **inert until `apiKey` is set** (Gemini). `model-audio` transcribes, `model-text` cleans up — they are separate because a model can serve text while rejecting audio                    |
+| `dictation`       | voice dictation, **inert until `apiKey` is set**. `provider` picks the API (`gemini` default · `openai` for any OpenAI-compatible endpoint incl. OpenRouter · `anthropic` text-only), `provider-audio`/`provider-text` override per pass, `base-url` points `openai` at another host. `model-audio` transcribes, `model-text` cleans up — separate because a model can serve text while rejecting audio |
+| `env`             | not a config field — a **file**: `~/.config/palmux/env` (created on first run, gitignored). `KEY=VALUE` per line, loaded into the process at boot in every run mode (systemd included). Reference a key from `config.json` as `"apiKey": "$OPEN_ROUTER_API_KEY"` — the value never lands in the file |
 
 Invalid entries are reported and ignored at boot — a typo can't brick the server. Restart the
 service after editing (`yarn service:update` or `systemctl --user restart palmux`).
+
+#### Examples
+
+Each example is a fragment: merge it into your `config.json`, and every field you leave out keeps
+its default. The file is plain JSON, so it cannot hold comments — the notes sit above each block.
+
+<details>
+<summary><b>Only reachable from my own network</b></summary>
+
+Accept connections from this machine and the home LAN, and refuse everything else — `/auth`
+included, so a stranger cannot even see the token form.
+
+```json
+{
+  "allowedIps": ["127.0.0.1", "::1", "192.168.0.0/16"]
+}
+```
+
+</details>
+
+<details>
+<summary><b>Behind a reverse proxy on a public domain</b></summary>
+
+Bind to loopback so only the proxy can reach palmux, and allow the public origin for the WebSocket
+upgrade. Without `allowedOrigins`, the upgrade only accepts the same origin, and a proxy that
+rewrites `Host` breaks every terminal.
+
+```json
+{
+  "host": "127.0.0.1",
+  "port": 44040,
+  "allowedOrigins": ["https://term.example.com"]
+}
+```
+
+</details>
+
+<details>
+<summary><b>Dictation with Gemini</b></summary>
+
+Put the key in `~/.config/palmux/env`, not in `config.json`. palmux loads that file at every boot,
+under systemd too, and the `$` prefix tells it to read the value from there:
+
+```sh
+# ~/.config/palmux/env
+GEMINI_API_KEY=AIza...
+```
+
+```json
+{
+  "dictation": {
+    "apiKey": "$GEMINI_API_KEY",
+    "provider": "gemini",
+    "model-audio": "gemini-3.5-flash",
+    "model-text": "gemini-3.7-flash"
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><b>Dictation through OpenRouter</b></summary>
+
+The `openai` provider speaks to any OpenAI-compatible endpoint; `base-url` points it at
+OpenRouter. Speech-to-text models such as `qwen/qwen3-asr-0.6b` are detected and sent to
+`/audio/transcriptions` automatically. The text pass can be any OpenRouter chat model — this is
+also how you use a vendor palmux has no provider for.
+
+```sh
+# ~/.config/palmux/env
+OPEN_ROUTER_API_KEY=sk-or-v1-...
+```
+
+```json
+{
+  "dictation": {
+    "apiKey": "$OPEN_ROUTER_API_KEY",
+    "provider": "openai",
+    "base-url": "https://openrouter.ai/api/v1",
+    "model-audio": "qwen/qwen3-asr-0.6b",
+    "model-text": "google/gemini-2.5-flash"
+  }
+}
+```
+
+Use the global endpoint for speech-to-text: `eu.openrouter.ai` answers `No endpoints found
+supporting your data region` for these models. Both passes share one `apiKey`, so mixing vendors
+means going through one gateway like this rather than setting `provider-audio` and
+`provider-text` to two different vendors.
+
+</details>
+
+<details>
+<summary><b>Web apps and markdown roots on the new-tab page</b></summary>
+
+`webApps` adds one-click entries to the new-tab chooser. `markdownRoots` lets the markdown viewer
+browse those folders; opening a file by absolute path works without it.
+
+```json
+{
+  "webApps": [
+    { "name": "SilverBullet", "url": "https://sb.local", "icon": "📓" },
+    { "name": "Grafana", "url": "https://grafana.local" }
+  ],
+  "markdownRoots": ["~/notes", "~/projects"]
+}
+```
+
+</details>
+
+<details>
+<summary><b>Large file transfers</b></summary>
+
+Both limits take bytes or `"<n><KB|MB|GB>"`, and `0` removes the limit. An upload is held in
+memory on its way to disk, so a 2 GB cap means one request can use 2 GB of RAM.
+
+```json
+{
+  "maxUploadBytes": "2GB",
+  "maxDownloadBytes": 0
+}
+```
+
+</details>
 
 ## Running it for real: two modes
 

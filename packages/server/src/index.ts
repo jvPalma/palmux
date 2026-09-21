@@ -3,7 +3,7 @@
 // Thin CLI over app-config.ts. Precedence: CLI > PALMUX_* env > config.json >
 // defaults; `--print-config` shows the fully resolved result.
 
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createServer, createSessionRegistry } from './server';
 import { createUpdater } from './self-update';
 import { createUpdateDeps } from './self-update-runtime';
@@ -20,9 +20,12 @@ import {
   rotateSecret,
   configDir,
   ensureConfigGitignore,
+  ensureEnvFile,
   ensureExtraKeysFile,
+  ensureGitignoreLine,
   ensureSettingsSplit,
 } from './config';
+import { loadEnvFile } from './env-file';
 import { type AppConfig, appConfigPath, ensureAppConfigFile, resolveAppConfig } from './app-config';
 
 interface CliArgs {
@@ -123,6 +126,9 @@ async function main(): Promise<void> {
   }
 
   ensureAppConfigFile();
+  // The env file feeds the process BEFORE the config resolves, so a
+  // `"$NAME"` apiKey indirection works in every run mode (see env-file.ts).
+  loadEnvFile(join(configDir(), 'env'));
   const cfg = resolveAppConfig(args.overrides);
 
   if (args.printConfig) {
@@ -134,6 +140,8 @@ async function main(): Promise<void> {
   const secret = loadOrCreateSecret();
   ensureExtraKeysFile(); // write a starter ~/.config/palmux/extra-keys.json if absent
   ensureConfigGitignore(); // keep per-machine state out of a dotfiles repo
+  ensureGitignoreLine('env'); // installs from before the env file must gain this line
+  ensureEnvFile(); // write a starter ~/.config/palmux/env (commented) if absent
   ensureSettingsSplit(); // lift a legacy themeId out of the synced settings.json
 
   // Live handoff: adopt any PTYs the previous process handed over, so their

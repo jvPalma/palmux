@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DEFAULT_MAX_DOWNLOAD_BYTES, DEFAULT_MAX_UPLOAD_BYTES } from '@palmux/shared';
@@ -57,8 +57,65 @@ describe('config.json dictation models', () => {
     });
     expect(cfg.dictation).toEqual({
       apiKey: 'k',
+      provider: 'gemini',
+      providerAudio: 'gemini',
+      providerText: 'gemini',
+      baseUrl: '',
       modelAudio: 'gemini-3.5-flash',
       modelText: 'gemini-3.7-flash',
+    });
+  });
+
+  it('reads provider, per-pass providers and base-url', async () => {
+    const cfg = await resolveWith('providers', {
+      dictation: {
+        apiKey: 'k',
+        provider: 'openai',
+        'provider-text': 'anthropic',
+        'base-url': 'https://openrouter.ai/api/v1',
+      },
+    });
+    expect(cfg.dictation).toMatchObject({
+      provider: 'openai',
+      providerAudio: 'openai',
+      providerText: 'anthropic',
+      baseUrl: 'https://openrouter.ai/api/v1',
+    });
+  });
+
+  it('an unknown provider keeps the default', async () => {
+    const cfg = await resolveWith('bad-provider', { dictation: { apiKey: 'k', provider: 'wat' } });
+    expect(cfg.dictation.providerAudio).toBe('gemini');
+    expect(cfg.dictation.providerText).toBe('gemini');
+  });
+
+  it('reads the camelCase model keys an older starter file wrote; kebab wins', async () => {
+    const cfg = await resolveWith('camel', {
+      dictation: { apiKey: 'k', modelAudio: 'camel-audio', modelText: 'camel-text', 'model-text': 'kebab-text' },
+    });
+    expect(cfg.dictation.modelAudio).toBe('camel-audio');
+    expect(cfg.dictation.modelText).toBe('kebab-text');
+  });
+
+  it('the first-run starter file is editable: changing provider moves BOTH passes', async () => {
+    const dir = join(tmpdir(), `palmux-appcfg-starter-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(dir, { recursive: true });
+    created.push(dir);
+    process.env['PALMUX_CONFIG_DIR'] = dir;
+    vi.resetModules();
+    const mod = await import('./app-config');
+    mod.ensureAppConfigFile();
+    const file = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'));
+    // Only the documented kebab keys — no per-pass provider pinning both passes.
+    expect(Object.keys(file.dictation).sort()).toEqual(['apiKey', 'model-audio', 'model-text', 'provider']);
+    file.dictation.provider = 'openai';
+    file.dictation['model-audio'] = 'qwen/qwen3-asr-0.6b';
+    writeFileSync(join(dir, 'config.json'), JSON.stringify(file));
+    const cfg = mod.resolveAppConfig();
+    expect(cfg.dictation).toMatchObject({
+      providerAudio: 'openai',
+      providerText: 'openai',
+      modelAudio: 'qwen/qwen3-asr-0.6b',
     });
   });
 

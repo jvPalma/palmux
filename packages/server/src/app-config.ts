@@ -85,9 +85,16 @@ export interface AppConfig {
 // fine. Text stays on the newest.
 export const DEFAULT_DICTATION: DictationConfig = {
   apiKey: '',
+  provider: 'gemini',
+  providerAudio: 'gemini',
+  providerText: 'gemini',
+  baseUrl: '',
   modelAudio: 'gemini-3.5-flash',
   modelText: 'gemini-3.7-flash',
 };
+
+/** The provider names `dictation.provider` accepts; anything else keeps the default. */
+export const DICTATION_PROVIDERS = ['gemini', 'openai', 'anthropic'] as const;
 
 /** Self-update is OFF by design: it swaps the running bundle, so it stays
  *  something the operator turns on deliberately and points at a key they trust. */
@@ -141,12 +148,27 @@ export function appConfigPath(): string {
   return join(configDir(), 'config.json');
 }
 
+/**
+ * The dictation block as the starter FILE spells it: the documented kebab keys
+ * the parser reads, and only the base ones. Serialising DEFAULT_DICTATION
+ * directly wrote camelCase names the parser ignores, so editing the fresh file
+ * did nothing — and writing the per-pass providers would pin both passes to
+ * gemini, making a later change to `provider` look broken.
+ */
+const STARTER_DICTATION = {
+  apiKey: DEFAULT_DICTATION.apiKey,
+  provider: DEFAULT_DICTATION.provider,
+  'model-audio': DEFAULT_DICTATION.modelAudio,
+  'model-text': DEFAULT_DICTATION.modelText,
+};
+
 /** Write a starter config.json (the defaults, pretty-printed) if none exists. */
 export function ensureAppConfigFile(): void {
   const path = appConfigPath();
   if (existsSync(path)) return;
   try {
-    writeFileSync(path, `${JSON.stringify(DEFAULT_APP_CONFIG, null, 2)}\n`, { mode: 0o600 });
+    const starter = { ...DEFAULT_APP_CONFIG, dictation: STARTER_DICTATION };
+    writeFileSync(path, `${JSON.stringify(starter, null, 2)}\n`, { mode: 0o600 });
   } catch {
     /* unwritable config dir — env/CLI/defaults still apply */
   }
@@ -253,10 +275,31 @@ function readConfigFile(): Partial<AppConfig> {
       next.modelAudio = legacy;
       next.modelText = legacy;
     }
-    const audio = str('model-audio');
-    const text = str('model-text');
+    // The camelCase spellings are what the first-run starter wrote until the
+    // starter moved to the documented kebab keys — a file created back then
+    // must not have its edits silently ignored. Kebab wins when both exist.
+    const audio = str('model-audio') ?? str('modelAudio');
+    const text = str('model-text') ?? str('modelText');
     if (audio) next.modelAudio = audio;
     if (text) next.modelText = text;
+    const provider = str('provider');
+    if (provider && DICTATION_PROVIDERS.includes(provider as DictationConfig['provider'])) {
+      // A single `provider` sets BOTH passes; the per-pass keys override it,
+      // mirroring the legacy `model` → `model-audio`/`model-text` precedence.
+      next.provider = provider as DictationConfig['provider'];
+      next.providerAudio = provider as DictationConfig['provider'];
+      next.providerText = provider as DictationConfig['provider'];
+    }
+    const audioProvider = str('provider-audio');
+    const textProvider = str('provider-text');
+    if (audioProvider && DICTATION_PROVIDERS.includes(audioProvider as DictationConfig['provider'])) {
+      next.providerAudio = audioProvider as DictationConfig['provider'];
+    }
+    if (textProvider && DICTATION_PROVIDERS.includes(textProvider as DictationConfig['provider'])) {
+      next.providerText = textProvider as DictationConfig['provider'];
+    }
+    const baseUrl = str('base-url');
+    if (baseUrl) next.baseUrl = baseUrl;
     out.dictation = next;
   }
   if (Array.isArray(raw['webApps'])) {
@@ -329,6 +372,22 @@ function readEnvDictation(): Partial<DictationConfig> {
   }
   if (audio) out.modelAudio = audio;
   if (text) out.modelText = text;
+  const provider = process.env['PALMUX_DICTATION_PROVIDER']?.trim();
+  if (provider && DICTATION_PROVIDERS.includes(provider as DictationConfig['provider'])) {
+    out.provider = provider as DictationConfig['provider'];
+    out.providerAudio = provider as DictationConfig['provider'];
+    out.providerText = provider as DictationConfig['provider'];
+  }
+  const audioProvider = process.env['PALMUX_DICTATION_PROVIDER_AUDIO']?.trim();
+  const textProvider = process.env['PALMUX_DICTATION_PROVIDER_TEXT']?.trim();
+  if (audioProvider && DICTATION_PROVIDERS.includes(audioProvider as DictationConfig['provider'])) {
+    out.providerAudio = audioProvider as DictationConfig['provider'];
+  }
+  if (textProvider && DICTATION_PROVIDERS.includes(textProvider as DictationConfig['provider'])) {
+    out.providerText = textProvider as DictationConfig['provider'];
+  }
+  const baseUrl = process.env['PALMUX_DICTATION_BASE_URL']?.trim();
+  if (baseUrl) out.baseUrl = baseUrl;
   return out;
 }
 
