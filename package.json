@@ -1,6 +1,6 @@
 {
   "name": "palmux",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Self-hostable GPU-accelerated web terminal, built to make driving tmux from a phone feel like Termux.",
   "repository": {
     "type": "git",

@@ -3,6 +3,8 @@
 A self-hostable, GPU-accelerated web terminal. Open a browser tab, get a real shell on
 the host running the server. No multiplexer required — and when you do run `tmux`, the mobile layer is built to make it genuinely usable.
 
+<img src="docs/screenshots/hero.png" alt="palmux — your terminal, in a browser tab" width="100%">
+
 ## What it is
 
 - **Client** — a React app hosting [`@xterm/xterm`](https://github.com/xtermjs/xterm.js) 6 directly,
