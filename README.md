@@ -22,7 +22,7 @@ It is coupled to no cloud and no host: anywhere Node 22 and a shell run, palmux 
 <table>
   <tr>
     <td colspan="2">
-      <img src="docs/screenshots/terminal-tabs-split.png" alt="Two terminals side by side in a split, inside a colour-coded tab group" width="100%">
+      <img src="docs/screenshots/terminal-tabs-split.png" alt="Two terminals side by side in a split, fused into one tab" width="100%">
       <p><b>A real terminal, with tabs that behave like a browser's.</b><br>
       <sub>GPU-rendered xterm.js over a persistent PTY. Name and colour tabs, gather them into collapsible groups, drag to reorder, and split two side by side — the pair fuses into one tab.</sub></p>
     </td>
@@ -47,7 +47,7 @@ It is coupled to no cloud and no host: anywhere Node 22 and a shell run, palmux 
       <sub>A Termux-style extra-keys bar with sticky CTRL/ALT/SHIFT, native text selection, pinch-to-zoom and swipe-to-scroll into tmux. Swipe the bar to open the drawer with every tab, group and panel.</sub></p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/new-tab-types.png" alt="New tab chooser listing terminal, editor, URL, markdown, tmux sessions and listening ports" width="100%">
+      <img src="docs/screenshots/new-tab-types.png" alt="New tab chooser listing terminal, editor, URL, markdown and tmux sessions" width="100%">
       <p><b>More than terminals in a tab.</b><br>
       <sub>Open a shell, attach straight into an existing tmux session, start a scratch editor, frame a URL or a dev server running on the host, keep bookmarks, and see which ports are listening.</sub></p>
     </td>

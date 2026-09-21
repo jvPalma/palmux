@@ -53,6 +53,33 @@ describe('renderMarkdown — hostile input is inert', () => {
   });
 });
 
+describe('renderMarkdown — task lists', () => {
+  const taskItem = (html: string): Element | null => {
+    const tpl = document.createElement('template');
+    tpl.innerHTML = html;
+    return tpl.content.querySelector('li');
+  };
+
+  it('keeps the disabled checkbox and wraps the whole item text in ONE block', async () => {
+    const li = taskItem(await renderMarkdown('- [ ] **bold** and plain text', PATH));
+    expect(li?.children).toHaveLength(2);
+    const [input, text] = [...(li?.children ?? [])];
+    expect(input.tagName).toBe('INPUT');
+    expect(input.getAttribute('type')).toBe('checkbox');
+    expect(input.getAttribute('disabled')).toBe('');
+    expect(text.className).toBe('md-task-text');
+    expect(text.textContent).toContain('bold');
+    expect(text.textContent).toContain('and plain text');
+  });
+
+  it('leaves a loose item (checkbox inside a <p>) unwrapped — the p is already one block', async () => {
+    const li = taskItem(await renderMarkdown('- [ ] a\n\n- b', PATH));
+    const first = [...(li?.parentElement?.querySelectorAll('li') ?? [])][0];
+    expect(first?.querySelector(':scope > p > input[type="checkbox"]')).toBeTruthy();
+    expect(first?.querySelector(':scope > .md-task-text')).toBeNull();
+  });
+});
+
 describe('renderMarkdown — link and image rewriting', () => {
   it('relative .md links become internal navigation with a raw-file fallback href', async () => {
     const html = await renderMarkdown('[next](./sub/next.md)', PATH);

@@ -86,6 +86,26 @@ export async function renderMarkdown(text: string, currentPath?: string): Promis
     el.setAttribute('disabled', ''); // a rendered document is never interactive
   }
 
+  // A task item's text must be ONE grid item. Bare text runs beside the input
+  // become separate anonymous grid items, and each claims its own track: the
+  // auto column widens to the longest plain-text line and squeezes the 1fr
+  // column down to the <strong>'s longest word — measured as a one-word-per-
+  // line column beside a full-width paragraph. Wrap everything after the
+  // checkbox in one block instead, so the grid is [checkbox][one block].
+  for (const li of tpl.content.querySelectorAll('li')) {
+    const input = li.querySelector(':scope > input[type="checkbox"]');
+    if (!input) continue;
+    const text = document.createElement('div');
+    text.className = 'md-task-text';
+    let node = input.nextSibling;
+    while (node) {
+      const next = node.nextSibling;
+      text.appendChild(node);
+      node = next;
+    }
+    li.appendChild(text);
+  }
+
   for (const a of tpl.content.querySelectorAll('a[href]')) {
     const href = a.getAttribute('href') ?? '';
     if (isAnchor(href)) continue;
