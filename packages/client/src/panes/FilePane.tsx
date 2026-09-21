@@ -13,8 +13,8 @@
 // option is DISABLED, not hidden, for anything else; a control that vanishes
 // per-file reads as a bug.
 
-import { useCallback, useMemo, useState } from 'react';
-import type { TabMeta } from '@palmux/shared';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { isImageFile, type TabMeta } from '@palmux/shared';
 import { IconButton, Segmented } from '../ui';
 import { EditorPane } from './EditorPane';
 import { MarkdownPane } from './MarkdownPane';
@@ -69,10 +69,15 @@ export const FilePane = ({
 }: FilePaneProps) => {
   const [dirty, setDirty] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [imageError, setImageError] = useState(false);
+  useEffect(() => setImageError(false), [path]); // a new path is a new load
   const readable = isReadable(path);
+  // An image has no editor and no rendered text form: the pane IS the viewer,
+  // and the Read/Edit control would be a switch that switches nothing.
+  const image = isImageFile(path);
   // A non-markdown file has no rendered form, so Read cannot be honoured even
   // if the host asks for it.
-  const active: FileMode = readable ? mode : 'edit';
+  const active: FileMode = readable && !image ? mode : 'edit';
   const { dir, name } = splitPath(path);
 
   const tab = useMemo<TabMeta>(() => ({ id: path, kind: 'markdown', url: path }), [path]);
@@ -92,7 +97,7 @@ export const FilePane = ({
           {dir}
           <b className="fp-path-name">{name}</b>
         </span>
-        {active === 'edit' && (
+        {active === 'edit' && !image && (
           <span
             className="fp-state"
             data-tone={saveError ? 'error' : undefined}
@@ -102,16 +107,18 @@ export const FilePane = ({
             {saveError ? `⚠ ${saveError}` : dirty ? '● unsaved' : '✓ saved'}
           </span>
         )}
-        <Segmented
-          label="File view"
-          value={active}
-          onValueChange={onMode}
-          options={[
-            { value: 'read', label: 'Read', disabled: !readable },
-            { value: 'edit', label: 'Edit' },
-          ]}
-          data-testid="file-pane-mode"
-        />
+        {!image && (
+          <Segmented
+            label="File view"
+            value={active}
+            onValueChange={onMode}
+            options={[
+              { value: 'read', label: 'Read', disabled: !readable },
+              { value: 'edit', label: 'Edit' },
+            ]}
+            data-testid="file-pane-mode"
+          />
+        )}
         {onClose && (
           <IconButton
             label="Close file"
@@ -126,20 +133,42 @@ export const FilePane = ({
       </div>
 
       <div className="fp-body">
-        {readable && (
-          <div className="fp-view" data-active={active === 'read'} data-testid="file-pane-read">
-            <MarkdownPane tab={tab} onChangePath={onChangePath ?? NOOP_PATH} />
+        {image ? (
+          <div className="fp-view" data-testid="file-pane-image">
+            {imageError ? (
+              // An <img> reports a failed load with no reason — and a new client
+              // against an old server is a REAL deployment state (the route 404s
+              // while the pane renders). Name it instead of an empty box.
+              <div className="fp-image-error" data-testid="file-pane-image-error" role="alert">
+                ⚠ Could not load this image — the server may need a restart.
+              </div>
+            ) : (
+              <img
+                className="fp-image"
+                src={`/file-image?path=${encodeURIComponent(path)}`}
+                alt={name}
+                onError={() => setImageError(true)}
+              />
+            )}
           </div>
+        ) : (
+          <>
+            {readable && (
+              <div className="fp-view" data-active={active === 'read'} data-testid="file-pane-read">
+                <MarkdownPane tab={tab} onChangePath={onChangePath ?? NOOP_PATH} />
+              </div>
+            )}
+            <div className="fp-view" data-active={active === 'edit'} data-testid="file-pane-edit">
+              <EditorPane
+                tabId={path}
+                filePath={path}
+                active={active === 'edit'}
+                onDirtyChange={onDirty}
+                onSaveError={setSaveError}
+              />
+            </div>
+          </>
         )}
-        <div className="fp-view" data-active={active === 'edit'} data-testid="file-pane-edit">
-          <EditorPane
-            tabId={path}
-            filePath={path}
-            active={active === 'edit'}
-            onDirtyChange={onDirty}
-            onSaveError={setSaveError}
-          />
-        </div>
       </div>
     </div>
   );

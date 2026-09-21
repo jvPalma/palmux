@@ -52,7 +52,7 @@ export interface FileWritten {
 const err = (status: number, message: string): FileError => ({ ok: false, status, message });
 
 /** Shared gate: absolute, exists, and is a regular file. */
-async function regularFile(path: string): Promise<FileError | { ok: true; mode: number }> {
+export async function regularFile(path: string): Promise<FileError | { ok: true; mode: number }> {
   if (!path) return err(400, 'path is required');
   if (!isAbsolute(path)) return err(400, 'path must be absolute');
   let st;

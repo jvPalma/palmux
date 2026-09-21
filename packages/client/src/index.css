@@ -671,13 +671,25 @@ body {
 }
 
 /* Task lists. The <ul> carries no class from marked, so the checkbox itself is
-   the selector: a list ITEM holding one loses its bullet and its indent. */
+   the selector: a list ITEM holding one loses its bullet and its indent.
+   marked wraps the checkbox directly in the <li> for a TIGHT list, and inside
+   a <p> for a LOOSE one (items separated by blank lines) — both shapes are the
+   same thing to a reader and must render the same.
+   The tight li is a GRID, not a flex: flex + baseline alignment squeezes the
+   anonymous text items into narrow columns of one or two words each on long
+   items, which is unreadable. Grid puts the checkbox in its own column and the
+   text in ONE block box, so it wraps like any other paragraph. */
 .md-body li:has(> input[type='checkbox']) {
   list-style: none;
   margin-left: -1.3em;
-  display: flex;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 0.5em;
   align-items: baseline;
-  gap: 0.5em;
+}
+.md-body li:has(> p > input[type='checkbox']) {
+  list-style: none;
+  margin-left: -1.3em;
 }
 .md-body input[type='checkbox'] {
   /* accent-color themes the native control, which keeps the platform's own

@@ -1,4 +1,5 @@
 export * from './byte-size';
+export * from './image-file';
 export * from './protocol';
 export * from './session-ids';
 export * from './tab-order';

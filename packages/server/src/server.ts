@@ -96,6 +96,7 @@ import { bundleZip, contentDisposition, resolveDownload } from './download';
 import { listMdDir, readMdFile } from './markdown';
 import { deletePaths, listDir } from './files';
 import { readTextFile, writeTextFile } from './file-rw';
+import { resolveImageFile } from './image-file';
 import { themedManifest } from './manifest';
 import { registerConfigFileRoutes } from './config-file';
 import { registerPortsRoutes } from './ports';
@@ -1140,6 +1141,18 @@ export async function createServer(
     const res = await readTextFile(typeof q['path'] === 'string' ? q['path'] : '', maxUploadBytes);
     if (!res.ok) return reply.code(res.status).send({ error: res.message });
     return reply.send({ text: res.text, path: res.path, size: res.size });
+  });
+
+  // GET /file-image?path=<absolute> — stream an image so a file tab can show it
+  // in an <img>. Same trust model and refusals as /file, plus the image
+  // extension gate from shared (see image-file.ts).
+  app.get('/file-image', async (req, reply) => {
+    const q = req.query as Record<string, unknown>;
+    const res = await resolveImageFile(typeof q['path'] === 'string' ? q['path'] : '');
+    if (!res.ok) return reply.code(res.status).send({ error: res.message });
+    reply.header('content-type', res.contentType);
+    reply.header('cache-control', 'private, max-age=0');
+    return reply.send(createReadStream(res.path));
   });
 
   // GET/PUT /config-file — the raw config.json behind the settings editor. The
