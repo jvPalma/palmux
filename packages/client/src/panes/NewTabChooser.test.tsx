@@ -83,6 +83,141 @@ describe('primary actions', () => {
   });
 });
 
+// ── A path is the path (batch 11) ─────────────────────────────────────────────────
+//
+// `notes.md` and `notes.md ` are two files. The field used to trim what was typed, so
+// a path with a trailing space opened its sibling; and a terminal paste carries a
+// trailing newline, which `<input>` sanitises away before `onChange` ever sees it, so
+// `notes.md\n` silently became `notes.md` — also a different file. `trim()` now only
+// detects a blank entry, and a paste that carries a line break is refused where it can
+// still be seen: the paste event.
+describe('Open markdown… uses the path exactly as typed', () => {
+  const LINE_BREAK = 'That path contains a line break — paste it without the newline';
+  const openField = () => {
+    const p = renderChooser();
+    tap(screen.getByTestId('dash-open-markdown'));
+    return { p, input: screen.getByTestId('dash-md-input') as HTMLInputElement };
+  };
+
+  it('hands a trailing-space path to the new tab byte for byte', () => {
+    const { p, input } = openField();
+    fireEvent.change(input, { target: { value: '/tmp/notes.md ' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(p.onCreate).toHaveBeenCalledTimes(1);
+    expect(p.onCreate).toHaveBeenCalledWith({ kind: 'markdown', url: '/tmp/notes.md ' });
+  });
+
+  it('keeps the spaces of a folder named `report ` too, through the Open button', () => {
+    const { p, input } = openField();
+    fireEvent.change(input, { target: { value: '/tmp/report /a.md  ' } });
+    tap(screen.getByTestId('dash-md-go'));
+    expect(p.onCreate).toHaveBeenCalledWith({ kind: 'markdown', url: '/tmp/report /a.md  ' });
+  });
+
+  // A leading space is not an absolute path. It is refused, not repaired into one the
+  // user did not type, and the row stays open for a correction.
+  it('refuses a path that starts with whitespace and keeps the row open', () => {
+    const { p, input } = openField();
+    fireEvent.change(input, { target: { value: ' /tmp/notes.md' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(p.onCreate).not.toHaveBeenCalled();
+    expect(screen.getByTestId('dash-md-input')).toHaveValue(' /tmp/notes.md');
+  });
+
+  it('still opens the browse view for an empty or whitespace-only entry', () => {
+    const { p, input } = openField();
+    fireEvent.change(input, { target: { value: '   ' } });
+    tap(screen.getByTestId('dash-md-go'));
+    expect(p.onCreate).toHaveBeenCalledWith({ kind: 'markdown' });
+  });
+
+  it('still refuses a relative path', () => {
+    const { p, input } = openField();
+    fireEvent.change(input, { target: { value: 'notes.md' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(p.onCreate).not.toHaveBeenCalled();
+  });
+
+  // B11-R3-01. A real paste carrying the terminal's trailing newline is stopped, the
+  // field keeps what it held, and the message says why — beneath the field, because
+  // DashboardBody has no toast.
+  it('refuses a pasted path that carries a line break, and says so under the field', async () => {
+    const { p, input } = openField();
+    expect(screen.queryByTestId('dash-md-note')).toBeNull();
+    const user = userEvent.setup();
+    await user.click(input);
+    await user.paste('/tmp/notes.md\n');
+
+    expect(input).toHaveValue(''); // the previous value, not '/tmp/notes.md' with the newline eaten
+    const note = screen.getByTestId('dash-md-note');
+    expect(note).toHaveTextContent(LINE_BREAK);
+    expect(note).toHaveAttribute('role', 'alert');
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(p.onCreate).not.toHaveBeenCalled();
+    // The note lives below the field's own row, not inside it.
+    expect(input.closest('.dash-row')?.contains(note)).toBe(false);
+  });
+
+  it('refuses CR as well, and prevents the default action itself', () => {
+    const { input } = openField();
+    fireEvent.change(input, { target: { value: '/tmp/a.md' } });
+    for (const text of ['/tmp/b.md\r', '/tmp/b.md\r\n', '/tmp/x\n/tmp/y']) {
+      const allowed = fireEvent.paste(input, {
+        clipboardData: { getData: () => text },
+      });
+      expect(allowed, JSON.stringify(text)).toBe(false); // preventDefault was called
+    }
+    expect(input).toHaveValue('/tmp/a.md');
+    expect(screen.getByTestId('dash-md-note')).toHaveTextContent(LINE_BREAK);
+  });
+
+  it('lets a paste without a line break through, and clears the message once you type', async () => {
+    const { input } = openField();
+    const user = userEvent.setup();
+    await user.click(input);
+    await user.paste('/tmp/notes.md\n');
+    expect(screen.getByTestId('dash-md-note')).toBeTruthy();
+
+    await user.paste('/tmp/notes.md ');
+    expect(input).toHaveValue('/tmp/notes.md '); // trailing space kept
+    expect(screen.queryByTestId('dash-md-note')).toBeNull(); // the next edit supersedes it
+    expect(input).not.toHaveAttribute('aria-invalid');
+  });
+
+  // The second line. A browser sanitises a typed or pasted value before `onChange`, and
+  // so does happy-dom, so the guard is only reachable through an input that does not.
+  // This one keeps the raw string it is given, as a DOM without the sanitisation step
+  // would, and puts the real accessor back afterwards.
+  it('refuses a value that holds a line break at submit time, whatever got it there', () => {
+    const proto = HTMLInputElement.prototype;
+    const real = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (!real?.get || !real.set) throw new Error('no value accessor to wrap');
+    const get = real.get;
+    const set = real.set;
+    const raw = new WeakMap<HTMLInputElement, string>();
+    Object.defineProperty(proto, 'value', {
+      configurable: true,
+      get(this: HTMLInputElement) {
+        return raw.get(this) ?? get.call(this);
+      },
+      set(this: HTMLInputElement, v: string) {
+        raw.set(this, String(v));
+        set.call(this, String(v));
+      },
+    });
+    try {
+      const { p, input } = openField();
+      fireEvent.change(input, { target: { value: '/tmp/notes.md\n' } });
+      expect(input.value).toBe('/tmp/notes.md\n'); // not vacuous: the newline got in
+      fireEvent.keyDown(input, { key: 'Enter' });
+      expect(p.onCreate).not.toHaveBeenCalled();
+      expect(screen.getByTestId('dash-md-note')).toHaveTextContent(LINE_BREAK);
+    } finally {
+      Object.defineProperty(proto, 'value', real);
+    }
+  });
+});
+
 describe('webApps section', () => {
   it('is omitted entirely when nothing is configured', () => {
     renderChooser();

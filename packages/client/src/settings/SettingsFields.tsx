@@ -21,12 +21,14 @@
 // whether a theme's red survives its own background, so the Theme row is a button
 // that opens a BROWSER in place of the form (the `themes` sub-view, ThemeBrowser):
 // a back stack of depth one, owned here unless a host lifts it. The drawer does,
-// so its own back header can pop the sub-view before it leaves Settings.
+// so its own back header can pop the sub-view before it leaves Settings. The
+// sub-view is also where a theme is imported and where the app is told to follow
+// the system's light/dark scheme (see ThemeSubView).
 //
 // The switch replaces the control that holds focus, so focus is moved across it
 // rather than left to fall on the body. One rule: going in, focus lands on the
 // first control the sub-view DRAWS. That is `‹ Settings` in the dock; the drawer
-// hides that control (its header does the job), so there it is the first theme,
+// hides that control (its header does the job), so there it is the mode switch,
 // one Shift+Tab below the header. Coming out, focus returns to the Theme row
 // that opened it. Focus is never taken from a text field outside the panel
 // (see `carriesFocus`).
@@ -44,10 +46,18 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode, Ref } from 'react';
-import type { ClientSettings, CursorStyle, MobileModePref, SidebarRailPref } from './settings';
-import { FONT_PRESETS } from './settings';
-import { allProfiles } from './themes';
+import type {
+  ClientSettings,
+  CursorStyle,
+  MobileModePref,
+  ThemeMode,
+  ThemeSlot,
+  ThemeTarget,
+} from './settings';
+import { FONT_PRESETS, resolveThemeId, themeModeChange, themePick } from './settings';
+import { allProfiles, type ColorProfile } from './themes';
 import { ThemeBrowser } from './ThemeBrowser';
+import { useSystemPrefersDark } from './useSystemPrefersDark';
 import { reloadApp } from './app-reload';
 import type { PwaInstallState } from './pwa-install';
 import { onPwaInstallChange, promptPwaInstall, pwaInstallState } from './pwa-install';
@@ -71,11 +81,11 @@ export interface SettingsFieldsProps {
    *  action bar is gone, and of the three buttons it held this is the one
    *  nobody reaches for mid-session. */
   onOpenTips?: (() => void) | undefined;
-  /** Open the dictation history panel (omit to hide the entry point). */
-  onOpenDictationHistory?: (() => void) | undefined;
-  /** Import a theme from a URL/name (omit to hide the importer). */
-  onImportTheme?: ((source: string) => void) | undefined;
-  /** True while an import is in flight — disables the row. */
+  /** Import a theme from a URL/name (omit to hide the importer). `target` is what
+   *  the import is FOR, captured now: the host applies the answer to it when it
+   *  lands, however long that takes (see `themePick`). */
+  onImportTheme?: ((source: string, target: ThemeTarget) => void) | undefined;
+  /** True while an import is in flight — disables the Add button. */
   importingTheme?: boolean | undefined;
   /** Server build the client last saw, shown next to the reload control. */
   appVersion?: string | undefined;
@@ -136,7 +146,6 @@ function Row({
   note,
   htmlFor,
   onLabelPress,
-  stacked = false,
   children,
 }: {
   label: ReactNode;
@@ -145,7 +154,6 @@ function Row({
   note?: ReactNode;
   htmlFor?: string | undefined;
   onLabelPress?: (() => void) | undefined;
-  stacked?: boolean | undefined;
   children: ReactNode;
 }) {
   const text = (
@@ -155,7 +163,7 @@ function Row({
     </>
   );
   return (
-    <div className={stacked ? 'srow srow-stacked' : 'srow'}>
+    <div className="srow">
       {htmlFor ? (
         <label
           className="srow-label"
@@ -239,53 +247,6 @@ const CURSOR_OPTIONS: ReadonlyArray<SegmentedOption<CursorStyle>> = [
   { value: 'underline', label: 'Underline' },
   { value: 'bar', label: 'Bar' },
 ];
-
-const RAIL_OPTIONS: ReadonlyArray<SegmentedOption<SidebarRailPref>> = [
-  { value: 'always', label: 'Always' },
-  { value: 'hidden', label: 'Hidden' },
-];
-
-/**
- * Paste-a-theme row. Kept local to the settings form because it owns one piece
- * of transient text state; the outcome arrives asynchronously as a toast, so
- * the field just clears itself on submit. Stacked, not side-by-side: the value
- * is a long URL or install command and a 55%-wide input truncated it to noise.
- */
-function ThemeImportRow({
-  onImport,
-  busy,
-}: {
-  onImport: (source: string) => void;
-  busy: boolean | undefined;
-}) {
-  const [source, setSource] = useState('');
-  const submit = (): void => {
-    const value = source.trim();
-    if (!value || busy) return;
-    onImport(value);
-    setSource('');
-  };
-  return (
-    <Row label="Import theme" htmlFor="set-theme-import" stacked>
-      <Input
-        id="set-theme-import"
-        data-testid="set-theme-import"
-        value={source}
-        placeholder="Gogh name, URL, or install command"
-        spellCheck={false}
-        autoCapitalize="off"
-        autoCorrect="off"
-        onChange={(e) => setSource(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') submit();
-        }}
-      />
-      <Button data-testid="set-theme-import-add" onClick={submit} disabled={busy || !source.trim()}>
-        {busy ? '…' : 'Add'}
-      </Button>
-    </Row>
-  );
-}
 
 /** The reload a host gets when it supplies none: unconditional, as it always was. */
 const reloadUnguarded = (): Promise<boolean> => {
@@ -415,13 +376,87 @@ function fontOptionsFor(settings: ClientSettings, fontFamilies: string[]): Map<s
   return options;
 }
 
+/** A theme's display name; an id that is no longer registered shows as itself. */
+const themeName = (profiles: ColorProfile[], id: string): string =>
+  profiles.find((p) => p.id === id)?.name ?? id;
+
+/**
+ * The body of the `themes` sub-view: the mode switch, Import, the list. It is its
+ * own component so the slot being edited is state that lives exactly as long as
+ * the sub-view is open — leaving and coming back starts again on the scheme the
+ * device is in, rather than on whichever slot was last touched.
+ *
+ * Three things are decided here because only here are the settings and the
+ * scheme both in hand. What a pick WRITES depends on the mode (`themePick`); what
+ * is MARKED current is the edited slot's pick in Match system and `themeId`
+ * otherwise; and an import's target is captured at the moment it is submitted,
+ * because the answer arrives later and the user may have moved on by then.
+ */
+function ThemeSubView({
+  settings,
+  profiles,
+  onChange,
+  onImportTheme,
+  importingTheme,
+}: {
+  settings: ClientSettings;
+  profiles: ColorProfile[];
+  onChange: (partial: Partial<ClientSettings>) => void;
+  onImportTheme: SettingsFieldsProps['onImportTheme'];
+  importingTheme: boolean | undefined;
+}) {
+  const prefersDark = useSystemPrefersDark();
+  const activeSlot: ThemeSlot = prefersDark ? 'dark' : 'light';
+  const [slot, setSlot] = useState<ThemeSlot>(activeSlot);
+
+  const { themeMode: mode } = settings;
+  const target: ThemeTarget = mode === 'system' ? { mode, slot } : { mode };
+  // A slot never chosen reads as the fixed theme, exactly as `resolveThemeId` has it.
+  const slotPick = (which: ThemeSlot): string =>
+    (which === 'dark' ? settings.themeDark : settings.themeLight) || settings.themeId;
+  const value = mode === 'system' ? slotPick(slot) : settings.themeId;
+
+  // A pick for the slot that is ON SCREEN is an explicit choice of what this device
+  // shows, so it also moves the export (`themeId`: tmux, the Claude theme) — the same
+  // as a Fixed pick. Only the passive paths (boot, reconnect, a broadcast) are kept
+  // from writing it; a pick for the slot that is not active changes nothing visible
+  // and leaves the export alone.
+  const pick = (id: string): void => {
+    const partial = themePick(settings, target, id);
+    if (!partial) return;
+    onChange(mode === 'system' && slot === activeSlot ? { ...partial, themeId: id } : partial);
+  };
+  const changeMode = (next: ThemeMode): void =>
+    onChange(themeModeChange(settings, next, resolveThemeId(settings, prefersDark)));
+
+  return (
+    <ThemeBrowser
+      profiles={profiles}
+      value={value}
+      onChange={pick}
+      controls={{
+        mode,
+        onModeChange: changeMode,
+        slot,
+        onSlotChange: setSlot,
+        activeSlot,
+        slotNames: {
+          dark: themeName(profiles, slotPick('dark')),
+          light: themeName(profiles, slotPick('light')),
+        },
+        ...(onImportTheme ? { onImport: (source: string) => onImportTheme(source, target) } : {}),
+        importing: importingTheme,
+      }}
+    />
+  );
+}
+
 export function SettingsFields({
   settings,
   onChange,
   fontFamilies = NO_FONTS,
   onOpenKeybindings,
   onOpenTips,
-  onOpenDictationHistory,
   onImportTheme,
   importingTheme,
   appVersion,
@@ -473,10 +508,12 @@ export function SettingsFields({
         </div>
         {/* Applies and persists on every pick, and the list stays: that is how a
             theme is judged — by trying two. */}
-        <ThemeBrowser
+        <ThemeSubView
+          settings={settings}
           profiles={profiles}
-          value={settings.themeId}
-          onChange={(themeId) => onChange({ themeId })}
+          onChange={onChange}
+          onImportTheme={onImportTheme}
+          importingTheme={importingTheme}
         />
       </div>
     );
@@ -486,7 +523,16 @@ export function SettingsFields({
     value,
     label,
   }));
-  const themeName = profiles.find((p) => p.id === settings.themeId)?.name ?? settings.themeId;
+  // Match system names both slots; a slot never chosen reads as `themeId`, as the
+  // resolver has it. The whole text is the title: the label is one line and ends
+  // in an ellipsis in a 140px column.
+  const themeLabel =
+    settings.themeMode === 'system'
+      ? `System · ${themeName(profiles, settings.themeDark || settings.themeId)} / ${themeName(
+          profiles,
+          settings.themeLight || settings.themeId,
+        )}`
+      : themeName(profiles, settings.themeId);
   const openThemes = (): void => setSubView('themes');
 
   return (
@@ -503,16 +549,14 @@ export function SettingsFields({
             id="set-theme"
             className="srow-theme"
             data-testid="set-theme"
-            title={themeName}
-            aria-label={`Theme: ${themeName}`}
+            title={themeLabel}
+            aria-label={`Theme: ${themeLabel}`}
             {...pressMove(openThemes)}
           >
-            <span className="srow-theme-name">{themeName}</span>
+            <span className="srow-theme-name">{themeLabel}</span>
             <Icon name="chevron-right" size={12} />
           </Button>
         </Row>
-
-        {onImportTheme && <ThemeImportRow onImport={onImportTheme} busy={importingTheme} />}
 
         <Row label="Font" htmlFor="set-font">
           <Select
@@ -649,45 +693,6 @@ export function SettingsFields({
       </Section>
 
       <Section title="App">
-        {/* Per-device, like font size and mobile mode: `always` is right on a
-            desktop and wrong on a phone, so this must never reach the synced
-            payload (see SYNCED_KEYS). Hidden entirely on mobile, where the
-            drawer is the panel container and there is no rail to show. */}
-        <Row
-          label="Sidebar rail"
-          // Naming what disappears, not just "panels": the rail is the only
-          // POINTER route to Files, Dictation, the new-tab chooser AND the
-          // Upload/Download actions, since the desktop action cluster is gone.
-          // Settings is the exception — the topbar's app menu keeps it one click
-          // away. Every one of them has a keybinding and sits in the command
-          // palette, which is what makes hiding the rail recoverable at all.
-          // A sentence this long is a NOTE, under the row: in the label column
-          // it was a 180px strip of one-word lines.
-          note={
-            settings.sidebarRail === 'always'
-              ? 'this device only · hiding it leaves keybindings and the command palette as the only route to files, dictation, upload and download; settings stays in the app menu'
-              : 'this device only · settings is in the app menu; upload and download are reachable from the command palette'
-          }
-        >
-          <Segmented
-            label="Sidebar rail"
-            data-testid="set-sidebar-rail"
-            value={settings.sidebarRail}
-            options={RAIL_OPTIONS}
-            onValueChange={(sidebarRail) => onChange({ sidebarRail })}
-          />
-        </Row>
-        {onOpenDictationHistory && (
-          <Row label="Dictation" htmlFor="set-dictation">
-            <Button
-              id="set-dictation"
-              data-testid="open-dictation-history"
-              onClick={onOpenDictationHistory}
-            >
-              History…
-            </Button>
-          </Row>
-        )}
         <ReloadRow version={appVersion} onReload={onReloadApp} />
         <InstallRow />
         <ToggleRow

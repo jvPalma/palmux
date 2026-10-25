@@ -8,10 +8,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { TabMeta } from '@palmux/shared';
 import {
+  LAST_TAB_KEY,
   parseSelection,
   readSelection,
   resolveSelection,
   selectionFor,
+  writeLastTab,
   writeSelection,
 } from './window-selection';
 
@@ -19,13 +21,22 @@ const tab = (id: string, kind: TabMeta['kind'] = 'terminal'): TabMeta => ({ id, 
 const TABS = [tab('5'), tab('0', 'web'), tab('2', 'editor')];
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   try {
     sessionStorage.clear();
+    localStorage.clear();
   } catch {
     /* not available in this environment */
   }
-  vi.unstubAllGlobals();
 });
+
+/** A Storage whose every call throws, the way private mode and a full quota do. */
+const denied = () => {
+  const fail = () => {
+    throw new Error('denied');
+  };
+  return { getItem: fail, setItem: fail, removeItem: fail, clear: fail };
+};
 
 describe('parseSelection', () => {
   it('reads a well-formed value', () => {
@@ -74,6 +85,79 @@ describe('readSelection / writeSelection', () => {
       removeItem: () => {},
       clear: () => {},
     });
+    expect(() => writeSelection({ id: '1', kind: 'terminal' })).not.toThrow();
+  });
+});
+
+// An installed PWA's window is a browsing context the OS ends whenever it likes, so
+// `sessionStorage` alone forgot the tab on every relaunch. The device-wide copy is
+// read ONLY when the window has no selection of its own, which is what keeps the
+// two-window rule the module exists for: an open window is never yanked by another.
+describe('the device-wide last tab', () => {
+  const stored = (): unknown => JSON.parse(localStorage.getItem('palmux-last-tab') ?? 'null');
+
+  it('is read by a window with no selection of its own', () => {
+    writeLastTab({ id: '2', kind: 'editor' });
+    expect(readSelection()).toEqual({ id: '2', kind: 'editor' });
+  });
+
+  it('never beats the window\'s own selection', () => {
+    writeLastTab({ id: '2', kind: 'editor' });
+    writeSelection({ id: '5', kind: 'terminal' });
+    expect(readSelection()).toEqual({ id: '5', kind: 'terminal' });
+  });
+
+  it('is used when the window\'s own value is unusable', () => {
+    writeLastTab({ id: '2', kind: 'editor' });
+    sessionStorage.setItem('palmux-window-tab', '{oops');
+    expect(readSelection()).toEqual({ id: '2', kind: 'editor' });
+  });
+
+  it('is null when neither storage holds anything usable', () => {
+    expect(readSelection()).toBeNull();
+    localStorage.setItem(LAST_TAB_KEY, '{"id":"2","kind":"nope"}');
+    expect(readSelection()).toBeNull();
+  });
+
+  it('lives under palmux-last-tab in the same {id, kind} shape', () => {
+    writeLastTab({ id: '7', kind: 'markdown' });
+    expect(LAST_TAB_KEY).toBe('palmux-last-tab');
+    expect(stored()).toEqual({ id: '7', kind: 'markdown' });
+  });
+
+  // The window's own writer and the shared writer are two functions on purpose:
+  // App decides WHEN the shared one runs (on a real change, never on a broadcast).
+  it('is not written by writeSelection', () => {
+    writeSelection({ id: '7', kind: 'terminal' });
+    expect(localStorage.getItem('palmux-last-tab')).toBeNull();
+  });
+
+  // The kind rides along for the reason it always did: ids are recycled, and a
+  // stored `2` of the wrong kind must resolve to the first tab, not a stranger.
+  it('still goes through the kind check: a recycled id is gone', () => {
+    writeLastTab({ id: '2', kind: 'terminal' });
+    expect(resolveSelection({ stored: readSelection(), tabs: TABS })).toBe('5');
+    writeLastTab({ id: '2', kind: 'editor' });
+    expect(resolveSelection({ stored: readSelection(), tabs: TABS })).toBe('2');
+  });
+
+  it('survives localStorage that throws on read and on write', () => {
+    vi.stubGlobal('localStorage', denied());
+    expect(readSelection()).toBeNull();
+    expect(() => writeLastTab({ id: '1', kind: 'terminal' })).not.toThrow();
+  });
+
+  it('survives sessionStorage that throws while localStorage still answers', () => {
+    writeLastTab({ id: '2', kind: 'editor' });
+    vi.stubGlobal('sessionStorage', denied());
+    expect(readSelection()).toEqual({ id: '2', kind: 'editor' });
+  });
+
+  it('survives both storages missing altogether', () => {
+    vi.stubGlobal('sessionStorage', undefined);
+    vi.stubGlobal('localStorage', undefined);
+    expect(readSelection()).toBeNull();
+    expect(() => writeLastTab({ id: '1', kind: 'terminal' })).not.toThrow();
     expect(() => writeSelection({ id: '1', kind: 'terminal' })).not.toThrow();
   });
 });

@@ -11,12 +11,37 @@
 // Everything here is pure so the ordering and dedupe rules are testable without
 // a tree, a socket or a settings round trip.
 
-/** Normalize for comparison: no trailing slash, except for the root itself. */
+/**
+ * The ONE identity a path has in the Explorer: POSIX `path.resolve` semantics, which
+ * is how `server/files.ts` names every listing it answers.
+ *
+ * Collapses `//`, drops `.`, resolves `..` (never above `/`), and leaves no trailing
+ * slash except on `/` itself. A path that is not absolute is rejected as `''`.
+ *
+ * **Whitespace is part of the name.** `report ` and `report` are two different
+ * directories, so nothing is trimmed: a trailing space inside the last segment is kept,
+ * and a path that STARTS with whitespace is not absolute and is rejected rather than
+ * repaired into one the user never named. This used to trim, which made the function
+ * non-idempotent (`/work/report /.` → `/work/report ` → `/work/report`) and let a pin or
+ * a stored record resolve to the sibling (B10-INSPECT2-01). The server stopped trimming
+ * in the same change, so both ends now name a directory by the same string.
+ *
+ * Lexical on purpose, like the server's `resolve`: the client cannot see symlinks, and
+ * a second, smarter identity here would be one more thing that can disagree with the
+ * key a listing is answered under. A path this lets through in any other spelling is
+ * requested under one key and filed under another, which is what looped the load
+ * effect on a stored `/home/u/.` (B9-INSPECT2-02). No `node:path` — this runs in the
+ * browser.
+ */
 export function normalizePin(path: string): string {
-  const p = path.trim();
-  if (!p.startsWith('/')) return '';
-  const stripped = p.replace(/\/+$/, '');
-  return stripped || '/';
+  if (!path.startsWith('/')) return '';
+  const segments: string[] = [];
+  for (const segment of path.split('/')) {
+    if (segment === '' || segment === '.') continue;
+    if (segment === '..') segments.pop();
+    else segments.push(segment);
+  }
+  return `/${segments.join('/')}`;
 }
 
 /**

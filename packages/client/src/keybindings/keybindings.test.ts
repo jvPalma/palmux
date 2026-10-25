@@ -80,9 +80,10 @@ describe('persistence', () => {
 });
 
 // Upload and download became RAIL actions when the desktop action cluster was
-// retired, and the rail is a per-device preference — `sidebarRail: 'hidden'`
-// left them with no route at all until these existed. Every action in the
-// registry is in the command palette, so this IS the recovery path.
+// retired. The rail could be hidden then (`sidebarRail: 'hidden'`, retired in
+// batch 12 — the rail is always shown now), which left them with no route at all
+// until these existed. Every action in the registry is in the command palette,
+// so this stays a second route.
 describe('upload and download are reachable without the rail', () => {
   it('are real actions with labels and default chords', () => {
     for (const a of ['uploadFile', 'downloadFile'] as const) {

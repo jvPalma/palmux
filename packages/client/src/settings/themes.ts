@@ -116,7 +116,7 @@ export function applyThemeTokens(profile: ColorProfile): void {
   setMetaContent('color-scheme', scheme);
   // Monaco does not read CSS variables — it has its own theme registry — so the
   // editor is skinned HERE rather than at each of this function's callers. Three
-  // of them exist (boot, themeId change, a `themes` broadcast) and an editor
+  // of them exist (boot, a change of the resolved theme id, a `themes` broadcast) and an editor
   // that followed only some of them is the bug this replaced: the theme was
   // built once at first load and every later change moved the whole app EXCEPT
   // the editor. One owner for "skin the app" cannot drift that way. The bridge

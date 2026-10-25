@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createRef, useEffect, type ComponentProps } from 'react';
 import { flushSync } from 'react-dom';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { App, shouldRestoreKeyboard, type DrawerCloseOptions } from './App';
@@ -19,8 +19,14 @@ import type { DrawerDrop } from './session/drawer-tree';
 import type { PaneApi, SlotId, SplitRegistry } from './session/SplitFocusContext';
 import { useFileUpload } from './terminal/useFileUpload';
 import { Icon } from './ui/icons';
-import { DEFAULTS } from './settings/settings';
-import { allProfiles, deriveUiTokens, hex } from './settings/themes';
+import { DEFAULTS, type ClientSettings } from './settings/settings';
+import {
+  allProfiles,
+  deriveUiTokens,
+  hex,
+  registerDynamicThemes,
+  type ColorProfile,
+} from './settings/themes';
 
 // The chooser's controls activate on pointer UP (with a movement check) so a
 // finger can scroll past them; a press is therefore down THEN up.
@@ -47,6 +53,10 @@ const { sockets } = vi.hoisted(() => ({
     reorders: string[][];
     groupCreates: unknown[];
     groupUpdates: Array<Record<string, unknown>>;
+    /** Every settings blob this client sent the server, in order. */
+    settingsSent: Array<Record<string, unknown>>;
+    /** Every theme import request, as typed. */
+    imports: string[];
   }>,
 }));
 
@@ -59,6 +69,8 @@ vi.mock('./lib/ws', () => ({
     reorders: string[][] = [];
     groupCreates: unknown[] = [];
     groupUpdates: Array<Record<string, unknown>> = [];
+    settingsSent: Array<Record<string, unknown>> = [];
+    imports: string[] = [];
     constructor(url: string) {
       this.url = url;
       sockets.push(this);
@@ -71,7 +83,12 @@ vi.mock('./lib/ws', () => ({
     connect() {}
     destroy() {}
     stopReconnect() {}
-    sendSettings() {
+    sendSettings(j: Record<string, unknown>) {
+      this.settingsSent.push(j);
+      return true;
+    }
+    sendImportTheme(source: string) {
+      this.imports.push(source);
       return true;
     }
     sendExtraKeys() {
@@ -159,11 +176,14 @@ vi.mock('./terminal/TerminalPane', () => ({
     focused: boolean;
     inSplit: boolean;
     registry: SplitRegistry;
+    settings: { themeId: string };
     onFocusRequest: (slot: string) => void;
   }) => (
     <div
       data-testid={`term-pane-${p.slot}`}
       data-session={p.sessionId}
+      // The theme id the pane is handed: the terminal paints exactly this one.
+      data-theme={p.settings.themeId}
       className={p.inSplit ? `slot${p.focused ? ' focused' : ''}` : ''}
       onMouseDown={() => p.onFocusRequest(p.slot as never)}
     >
@@ -275,6 +295,16 @@ const { reloadApp } = vi.hoisted(() => ({ reloadApp: vi.fn(() => Promise.resolve
 vi.mock('./settings/app-reload', async (orig) => ({
   ...(await orig<typeof import('./settings/app-reload')>()),
   reloadApp,
+}));
+
+// The download itself is a fetch plus an anchor click; what these tests pin is the string
+// the Download prompt hands to it.
+const { downloadFromServer } = vi.hoisted(() => ({
+  downloadFromServer: vi.fn((_pattern: string) => Promise.resolve<string | null>(null)),
+}));
+vi.mock('./terminal/download', async (orig) => ({
+  ...(await orig<typeof import('./terminal/download')>()),
+  downloadFromServer,
 }));
 
 const server = () => {
@@ -2021,6 +2051,332 @@ describe('the URL is not the workspace', () => {
     expect(location.pathname).toBe('/');
     clickTab('2');
     expect(location.pathname).toBe('/');
+  });
+});
+
+// An installed PWA is relaunched from nothing: Android ends its browsing context, and
+// `sessionStorage` goes with it, so the window used to come back on the FIRST tab.
+// The device keeps its last selected tab in `localStorage` as a fallback that a window
+// reads only when it has none of its own. The risk is on the WRITE side: the persist
+// effect re-runs on every tab-list broadcast, and a window that merely heard a rename
+// must never overwrite the tab another window just chose.
+describe('the last tab survives a relaunch', () => {
+  const LAST = 'palmux-last-tab';
+  const OWN = 'palmux-window-tab';
+  const lastTab = (): unknown => JSON.parse(localStorage.getItem(LAST) ?? 'null');
+  const ownTab = (): unknown => JSON.parse(sessionStorage.getItem(OWN) ?? 'null');
+  type Spec = { id: string; kind?: string; name?: string };
+  const tabsOf = (specs: Spec[]) => specs.map((t) => ({ kind: 'terminal', ...t }));
+  const sessions = (specs: Spec[]) => send({ type: 'sessions', tabs: tabsOf(specs) });
+  const terms = (ids: string[]): Spec[] => ids.map((id) => ({ id }));
+  /** A window opened at `/`, with whatever the two storages already hold. */
+  const boot = (specs: Spec[]) => {
+    const view = render(<App />);
+    sessions(specs);
+    return view;
+  };
+  /** The OS ended the window and the PWA was opened again: a new browsing context
+   *  (no sessionStorage) on the same device (same localStorage), a new socket. */
+  const relaunch = (view: { unmount: () => void }, specs: Spec[]) => {
+    view.unmount();
+    sessionStorage.clear();
+    sockets.length = 0;
+    return boot(specs);
+  };
+  /** The strip's selected tab, which also answers for tabs with no terminal pane. */
+  const selectedTab = (): string | null =>
+    document
+      .querySelector('[data-testid^="session-tab-"][aria-selected="true"]')
+      ?.getAttribute('data-testid')
+      ?.replace('session-tab-', '') ?? null;
+
+  beforeEach(() => {
+    history.replaceState(null, '', '/');
+    sessionStorage.clear();
+  });
+
+  it('comes back on the tab that was selected when the window was last closed', () => {
+    const first = boot(terms(['0', '1', '2']));
+    expect(active()).toBe('0'); // nothing remembered: the first tab
+    clickTab('2');
+    expect(lastTab()).toEqual({ id: '2', kind: 'terminal' });
+
+    relaunch(first, terms(['0', '1', '2']));
+    expect(active()).toBe('2');
+  });
+
+  it('never moves a window that has a selection of its own', () => {
+    localStorage.setItem(LAST, JSON.stringify({ id: '2', kind: 'terminal' }));
+    sessionStorage.setItem(OWN, JSON.stringify({ id: '1', kind: 'terminal' }));
+    boot(terms(['0', '1', '2']));
+    expect(active()).toBe('1');
+  });
+
+  it('opens the first tab when the stored tab is gone or came back as another kind', () => {
+    localStorage.setItem(LAST, JSON.stringify({ id: '1', kind: 'editor' })); // 1 is a terminal now
+    boot(terms(['0', '1', '2']));
+    expect(active()).toBe('0');
+  });
+
+  it('opens the first tab when the stored value is unusable', () => {
+    localStorage.setItem(LAST, '{oops');
+    boot(terms(['0', '1', '2']));
+    expect(active()).toBe('0');
+  });
+
+  // `?new=1` is an INTENT and a legacy `/<id>` names its tab outright; neither
+  // consults what was remembered.
+  it('lets a legacy /<id> address win over the stored tab', () => {
+    localStorage.setItem(LAST, JSON.stringify({ id: '2', kind: 'terminal' }));
+    history.replaceState(null, '', '/1');
+    boot(terms(['0', '1', '2']));
+    expect(active()).toBe('1');
+  });
+
+  /**
+   * Put a spy between the app and `localStorage` for ONE key: every value written to
+   * it is recorded, and `denied` makes any access to it throw. Everything else passes
+   * through, so the rest of the app is unaffected.
+   */
+  const watchKey = (key: string, denied = false) => {
+    const writes: string[] = [];
+    let touched = 0;
+    const real = localStorage;
+    vi.stubGlobal(
+      'localStorage',
+      new Proxy(real, {
+        get(target, prop) {
+          if (prop === 'getItem' || prop === 'setItem') {
+            return (k: string, v?: string) => {
+              if (k === key) {
+                touched++;
+                if (denied) throw new Error('denied');
+                if (prop === 'setItem') writes.push(String(v));
+              }
+              return prop === 'getItem' ? target.getItem(k) : target.setItem(k, String(v));
+            };
+          }
+          const member = Reflect.get(target, prop) as unknown;
+          return typeof member === 'function' ? member.bind(target) : member;
+        },
+      }),
+    );
+    return { writes, touched: () => touched };
+  };
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('boots when the device-wide key cannot be read or written', () => {
+    const watch = watchKey(LAST, true);
+    boot(terms(['0', '1']));
+    expect(active()).toBe('0');
+    clickTab('1');
+    expect(active()).toBe('1');
+    // Proof the stub was in the way: the app did reach for the key, and survived.
+    expect(watch.touched()).toBeGreaterThan(0);
+  });
+
+  describe('a pop-out', () => {
+    it('writes neither the window selection nor the device-wide one', () => {
+      history.replaceState(null, '', '/popout/0');
+      boot(terms(['0', '1']));
+      expect(active()).toBe('0');
+      expect(lastTab()).toBeNull();
+      expect(ownTab()).toBeNull();
+    });
+
+    it('leaves the main window\'s remembered tab alone', () => {
+      localStorage.setItem(LAST, JSON.stringify({ id: '2', kind: 'terminal' }));
+      sessionStorage.setItem(OWN, JSON.stringify({ id: '2', kind: 'terminal' }));
+      history.replaceState(null, '', '/popout/0');
+      boot(terms(['0', '1', '2']));
+      sessions(terms(['0', '1', '2', '3']));
+      expect(lastTab()).toEqual({ id: '2', kind: 'terminal' });
+      expect(ownTab()).toEqual({ id: '2', kind: 'terminal' });
+    });
+  });
+
+  describe('what writes the device-wide value', () => {
+    // B9-01. Window B selected tab 2; window A, still on tab 1, hears a rename. The
+    // persist effect re-runs for A because `tabs` is a new array — and must not write.
+    it('is not rewritten by a tab-list broadcast', () => {
+      boot(terms(['0', '1', '2']));
+      clickTab('1');
+      expect(lastTab()).toEqual({ id: '1', kind: 'terminal' });
+
+      localStorage.setItem(LAST, JSON.stringify({ id: '2', kind: 'terminal' })); // window B
+      sessions([{ id: '0' }, { id: '1', name: 'renamed' }, { id: '2' }]); // a title/name change
+      sessions([{ id: '2' }, { id: '0' }, { id: '1', name: 'renamed' }]); // a reorder
+      expect(active()).toBe('1');
+      expect(lastTab()).toEqual({ id: '2', kind: 'terminal' });
+      expect(ownTab()).toEqual({ id: '1', kind: 'terminal' }); // the window's own is unaffected
+    });
+
+    it('is written when the selection changes, and only then', () => {
+      boot(terms(['0', '1', '2']));
+      const { writes } = watchKey(LAST);
+      clickTab('1');
+      clickTab('2');
+      clickTab('2'); // the same tab again
+      expect(writes).toEqual([
+        JSON.stringify({ id: '1', kind: 'terminal' }),
+        JSON.stringify({ id: '2', kind: 'terminal' }),
+      ]);
+    });
+
+    // A just-created tab is navigated to before any broadcast lists it, so it does
+    // not resolve to a known tab yet. The write waits for it, and happens once.
+    it('is written once a created tab resolves on a later broadcast', () => {
+      boot(terms(['0', '1']));
+      expect(lastTab()).toEqual({ id: '0', kind: 'terminal' });
+      send({ type: 'tabCreated', id: '7' });
+      expect(active()).toBe('7');
+      expect(lastTab()).toEqual({ id: '0', kind: 'terminal' }); // not known yet: nothing stored
+
+      sessions(terms(['0', '1'])); // a broadcast that does not list it yet
+      expect(lastTab()).toEqual({ id: '0', kind: 'terminal' });
+
+      const { writes } = watchKey(LAST);
+      sessions([{ id: '0' }, { id: '1' }, { id: '7', kind: 'editor' }]);
+      sessions([{ id: '0' }, { id: '1' }, { id: '7', kind: 'editor', name: 'notes' }]);
+      expect(lastTab()).toEqual({ id: '7', kind: 'editor' });
+      expect(writes).toEqual([JSON.stringify({ id: '7', kind: 'editor' })]);
+    });
+
+    // What this window last stored is only a fact while it holds. Once its selection
+    // resolves to nothing (here, a tab no broadcast lists yet) the next selection is
+    // a real choice again, and another window may have moved the shared key meanwhile.
+    it('is written when a tab is re-selected after the selection resolved to nothing', () => {
+      boot(terms(['0', '1']));
+      expect(lastTab()).toEqual({ id: '0', kind: 'terminal' });
+      send({ type: 'tabCreated', id: '9' }); // navigated to a tab no broadcast lists
+      localStorage.setItem(LAST, JSON.stringify({ id: '1', kind: 'terminal' })); // another window
+
+      clickTab('0');
+      expect(lastTab()).toEqual({ id: '0', kind: 'terminal' });
+    });
+
+    // The same id as a different kind is a different selection.
+    it('is rewritten when the selected id comes back as another kind', () => {
+      boot(terms(['0', '1']));
+      expect(lastTab()).toEqual({ id: '0', kind: 'terminal' });
+      sessions([{ id: '0', kind: 'editor' }, { id: '1' }]);
+      expect(lastTab()).toEqual({ id: '0', kind: 'editor' });
+    });
+
+    // B9-R2-01. Closing the last terminal `0` and creating an editor that reuses id
+    // `0` must not leave `{0, terminal}` stored: a relaunch rejects it on kind and
+    // lands on the first tab, which is not the editor once another tab sits before it.
+    it('follows an id that is closed with the last tab and reused as another kind', () => {
+      const first = boot(terms(['0']));
+      expect(lastTab()).toEqual({ id: '0', kind: 'terminal' });
+
+      sessions([]); // the last tab closes: the New-tab page
+      expect(screen.getByTestId('newtab-page')).toBeTruthy();
+      send({ type: 'tabCreated', id: '0' }); // the server hands the freed id to an editor
+      sessions([{ id: '0', kind: 'editor' }]);
+      expect(lastTab()).toEqual({ id: '0', kind: 'editor' });
+
+      // Another tab arrives and a reorder puts it before the editor.
+      sessions([{ id: '1' }, { id: '0', kind: 'editor' }]);
+      expect(lastTab()).toEqual({ id: '0', kind: 'editor' });
+      expect(selectedTab()).toBe('0');
+
+      relaunch(first, [{ id: '1' }, { id: '0', kind: 'editor' }]);
+      expect(selectedTab()).toBe('0'); // not the first tab, `1`
+    });
+
+    // The window on the New-tab page still holds the dead id, but it has selected
+    // nothing: another window's tab that reuses that id is not this window's choice.
+    it('is not written by a window sitting on the New-tab page', () => {
+      boot(terms(['0']));
+      sessions([]);
+      expect(screen.getByTestId('newtab-page')).toBeTruthy();
+      localStorage.setItem(LAST, JSON.stringify({ id: '5', kind: 'terminal' })); // another window
+
+      sessions([{ id: '0', kind: 'editor' }]); // that window created an editor with id 0
+      expect(screen.getByTestId('newtab-page')).toBeTruthy();
+      expect(lastTab()).toEqual({ id: '5', kind: 'terminal' });
+    });
+
+    describe('at boot', () => {
+      /** The SAME window reloaded: a new document and socket in the same browsing
+       *  context, so its sessionStorage survives (unlike `relaunch`). */
+      const reload = (view: { unmount: () => void }, specs: Spec[]) => {
+        view.unmount();
+        sockets.length = 0;
+        return boot(specs);
+      };
+
+      // B9-CODE-01. A reload RESTORES this window's tab; it selects nothing. Window A
+      // chose tab 1, then window B chose tab 2, so 2 is the device's last selection —
+      // and a fresh window must open it, not the older tab A merely came back on.
+      it("is not rewritten by a reload that restores the window's own tab", () => {
+        const a = boot(terms(['0', '1', '2']));
+        clickTab('1');
+        expect(ownTab()).toEqual({ id: '1', kind: 'terminal' });
+        localStorage.setItem(LAST, JSON.stringify({ id: '2', kind: 'terminal' })); // window B
+
+        const reloaded = reload(a, terms(['0', '1', '2']));
+        expect(active()).toBe('1');
+        expect(lastTab()).toEqual({ id: '2', kind: 'terminal' });
+        sessions([{ id: '0' }, { id: '1', name: 'renamed' }, { id: '2' }]); // nor by a later broadcast
+        expect(lastTab()).toEqual({ id: '2', kind: 'terminal' });
+
+        relaunch(reloaded, terms(['0', '1', '2'])); // a fresh window on this device
+        expect(active()).toBe('2');
+      });
+
+      it('still writes a selection made after a reload, the restored tab included', () => {
+        const a = boot(terms(['0', '1', '2']));
+        clickTab('1');
+        localStorage.setItem(LAST, JSON.stringify({ id: '2', kind: 'terminal' })); // window B
+        reload(a, terms(['0', '1', '2']));
+
+        clickTab('0');
+        expect(lastTab()).toEqual({ id: '0', kind: 'terminal' });
+        clickTab('1');
+        expect(lastTab()).toEqual({ id: '1', kind: 'terminal' });
+      });
+
+      // Nothing stored device-wide means there is no newer choice to protect, and the
+      // restored tab is the best answer a relaunch could have.
+      it('is initialised by a reload when the device has no last tab yet', () => {
+        sessionStorage.setItem(OWN, JSON.stringify({ id: '1', kind: 'terminal' }));
+        boot(terms(['0', '1', '2']));
+        expect(active()).toBe('1');
+        expect(lastTab()).toEqual({ id: '1', kind: 'terminal' });
+      });
+
+      // The window's own tab came back as another kind: it lands somewhere else, and
+      // that move is a change of selection like any other.
+      it('is written when the restored tab is gone and the window lands elsewhere', () => {
+        localStorage.setItem(LAST, JSON.stringify({ id: '2', kind: 'terminal' }));
+        sessionStorage.setItem(OWN, JSON.stringify({ id: '1', kind: 'editor' }));
+        boot(terms(['0', '1', '2']));
+        expect(active()).toBe('0');
+        expect(lastTab()).toEqual({ id: '0', kind: 'terminal' });
+      });
+
+      // `?new=1` and a legacy `/<id>` are instructions, not restores.
+      it('is written by a legacy /<id> boot', () => {
+        localStorage.setItem(LAST, JSON.stringify({ id: '2', kind: 'terminal' }));
+        sessionStorage.setItem(OWN, JSON.stringify({ id: '2', kind: 'terminal' }));
+        history.replaceState(null, '', '/1');
+        boot(terms(['0', '1', '2']));
+        expect(active()).toBe('1');
+        expect(lastTab()).toEqual({ id: '1', kind: 'terminal' });
+      });
+
+      it('is written by a ?new=1 boot once the new terminal is listed', () => {
+        localStorage.setItem(LAST, JSON.stringify({ id: '2', kind: 'terminal' }));
+        sessionStorage.setItem(OWN, JSON.stringify({ id: '2', kind: 'terminal' }));
+        history.replaceState(null, '', '/?new=1');
+        boot(terms(['0', '1', '2']));
+        expect(active()).toBe('3');
+        sessions(terms(['0', '1', '2', '3']));
+        expect(lastTab()).toEqual({ id: '3', kind: 'terminal' });
+      });
+    });
   });
 });
 
@@ -3790,15 +4146,19 @@ describe('pop-out return button', () => {
   });
 });
 
-// The topbar leads with an app menu, not the wordmark. It is the pointer route to
-// Settings once the rail is hidden, and the one place Reload app can be reached
-// without opening a panel — so it carries the same discard guard Settings does.
+// The topbar ENDS with an app menu (it replaced the wordmark, then moved over the
+// rail). It is a second pointer route to Settings beside the rail's, and the one
+// place Reload app can be reached without opening a panel — so it carries the same discard guard Settings does.
 const openMenu = () => userEvent.click(screen.getByTestId('app-menu-button'));
 /** The dock's Settings view, and the Reload row inside it. */
 const openSettingsRow = async () => {
   fireEvent.click(screen.getByTestId('dock-rail-settings'));
   return screen.findByTestId('reload-app');
 };
+
+/** A client stylesheet's text with its comments removed (happy-dom loads no CSS). */
+const sheetWithoutComments = (file: string) =>
+  readFileSync(join(__dirname, file), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
 
 describe('app menu', () => {
   const EDITOR_TABS = [
@@ -3835,7 +4195,51 @@ describe('app menu', () => {
     const button = screen.getByTestId('app-menu-button');
     expect(button).toHaveAttribute('aria-label', 'palmux menu');
     expect(button.querySelector('svg')?.innerHTML).toBe(iconPaths('menu'));
-    expect(topbar?.firstElementChild).toBe(button);
+    // Batch 12: it moved from the START of the bar to its END, over the rail.
+    expect(topbar?.lastElementChild).toBe(button);
+    expect(topbar?.firstElementChild).not.toBe(button);
+  });
+
+  // The menu sits over the rail column, which is the right edge; the strip has
+  // the left edge to itself. DOM order is what lays that out (the spacer between
+  // them takes the slack), so it is what is pinned here.
+  it('starts the topbar with the tab strip and ends it with the menu, after [+]', () => {
+    setup();
+    const topbar = document.querySelector('.topbar')!;
+    const strip = screen.getByTestId('session-tabs');
+    const plus = screen.getByTestId('session-new');
+    const button = screen.getByTestId('app-menu-button');
+    expect(topbar.firstElementChild).toBe(strip);
+    expect(strip).toContainElement(plus);
+    expect(plus.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(topbar.lastElementChild).toBe(button);
+  });
+
+  // The dropdown grows from a trigger at the right edge of the window. Left-aligned
+  // (the kit's default) it would open rightwards and leave the screen.
+  it('opens its menu aligned to the trigger\'s right edge', async () => {
+    setup();
+    await openMenu();
+    expect(screen.getByRole('menu')).toHaveAttribute('data-align', 'end');
+  });
+
+  // happy-dom has no layout, so the column alignment is checked where it is
+  // written. The rail's width is a literal in dock.css and the topbar needs the
+  // same number to centre the button over the rail's own buttons: two copies of
+  // one figure, so this fails the moment either moves alone.
+  it('centres the menu button over the dock rail column, from the rail\'s own width', () => {
+    const railWidth = /\.dock-rail\s*\{[^}]*?flex:\s*0 0 (\d+)px/.exec(
+      sheetWithoutComments('session/dock.css'),
+    )?.[1];
+    const topbarCss = sheetWithoutComments('index.css');
+    const cell = /\.topbar\s*\{[^}]*?--rail-w:\s*(\d+)px/.exec(topbarCss)?.[1];
+    expect(railWidth).toBeDefined();
+    expect(cell).toBe(railWidth);
+    const menuRule = /\.topbar \.topbar-menu\s*\{([^}]*)\}/.exec(topbarCss)?.[1];
+    expect(menuRule).toContain('var(--rail-w)');
+
+    setup();
+    expect(screen.getByTestId('app-menu-button')).toHaveClass('topbar-menu');
   });
 
   it('offers Settings, Tips and Reload app', async () => {
@@ -3848,19 +4252,23 @@ describe('app menu', () => {
     ]);
   });
 
-  it('opens Settings with the rail hidden', async () => {
+  // Realigned (batch 12): the rail is always shown on desktop, so a stored
+  // `sidebarRail: 'hidden'` no longer removes it. The menu still opens Settings,
+  // now with the rail present.
+  it('opens Settings with the rail present, even for a stored sidebarRail of hidden', async () => {
     localStorage.setItem(
       'palmux-settings',
       JSON.stringify({ mobileMode: 'off', sidebarRail: 'hidden' }),
     );
     setup();
-    expect(screen.queryByTestId('dock-rail')).toBeNull();
+    expect(screen.getByTestId('dock-rail')).toBeInTheDocument();
     expect(screen.queryByTestId('dock')).toBeNull();
 
     await openMenu();
     await userEvent.click(screen.getByTestId('app-menu-settings'));
 
     expect(screen.getByTestId('dock')).toHaveAttribute('data-view', 'settings');
+    expect(screen.getByTestId('dock-rail')).toBeInTheDocument();
     expect(screen.queryByRole('menu')).toBeNull();
   });
 
@@ -4438,13 +4846,6 @@ describe('Settings in the app', () => {
       keptInRaw();
     });
 
-    it('a row of the form that leaves Settings asks too', async () => {
-      await dirtyConfig('form');
-      fireEvent.click(screen.getByTestId('open-dictation-history'));
-      expect(confirm).toHaveBeenCalledWith(DISCARD);
-      keptInRaw();
-    });
-
     it('OK lets the dock go, and a reload no longer asks about the buffer', async () => {
       reloadApp.mockClear();
       await dirtyConfig();
@@ -4642,8 +5043,9 @@ describe('Settings in the app', () => {
         expect(screen.getByTestId('drawer-settings-body')).toContainElement(
           screen.getByTestId('theme-browser'),
         );
-        // The first control the sub-view draws here is a theme.
-        expect(document.activeElement).toBe(document.querySelector("[data-testid^='theme-opt-']"));
+        // The first control the sub-view draws here is the mode switch (batch 12):
+        // it now sits above Import and the list, and the drawer hides ‹ Settings.
+        expect(document.activeElement).toBe(screen.getByTestId('set-theme-mode-fixed'));
 
         await tabTo(screen.getByTestId('drawer-settings-back'), true);
         await userEvent.keyboard('{Enter}');
@@ -4658,5 +5060,485 @@ describe('Settings in the app', () => {
         sheet.remove();
       }
     });
+  });
+
+  // ── Match system (batch 12) ─────────────────────────────────────────────────
+  //
+  // `themeId` is the persisted pick and, in Match system, only what the server
+  // exports. What a client PAINTS is one resolved id, from its own colour scheme.
+  describe('Match system', () => {
+    // Four themes whose derived UI base differs, so a re-skin shows up in --t-base.
+    const [A, B, C, D] = (() => {
+      const base = (p: ColorProfile) => hex(deriveUiTokens(p).base);
+      const picked: ColorProfile[] = [];
+      for (const p of allProfiles().filter((q) => q.id !== DEFAULTS.themeId)) {
+        if (picked.every((q) => base(q) !== base(p))) picked.push(p);
+        if (picked.length === 4) break;
+      }
+      if (picked.length < 4) throw new Error('the registry needs four visibly different themes');
+      return picked as [ColorProfile, ColorProfile, ColorProfile, ColorProfile];
+    })();
+    const baseOf = (p: ColorProfile) => hex(deriveUiTokens(p).base);
+    const base = () => document.documentElement.style.getPropertyValue('--t-base');
+    const SYSTEM = { themeMode: 'system', themeId: C.id, themeDark: A.id, themeLight: B.id };
+    const seed = (settings: Record<string, unknown>) =>
+      localStorage.setItem('palmux-settings', JSON.stringify({ mobileMode: 'off', ...settings }));
+    const stored = () =>
+      JSON.parse(localStorage.getItem('palmux-settings') ?? '{}') as ClientSettings;
+    /** The theme id the terminal pane was handed: what it paints. */
+    const paneTheme = () => screen.getByTestId('term-pane-a').dataset['theme'];
+    const sent = () => server().settingsSent;
+
+    /** A `matchMedia` the test flips, as the browser would on a scheme change. */
+    let flip: (dark: boolean) => void = () => {};
+    let spy: MockInstance<typeof window.matchMedia>;
+    const stubScheme = (initialDark: boolean) => {
+      let dark = initialDark;
+      const listeners = new Set<() => void>();
+      spy = vi.spyOn(window, 'matchMedia').mockImplementation(
+        (query: string) =>
+          ({
+            media: query,
+            get matches() {
+              return query.includes('prefers-color-scheme: dark') ? dark : false;
+            },
+            addEventListener: (_: string, cb: () => void) => listeners.add(cb),
+            removeEventListener: (_: string, cb: () => void) => listeners.delete(cb),
+          }) as unknown as MediaQueryList,
+      );
+      flip = (next) => {
+        dark = next;
+        act(() => listeners.forEach((cb) => cb()));
+      };
+    };
+    afterEach(() => spy?.mockRestore());
+
+    describe('what is painted', () => {
+      it('fixed mode paints themeId, and a scheme change moves nothing', () => {
+        stubScheme(true);
+        seed({ themeMode: 'fixed', themeId: C.id, themeDark: A.id, themeLight: B.id });
+        setup(['0', '1']);
+        expect(base()).toBe(baseOf(C));
+        expect(paneTheme()).toBe(C.id);
+        flip(false);
+        expect(base()).toBe(baseOf(C));
+        expect(paneTheme()).toBe(C.id);
+        expect(sent()).toEqual([]);
+      });
+
+      it('applies the dark theme when the system is dark, to the app AND the terminal', () => {
+        stubScheme(true);
+        seed(SYSTEM);
+        setup(['0', '1']);
+        expect(base()).toBe(baseOf(A));
+        expect(paneTheme()).toBe(A.id);
+      });
+
+      it('applies the light theme when the system is not dark, to the app AND the terminal', () => {
+        stubScheme(false);
+        seed(SYSTEM);
+        setup(['0', '1']);
+        expect(base()).toBe(baseOf(B));
+        expect(paneTheme()).toBe(B.id);
+      });
+
+      it('switches live on a scheme change, in both directions', () => {
+        stubScheme(true);
+        seed(SYSTEM);
+        setup(['0', '1']);
+        flip(false);
+        expect(base()).toBe(baseOf(B));
+        expect(paneTheme()).toBe(B.id);
+        flip(true);
+        expect(base()).toBe(baseOf(A));
+        expect(paneTheme()).toBe(A.id);
+      });
+
+      // The `themes` broadcast re-applies the tokens. It used to read themeId, which
+      // in this mode is not what the client shows.
+      it('keeps painting the resolved theme when a themes broadcast re-applies it', () => {
+        stubScheme(true);
+        seed(SYSTEM);
+        setup(['0', '1']);
+        send({ type: 'themes', themes: [] });
+        expect(base()).toBe(baseOf(A));
+        expect(paneTheme()).toBe(A.id);
+      });
+
+      it('is not moved by another device writing themeId', () => {
+        stubScheme(true);
+        seed(SYSTEM);
+        setup(['0', '1']);
+        send({ type: 'settings', settings: { ...SYSTEM, themeId: B.id } });
+        expect(base()).toBe(baseOf(A));
+        expect(paneTheme()).toBe(A.id);
+        expect(stored().themeId).toBe(B.id); // taken from the server, just not painted
+      });
+
+      it('stands themeId in for a slot that was never chosen', () => {
+        stubScheme(true);
+        seed({ ...SYSTEM, themeDark: '' });
+        setup(['0', '1']);
+        expect(paneTheme()).toBe(C.id);
+      });
+    });
+
+    // The server exports `themeId` (tmux, delta, Claude). In Match system a client
+    // writes it when ITS scheme changes, so the export follows the latest real
+    // switch — and never on boot or reconnect, or two devices in different schemes
+    // would fight on every load.
+    describe('the exported themeId', () => {
+      it('is written when the scheme actually changes', () => {
+        stubScheme(true);
+        seed(SYSTEM);
+        setup(['0', '1']);
+        flip(false);
+        expect(stored().themeId).toBe(B.id);
+        expect(sent().at(-1)).toMatchObject({ themeMode: 'system', themeId: B.id });
+        flip(true);
+        expect(stored().themeId).toBe(A.id);
+        expect(sent().at(-1)).toMatchObject({ themeId: A.id });
+        expect(sent()).toHaveLength(2);
+      });
+
+      it('is not written on boot, whatever the scheme resolves to', () => {
+        stubScheme(true);
+        seed(SYSTEM); // themeId is C, the dark slot is A: boot disagrees with the export
+        setup(['0', '1']);
+        expect(paneTheme()).toBe(A.id);
+        expect(stored().themeId).toBe(C.id);
+        expect(sent()).toEqual([]);
+      });
+
+      it('is not written on a reconnect or a settings broadcast', () => {
+        stubScheme(true);
+        seed(SYSTEM);
+        setup(['0', '1']);
+        send({ type: 'ready', maxUploadBytes: 0, webApps: [], version: 'v1' });
+        send({ type: 'settings', settings: SYSTEM });
+        send({ type: 'ready', maxUploadBytes: 0, webApps: [], version: 'v1' });
+        expect(stored().themeId).toBe(C.id);
+        expect(sent()).toEqual([]);
+      });
+
+      it('is not written in fixed mode', () => {
+        stubScheme(true);
+        seed({ ...SYSTEM, themeMode: 'fixed' });
+        setup(['0', '1']);
+        flip(false);
+        expect(sent()).toEqual([]);
+        expect(stored().themeId).toBe(C.id);
+      });
+
+      it('is not rewritten when it already is the new scheme’s theme', () => {
+        stubScheme(true);
+        seed({ ...SYSTEM, themeId: B.id });
+        setup(['0', '1']);
+        flip(false); // resolves to B, which is what the server already holds
+        expect(sent()).toEqual([]);
+      });
+    });
+
+    describe('picks and imports through the dock', () => {
+      const openThemes = async () => {
+        openDockSettings();
+        await userEvent.click(await screen.findByTestId('set-theme'));
+      };
+      const importAs = (source: string) =>
+        userEvent.type(screen.getByTestId('set-theme-import'), `${source}{Enter}`);
+      const NORD = {
+        id: 'user:nord',
+        name: 'Nord',
+        fg: 0xffffff,
+        bg: 0x101820,
+        ansi16: Array.from({ length: 16 }, (_, i) => i * 0x101010),
+      };
+      afterEach(() => registerDynamicThemes([]));
+
+      it('a pick for the active slot shows at once; one for the other slot does not', async () => {
+        stubScheme(true);
+        seed(SYSTEM);
+        setup(['0', '1']);
+        await openThemes();
+
+        fireEvent.click(screen.getByTestId(`theme-opt-${D.id}`)); // dark slot, active
+        expect(stored().themeDark).toBe(D.id);
+        expect(base()).toBe(baseOf(D));
+        expect(paneTheme()).toBe(D.id);
+
+        await userEvent.click(screen.getByTestId('set-theme-slot-light'));
+        fireEvent.click(screen.getByTestId(`theme-opt-${A.id}`)); // light slot, inactive
+        expect(stored().themeLight).toBe(A.id);
+        expect(base()).toBe(baseOf(D)); // unchanged
+        expect(paneTheme()).toBe(D.id);
+        // The active-slot pick moved the export (it changed what this device shows); the
+        // inactive-slot pick did not.
+        expect(stored().themeId).toBe(D.id);
+        expect(sent().at(-1)?.['themeId']).toBe(D.id);
+      });
+
+      it('an import in fixed mode becomes themeId, as it always did', async () => {
+        stubScheme(true);
+        seed({ ...SYSTEM, themeMode: 'fixed' });
+        setup(['0', '1']);
+        await openThemes();
+        await importAs('Nord');
+        expect(server().imports).toEqual(['Nord']);
+        send({ type: 'themeImported', ok: true, id: NORD.id, detail: 'Nord' });
+        expect(stored().themeId).toBe(NORD.id);
+        expect(paneTheme()).toBe(NORD.id);
+      });
+
+      it('an import in Match system fills the slot being edited, and shows when it is active', async () => {
+        stubScheme(true);
+        seed(SYSTEM);
+        setup(['0', '1']);
+        await openThemes();
+        await importAs('Nord'); // dark slot: the active scheme
+        send({ type: 'themeImported', ok: true, id: NORD.id, detail: 'Nord' });
+        // On screen now, so the export follows it, as a pick for the active slot does.
+        expect(stored()).toMatchObject({ themeDark: NORD.id, themeLight: B.id, themeId: NORD.id });
+        expect(paneTheme()).toBe(NORD.id);
+      });
+
+      it('an import into the inactive slot is stored and shows nothing', async () => {
+        stubScheme(true);
+        seed(SYSTEM);
+        setup(['0', '1']);
+        await openThemes();
+        await userEvent.click(screen.getByTestId('set-theme-slot-light'));
+        await importAs('Nord');
+        send({ type: 'themeImported', ok: true, id: NORD.id, detail: 'Nord' });
+        expect(stored()).toMatchObject({ themeDark: A.id, themeLight: NORD.id, themeId: C.id });
+        expect(paneTheme()).toBe(A.id);
+        expect(base()).toBe(baseOf(A));
+      });
+
+      // The target is the slot at SUBMIT time, not at completion time.
+      it('a completion after a slot switch still lands in the slot it was submitted for', async () => {
+        stubScheme(true);
+        seed(SYSTEM);
+        setup(['0', '1']);
+        await openThemes();
+        await userEvent.click(screen.getByTestId('set-theme-slot-light'));
+        await importAs('Nord');
+        await userEvent.click(screen.getByTestId('set-theme-slot-dark')); // moved on
+        send({ type: 'themeImported', ok: true, id: NORD.id, detail: 'Nord' });
+        expect(stored()).toMatchObject({ themeDark: A.id, themeLight: NORD.id });
+        expect(paneTheme()).toBe(A.id);
+      });
+
+      // B12-R2-02. A fixed-target import completing in Match system must not write
+      // themeId: it would overwrite the scheme export with no scheme change behind it.
+      it('a fixed import completing after Fixed → Match system and a scheme change leaves themeId alone', async () => {
+        stubScheme(true);
+        seed({ themeMode: 'fixed', themeId: C.id });
+        setup(['0', '1']);
+        await openThemes();
+        await importAs('Nord'); // captured as a FIXED target
+        expect(server().imports).toEqual(['Nord']);
+
+        await userEvent.click(screen.getByTestId('set-theme-mode-system'));
+        fireEvent.click(screen.getByTestId(`theme-opt-${A.id}`)); // dark slot
+        await userEvent.click(screen.getByTestId('set-theme-slot-light'));
+        fireEvent.click(screen.getByTestId(`theme-opt-${B.id}`)); // light slot
+        flip(false); // a real scheme change: the export becomes the light theme
+        expect(stored().themeId).toBe(B.id);
+
+        send({ type: 'themeImported', ok: true, id: NORD.id, detail: 'Nord' });
+        expect(stored()).toMatchObject({
+          themeMode: 'system',
+          themeId: B.id,
+          themeDark: A.id,
+          themeLight: B.id,
+        });
+        expect(paneTheme()).toBe(B.id);
+        expect(base()).toBe(baseOf(B));
+        // Imported, so it is in the list — it was just not selected.
+        send({ type: 'themes', themes: [NORD] });
+        expect(screen.getByTestId(`theme-opt-${NORD.id}`)).toBeInTheDocument();
+        expect(screen.getByText('Imported Nord')).toBeInTheDocument();
+      });
+
+      it('a slot import completing after a switch to Fixed is not auto-selected either', async () => {
+        stubScheme(true);
+        seed(SYSTEM);
+        setup(['0', '1']);
+        await openThemes();
+        await userEvent.click(screen.getByTestId('set-theme-slot-light'));
+        await importAs('Nord'); // captured as a LIGHT-slot target
+        await userEvent.click(screen.getByTestId('set-theme-mode-fixed'));
+        expect(stored()).toMatchObject({ themeMode: 'fixed', themeId: A.id });
+
+        send({ type: 'themeImported', ok: true, id: NORD.id, detail: 'Nord' });
+        expect(stored()).toMatchObject({ themeId: A.id, themeLight: B.id });
+        expect(paneTheme()).toBe(A.id);
+      });
+
+      // B12-I01. Comparing modes at completion cannot see a round trip: Fixed →
+      // Match system → Fixed ends where it started, and the late import then
+      // overwrote the theme the user picked after coming back.
+      it('a Fixed → Match system → Fixed round trip supersedes the import and keeps the newer pick', async () => {
+        stubScheme(true);
+        seed({ themeMode: 'fixed', themeId: C.id });
+        setup(['0', '1']);
+        await openThemes();
+        await importAs('Nord'); // captured as a FIXED target
+        await userEvent.click(screen.getByTestId('set-theme-mode-system'));
+        await userEvent.click(screen.getByTestId('set-theme-mode-fixed'));
+        fireEvent.click(screen.getByTestId(`theme-opt-${D.id}`)); // the newer choice
+        expect(stored()).toMatchObject({ themeMode: 'fixed', themeId: D.id });
+
+        send({ type: 'themeImported', ok: true, id: NORD.id, detail: 'Nord' });
+        expect(stored()).toMatchObject({ themeMode: 'fixed', themeId: D.id });
+        expect(paneTheme()).toBe(D.id);
+        expect(screen.getByText('Imported Nord')).toBeInTheDocument();
+      });
+
+      it('a mode round trip from another device supersedes the import too', async () => {
+        stubScheme(true);
+        seed({ themeMode: 'fixed', themeId: C.id });
+        setup(['0', '1']);
+        await openThemes();
+        await importAs('Nord');
+        send({ type: 'settings', settings: { ...SYSTEM } });
+        send({ type: 'settings', settings: { ...SYSTEM, themeMode: 'fixed', themeId: D.id } });
+
+        send({ type: 'themeImported', ok: true, id: NORD.id, detail: 'Nord' });
+        expect(stored()).toMatchObject({ themeMode: 'fixed', themeId: D.id });
+        expect(paneTheme()).toBe(D.id);
+        expect(sent()).toEqual([]);
+      });
+
+      // Two broadcasts can land before React renders either, and a transition
+      // counted per RENDER would then see fixed → fixed: no change at all.
+      it('counts both transitions when two broadcasts land in one render', async () => {
+        stubScheme(true);
+        seed({ themeMode: 'fixed', themeId: C.id });
+        setup(['0', '1']);
+        await openThemes();
+        await importAs('Nord');
+        act(() => {
+          server().handler!({ type: 'settings', settings: { ...SYSTEM } });
+          server().handler!({
+            type: 'settings',
+            settings: { ...SYSTEM, themeMode: 'fixed', themeId: D.id },
+          });
+        });
+
+        send({ type: 'themeImported', ok: true, id: NORD.id, detail: 'Nord' });
+        expect(stored()).toMatchObject({ themeMode: 'fixed', themeId: D.id });
+      });
+
+      // A broadcast that leaves the mode where it was is not a transition: an
+      // unrelated save from another device must not cost this import its selection.
+      it('a broadcast that keeps the mode still lets the import auto-select', async () => {
+        stubScheme(true);
+        seed({ themeMode: 'fixed', themeId: C.id });
+        setup(['0', '1']);
+        await openThemes();
+        await importAs('Nord');
+        send({
+          type: 'settings',
+          settings: { themeMode: 'fixed', themeId: C.id, cursorBlink: false },
+        });
+        send({ type: 'settings', settings: { cursorBlink: true } }); // an older bundle: no mode
+
+        send({ type: 'themeImported', ok: true, id: NORD.id, detail: 'Nord' });
+        expect(stored().themeId).toBe(NORD.id);
+        expect(paneTheme()).toBe(NORD.id);
+      });
+
+      it('a failed import selects nothing and says why', async () => {
+        stubScheme(true);
+        seed(SYSTEM);
+        setup(['0', '1']);
+        await openThemes();
+        await importAs('Nord');
+        send({ type: 'themeImported', ok: false, detail: 'not a theme' });
+        expect(stored()).toMatchObject({ themeDark: A.id, themeLight: B.id, themeId: C.id });
+        expect(screen.getByText('Import failed — not a theme')).toBeInTheDocument();
+      });
+    });
+  });
+
+  // ── Settings › App (batch 12) ───────────────────────────────────────────────
+  describe('the App section', () => {
+    it('has no Sidebar rail and no Dictation history row', async () => {
+      setup(['0', '1']);
+      openDockSettings();
+      await screen.findByTestId('reload-app');
+      expect(screen.queryByTestId('set-sidebar-rail')).toBeNull();
+      expect(screen.queryByTestId('open-dictation-history')).toBeNull();
+    });
+
+    it('still opens Dictation from the rail', () => {
+      setup(['0', '1']);
+      fireEvent.click(screen.getByTestId('dock-rail-dictation'));
+      expect(screen.getByTestId('dock')).toHaveAttribute('data-view', 'dictation');
+    });
+
+    it('shows the rail for a stored sidebarRail of hidden, which nothing reads any more', () => {
+      localStorage.setItem(
+        'palmux-settings',
+        JSON.stringify({ mobileMode: 'off', sidebarRail: 'hidden' }),
+      );
+      setup(['0', '1']);
+      expect(screen.getByTestId('dock-rail')).toBeInTheDocument();
+      expect(screen.getByTestId('dock-rail-settings')).toBeInTheDocument();
+      expect(screen.getByTestId('dock-rail-dictation')).toBeInTheDocument();
+    });
+  });
+});
+
+// ── The Download prompt uses the path exactly as typed (batch 11) ─────────────────
+//
+// `report` and `report ` are two different files. The prompt's value was trimmed before
+// it was sent, so asking for the second downloaded the first. `trim()` now only decides
+// whether anything was entered.
+describe('the Download prompt uses the path exactly as typed', () => {
+  const LINE_BREAK = 'That path contains a line break — paste it without the newline';
+  let prompt: MockInstance;
+  beforeEach(() => {
+    downloadFromServer.mockClear();
+    prompt = vi.spyOn(window, 'prompt');
+  });
+  afterEach(() => prompt.mockRestore());
+
+  const download = (answer: string | null) => {
+    prompt.mockReturnValue(answer);
+    setup(['0']);
+    fireEvent.click(screen.getByTestId('dock-rail-download'));
+  };
+
+  it('hands a trailing-space path to downloadFromServer byte for byte', () => {
+    download('/tmp/report ');
+    expect(downloadFromServer).toHaveBeenCalledTimes(1);
+    expect(downloadFromServer).toHaveBeenCalledWith('/tmp/report ');
+  });
+
+  it('does not repair a path that starts with whitespace: the server refuses it', () => {
+    download(' /tmp/report');
+    expect(downloadFromServer).toHaveBeenCalledWith(' /tmp/report');
+  });
+
+  it('downloads nothing for a cancelled prompt or a blank entry', () => {
+    for (const answer of [null, '', '   ', '\t']) {
+      downloadFromServer.mockClear();
+      cleanup();
+      sockets.length = 0;
+      download(answer);
+      expect(downloadFromServer, JSON.stringify(answer)).not.toHaveBeenCalled();
+    }
+  });
+
+  // `window.prompt` removes line breaks from what it returns, so a path that carried one
+  // cannot be entered here (the Explorer's own download passes a row's path unchanged and
+  // covers it). Where a value does arrive with one, it is refused rather than downloaded
+  // as the sibling without it.
+  it('refuses a value that holds a line break, with a toast', () => {
+    download('/tmp/notes.md\n');
+    expect(downloadFromServer).not.toHaveBeenCalled();
+    expect(document.querySelector('.toast.show')?.textContent).toBe(LINE_BREAK);
   });
 });

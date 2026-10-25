@@ -158,29 +158,6 @@
   min-width: 0;
 }
 
-/* A row whose value needs the full width (a URL, an install command): one
-   column, so it spans where the label and the control would have been. The field
-   takes what the button leaves. */
-.settings-view .srow-stacked {
-  grid-template-columns: minmax(0, 1fr);
-  row-gap: var(--sp-1);
-}
-
-.settings-view .srow-stacked .srow-control {
-  justify-content: stretch;
-  gap: var(--sp-2);
-}
-
-.settings-view .srow-stacked .srow-control > .ui-input {
-  flex: 1 1 0;
-  width: auto;
-}
-
-.settings-view .srow-stacked .srow-control > .ui-btn {
-  flex: 0 0 auto;
-  width: auto;
-}
-
 /* ── Control height ───────────────────────────────────────────────────────────
    The kit already draws these --ctl-h tall with the --r-2 corner. What differs is
    the kind of box: on a Button and an Input the kit's --ctl-h is a `min-height`
@@ -307,7 +284,8 @@
    also takes it out of the tab order and the accessibility tree. That is safe only
    because the header answers Enter, Space and assistive-tech clicks as well as
    the pointer (`pressClick` in panes/press.ts). SettingsFields moves focus to the
-   first control the sub-view draws, so here focus lands on the first theme. */
+   first control the sub-view draws, so here focus lands on the Fixed segment of
+   the mode switch. */
 .drawer-settings-body .settings-view .set-back {
   display: none;
 }

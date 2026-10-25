@@ -11,10 +11,16 @@ import { DEFAULT_THEME_ID } from './themes';
 import { parsePins } from '../panes/explorer-pins';
 
 export type MobileModePref = 'auto' | 'on' | 'off';
-/** Whether the side dock keeps a permanent icon rail. Per-device: `always` is
- *  right on a desktop and wrong on a phone, so a synced value is wrong on one
- *  of them. */
+/** Kept only so an old settings.json still parses: the desktop rail is always
+ *  shown now and nothing reads this for layout. */
 export type SidebarRailPref = 'always' | 'hidden';
+/** One theme everywhere (`fixed`), or one per system colour scheme (`system`). */
+export type ThemeMode = 'fixed' | 'system';
+/** The two system colour schemes a `system` theme is chosen for. */
+export type ThemeSlot = 'dark' | 'light';
+/** What a theme pick (or a finished import) is FOR. Captured when it is made, so
+ *  an answer that lands after the user changed mode can tell it was superseded. */
+export type ThemeTarget = { mode: 'fixed' } | { mode: 'system'; slot: ThemeSlot };
 export type CursorStyle = 'block' | 'underline' | 'bar';
 
 // A type alias (not interface) so it stays assignable to JsonValue for the
@@ -25,14 +31,21 @@ export interface ClientSettings {
   /** Per-device, local-only: terminal zoom (pinch/±). Never synced to the server. */
   fontSize: number;
   fontFamily: string;
+  /** The picked theme in `fixed` mode. In `system` mode it is only what the
+   *  server exports (tmux, delta, Claude): this client writes it when its own
+   *  colour scheme CHANGES, never on boot, and rendering never reads it. */
   themeId: string;
+  themeMode: ThemeMode;
+  /** The theme for a dark / light system scheme. '' = not chosen yet, which
+   *  `themeId` stands in for; switching to `system` fills both from it. */
+  themeDark: string;
+  themeLight: string;
   scrollback: number;
   cursorBlink: boolean;
   cursorStyle: CursorStyle;
   /** Per-device, local-only: force the mobile layer on/off, or auto-detect. */
   mobileMode: MobileModePref;
-  /** Per-device, local-only: keep the dock's icon rail permanently visible.
-   *  Deliberately absent from SYNCED_KEYS — see the comment there. */
+  /** Per-device, local-only and no longer read: see SidebarRailPref. */
   sidebarRail: SidebarRailPref;
   /** User-defined dashboard links; synced so every device shares them. */
   quickLinks: QuickLink[];
@@ -84,6 +97,9 @@ export const DEFAULTS: ClientSettings = {
   fontSize: 14,
   fontFamily: DEFAULT_FONT_STACK,
   themeId: DEFAULT_THEME_ID,
+  themeMode: 'fixed',
+  themeDark: '',
+  themeLight: '',
   scrollback: 5000,
   cursorBlink: true,
   cursorStyle: 'block',
@@ -108,17 +124,22 @@ const STORAGE_KEY = 'palmux-settings';
 
 // Fields mirrored to the server. Per-device concerns (mobileMode, fontSize,
 // sidebarRail) are deliberately excluded so they never roam across devices.
-// `sidebarRail` in particular must never be added here: a value that follows you
-// from a desktop to a phone is wrong on one of them, and a synced copy would put
+// `sidebarRail` in particular must never be added here: a synced copy would put
 // a per-machine value back into the dotfiles-tracked settings.json that
 // settings.local.json exists to keep it out of. `themeId` is the odd
 // one out: it IS synced, because the server reads it at boot to regenerate the
 // tmux/delta/Claude theme exports with no browser connected — but the server
 // then persists it per-machine, to settings.local.json. See LOCAL_SETTINGS_KEYS
-// in server/config.ts.
+// in server/config.ts. The three new theme keys are plain synced settings:
+// "dark -> X, light -> Y" is the same preference on every device. A client on an
+// older bundle neither reads nor sends them, and the server replaces the whole
+// object on every save, so such a client's next save erases them.
 const SYNCED_KEYS = [
   'fontFamily',
   'themeId',
+  'themeMode',
+  'themeDark',
+  'themeLight',
   'scrollback',
   'cursorBlink',
   'cursorStyle',
@@ -199,6 +220,11 @@ export function sanitize(s: ClientSettings): ClientSettings {
     mobileMode: (['auto', 'on', 'off'] as const).includes(s.mobileMode)
       ? s.mobileMode
       : DEFAULTS.mobileMode,
+    themeMode: (['fixed', 'system'] as const).includes(s.themeMode)
+      ? s.themeMode
+      : DEFAULTS.themeMode,
+    themeDark: typeof s.themeDark === 'string' ? s.themeDark : DEFAULTS.themeDark,
+    themeLight: typeof s.themeLight === 'string' ? s.themeLight : DEFAULTS.themeLight,
     sidebarRail: (['always', 'hidden'] as const).includes(s.sidebarRail)
       ? s.sidebarRail
       : DEFAULTS.sidebarRail,
@@ -233,4 +259,79 @@ export function resolveMobileMode(pref: MobileModePref): boolean {
   if (pref === 'on') return true;
   if (pref === 'off') return false;
   return isMobileDevice();
+}
+
+export const SYSTEM_DARK_QUERY = '(prefers-color-scheme: dark)';
+
+/** Whether THIS client's system colour scheme is dark right now. */
+export function systemPrefersDark(): boolean {
+  return typeof window.matchMedia === 'function' && window.matchMedia(SYSTEM_DARK_QUERY).matches;
+}
+
+type ThemeFields = Pick<ClientSettings, 'themeMode' | 'themeId' | 'themeDark' | 'themeLight'>;
+
+/**
+ * The ONE theme id this client renders. Every paint path reads this — the CSS
+ * tokens, the terminal, the dynamic-themes refresh, the pre-paint in main.tsx —
+ * and none reads `themeId`, which in `system` mode is only what the server
+ * exports. Resolved from the client's own scheme, so two devices in different
+ * schemes each show their own theme.
+ */
+export function resolveThemeId(s: ThemeFields, prefersDark: boolean): string {
+  if (s.themeMode !== 'system') return s.themeId;
+  return (prefersDark ? s.themeDark : s.themeLight) || s.themeId;
+}
+
+/**
+ * What a theme pick (or a finished import) writes, or null when it is
+ * superseded: the target was captured in one mode and the settings are now in
+ * another. A fixed pick landing in `system` mode would overwrite the exported
+ * `themeId` with no scheme change to justify it. In `system` mode a pick fills a
+ * slot and never touches `themeId`; whether it shows at once is then decided by
+ * `resolveThemeId`, i.e. only when that slot is the active scheme.
+ *
+ * Comparing modes is enough for a pick, which is applied as it is made. It is
+ * NOT enough for an import, which can land after Fixed → Match system → Fixed:
+ * the modes match again, and the late answer would overwrite whatever the user
+ * picked after coming back. App therefore also checks a mode GENERATION for
+ * imports (see `themeModeAfter`).
+ */
+export function themePick(
+  s: Pick<ClientSettings, 'themeMode'>,
+  target: ThemeTarget,
+  id: string,
+): Partial<ClientSettings> | null {
+  if (target.mode !== s.themeMode) return null;
+  if (target.mode === 'fixed') return { themeId: id };
+  return target.slot === 'dark' ? { themeDark: id } : { themeLight: id };
+}
+
+/**
+ * The theme mode a server settings blob leaves this client in. App counts mode
+ * transitions as broadcasts ARRIVE, because React can fold two of them into one
+ * render and a round trip would then look like no change; so it needs the
+ * answer before the merge runs. A blob without the key (an older bundle's save)
+ * keeps `current`. Delegating to `mergeServerSettings` keeps the two agreeing
+ * on every value, an unknown one included.
+ */
+export function themeModeAfter(current: ThemeMode, server: JsonObject): ThemeMode {
+  return mergeServerSettings({ ...DEFAULTS, themeMode: current }, server).themeMode;
+}
+
+/**
+ * What switching mode writes. `shown` is the theme on screen: into `system` an
+ * unchosen slot starts at the current theme, and back to `fixed` the pick is
+ * what is showing — both so the switch itself changes nothing the eye can see.
+ */
+export function themeModeChange(
+  s: Pick<ClientSettings, 'themeId' | 'themeDark' | 'themeLight'>,
+  mode: ThemeMode,
+  shown: string,
+): Partial<ClientSettings> {
+  if (mode === 'fixed') return { themeMode: 'fixed', themeId: shown };
+  return {
+    themeMode: 'system',
+    themeDark: s.themeDark || s.themeId,
+    themeLight: s.themeLight || s.themeId,
+  };
 }

@@ -8,11 +8,26 @@
 // framed page.
 //
 // Selection lives in `sessionStorage`, which is scoped to ONE browsing context.
-// That is the whole point: two browser windows on the same palmux hold
-// independent selections, and a new window starts clean. `localStorage` would do
-// the opposite — opening a second window would yank it to whatever the first was
-// showing. The tab LIST is unaffected and stays server state, shared by every
-// window; only "which one am I looking at" is local.
+// That is the point: two browser windows on the same palmux hold independent
+// selections, so one window never yanks the other. The tab LIST is unaffected and
+// stays server state, shared by every window; only "which one am I looking at" is
+// local.
+//
+// `sessionStorage` alone has one cost, and an installed PWA pays it on every
+// launch: its window is a browsing context the OS ends whenever it likes (Android
+// kills it freely), so the next launch had no selection and opened the first tab.
+// So the device's most recently SELECTED tab is kept in `localStorage` as well,
+// and a window reads it ONLY when it has no selection of its own — a fresh window
+// or a relaunched PWA. That preserves the rule above: an open window's own value
+// always wins, so the shared one can never move a window that is already showing
+// something. The price, taken on purpose: a second window opened later starts on
+// whatever was selected last anywhere on this device.
+//
+// Who WRITES the shared value matters as much as who reads it, and that is App's
+// decision, not this module's. It may write only when a window's selection really
+// changes — never because a tab-list or title broadcast re-ran the persist effect,
+// or a window that merely heard a rename would overwrite the tab another window
+// just chose. A pop-out writes neither value.
 //
 // Nothing here throws. Storage can be unavailable (private mode, storage
 // disabled) or hold anything at all, and a terminal that refuses to load because
@@ -21,6 +36,9 @@
 import type { TabKind, TabMeta } from '@palmux/shared';
 
 const KEY = 'palmux-window-tab';
+
+/** The device-wide copy: the tab most recently selected in ANY window here. */
+export const LAST_TAB_KEY = 'palmux-last-tab';
 
 /**
  * The stored selection.
@@ -51,13 +69,33 @@ export function parseSelection(raw: string | null): WindowSelection | null {
   }
 }
 
-/** This window's remembered selection, or null. */
-export function readSelection(): WindowSelection | null {
+/** This window's own remembered selection, or null. */
+function readOwnSelection(): WindowSelection | null {
   try {
     return parseSelection(sessionStorage.getItem(KEY));
   } catch {
+    return null; // storage unavailable — fall through to the device-wide value
+  }
+}
+
+/** The device's last selected tab, or null. */
+export function readLastTab(): WindowSelection | null {
+  try {
+    return parseSelection(localStorage.getItem(LAST_TAB_KEY));
+  } catch {
     return null; // storage unavailable — the caller falls back to the first tab
   }
+}
+
+/**
+ * The selection to boot from: this window's own, else the device's last one.
+ *
+ * "Own" means usable — an unparsable `sessionStorage` value is the same as none,
+ * so a window with a corrupt value still comes back on the last tab and not on
+ * the first.
+ */
+export function readSelection(): WindowSelection | null {
+  return readOwnSelection() ?? readLastTab();
 }
 
 /** Remember a selection for this window only. Best-effort. */
@@ -70,8 +108,24 @@ export function writeSelection(sel: WindowSelection | null): void {
   }
 }
 
+/**
+ * Remember a selection for this DEVICE. Best-effort, and never clears.
+ *
+ * Deliberately a different function from `writeSelection`: that one runs on every
+ * tab-list broadcast and is idempotent, this one is only safe on a real change
+ * (see the header). It takes no `null` — a window with nothing selected has no
+ * opinion to store, and the previous value stays the best answer for a relaunch.
+ */
+export function writeLastTab(sel: WindowSelection): void {
+  try {
+    localStorage.setItem(LAST_TAB_KEY, JSON.stringify(sel));
+  } catch {
+    /* storage unavailable — a relaunch simply opens the first tab */
+  }
+}
+
 export interface ResolveInput {
-  /** What this window remembered, if anything. */
+  /** What this window (or, failing that, this device) remembered, if anything. */
   stored: WindowSelection | null;
   /** The live tabs, in STRIP order (the broadcast's order is authoritative). */
   tabs: TabMeta[];

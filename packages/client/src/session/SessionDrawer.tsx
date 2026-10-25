@@ -109,7 +109,7 @@ import { ErrorBoundary, IconButton, Segmented, type SegmentedOption } from '../u
 import { Icon } from '../ui/icons';
 import { useLeavingItems, type TrackedRow } from '../ui/useLeavingItems';
 import { consumeGesture, press, pressClick, pressMove } from '../panes/press';
-import type { ClientSettings } from '../settings/settings';
+import type { ClientSettings, ThemeTarget } from '../settings/settings';
 import './drawer-views.css';
 
 const LONG_PRESS_MS = 450;
@@ -191,9 +191,7 @@ interface SessionDrawerProps {
   /** Keybindings stay a modal — the editor needs the room. */
   onOpenKeybindings?: (() => void) | undefined;
   onOpenTips?: (() => void) | undefined;
-  /** Dictation history is a modal too (same precedent — the list needs room). */
-  onOpenDictationHistory?: (() => void) | undefined;
-  onImportTheme?: ((source: string) => void) | undefined;
+  onImportTheme?: ((source: string, target: ThemeTarget) => void) | undefined;
   importingTheme?: boolean | undefined;
   /** Server build the client last saw, shown next to the reload control. */
   appVersion?: string | undefined;
@@ -425,7 +423,6 @@ export const SessionDrawer = ({
   fontFamilies,
   onOpenKeybindings,
   onOpenTips,
-  onOpenDictationHistory,
   onImportTheme,
   importingTheme,
   appVersion,
@@ -1039,13 +1036,6 @@ export const SessionDrawer = ({
                 importingTheme={importingTheme}
                 appVersion={appVersion}
                 onReloadApp={onReloadApp}
-                onOpenDictationHistory={
-                  onOpenDictationHistory &&
-                  (() => {
-                    onOpenDictationHistory();
-                    onClose();
-                  })
-                }
               />
             </div>
           </>

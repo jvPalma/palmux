@@ -123,6 +123,10 @@ function useSeenOpen(ref: RefObject<HTMLElement | null>): boolean {
   return seen;
 }
 
+/** CR or LF anywhere in a path: a terminal paste's trailing newline, typically. */
+export const hasLineBreak = (path: string): boolean => /[\r\n]/.test(path);
+export const LINE_BREAK_MESSAGE = 'That path contains a line break — paste it without the newline';
+
 const SectionTitle = ({ label, count }: { label: string; count?: number | undefined }) => (
   <span className="dash-sec-title">
     <span className="dash-sec-label">{label}</span>
@@ -141,6 +145,7 @@ export const DashboardBody = ({
   const [urlDraft, setUrlDraft] = useState('');
   const [mdOpen, setMdOpen] = useState(false);
   const [mdDraft, setMdDraft] = useState('');
+  const [mdNote, setMdNote] = useState<string | null>(null);
   const [tmuxList, setTmuxList] = useState<TmuxListing | null>(null);
   const [tmuxFilter, setTmuxFilter] = useState('');
   const [ports, setPorts] = useState<PortListing>(NO_PORTS);
@@ -181,13 +186,24 @@ export const DashboardBody = ({
   };
 
   const openMarkdown = () => {
-    const path = mdDraft.trim();
-    // A non-empty path MUST be absolute (the server rejects the rest, matching
+    // The second line behind the paste guard: the field's own `onChange` never sees a
+    // line break in a browser, but a value that holds one must never be opened as the
+    // sibling without it (`notes.md` and `notes.md\n` are different files).
+    if (hasLineBreak(mdDraft)) {
+      setMdNote(LINE_BREAK_MESSAGE);
+      return;
+    }
+    // `trim()` only DETECTS a blank entry. The path is used exactly as typed: a name
+    // may end in a space, and trimming opened its sibling.
+    const blank = mdDraft.trim() === '';
+    // A non-blank path MUST be absolute (the server rejects the rest, matching
     // the shell-trust model) — keep the row open on a bad path instead of
-    // silently dropping it. Empty = a path-less tab that opens the browser view.
-    if (path && !path.startsWith('/')) return;
-    onCreate({ kind: 'markdown', ...(path ? { url: path } : {}) });
+    // silently dropping it. A leading space is not absolute and lands here too.
+    // Blank = a path-less tab that opens the browser view.
+    if (!blank && !mdDraft.startsWith('/')) return;
+    onCreate({ kind: 'markdown', ...(blank ? {} : { url: mdDraft }) });
     setMdDraft('');
+    setMdNote(null);
     setMdOpen(false);
   };
 
@@ -279,23 +295,43 @@ export const DashboardBody = ({
         )}
 
         {mdOpen && (
-          <div className="dash-row">
-            <Input
-              data-testid="dash-md-input"
-              placeholder="/absolute/path/to/file.md — empty = browse folders"
-              value={mdDraft}
-              autoFocus
-              spellCheck={false}
-              autoCapitalize="off"
-              onChange={(e) => setMdDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') openMarkdown();
-              }}
-            />
-            <Button data-testid="dash-md-go" {...pressMove(openMarkdown)}>
-              Open
-            </Button>
-          </div>
+          <>
+            <div className="dash-row">
+              <Input
+                data-testid="dash-md-input"
+                placeholder="/absolute/path/to/file.md — empty = browse folders"
+                value={mdDraft}
+                invalid={mdNote !== null}
+                autoFocus
+                spellCheck={false}
+                autoCapitalize="off"
+                onChange={(e) => {
+                  setMdDraft(e.target.value);
+                  setMdNote(null);
+                }}
+                // A text `<input>` removes CR and LF from a pasted value before
+                // `onChange` runs, so a path pasted from a terminal with its newline
+                // would arrive without it and name a DIFFERENT file. The raw clipboard
+                // text is the last place the line break is visible: refuse it here.
+                onPaste={(e) => {
+                  if (!hasLineBreak(e.clipboardData.getData('text'))) return;
+                  e.preventDefault();
+                  setMdNote(LINE_BREAK_MESSAGE);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') openMarkdown();
+                }}
+              />
+              <Button data-testid="dash-md-go" {...pressMove(openMarkdown)}>
+                Open
+              </Button>
+            </div>
+            {mdNote !== null && (
+              <div className="dash-note" role="alert" data-testid="dash-md-note">
+                {mdNote}
+              </div>
+            )}
+          </>
         )}
       </Collapsible>
 

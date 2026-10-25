@@ -7,14 +7,16 @@
 // and Monaco must not load in a unit run. What matters here is OUR glue —
 // notably that a toggle does not remount the editor.
 
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, posix } from 'node:path';
 import { parse, type AtRule, type Rule } from 'postcss';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FilePane } from './FilePane';
 import { FileTree, POLL_INTERVAL_MS } from './FileTree';
+import { writeExpandedDir } from './explorer-open';
 import { Icon } from '../ui/icons';
+import { DEFAULTS, mergeServerSettings, sanitize, toServerSettings } from '../settings/settings';
 
 vi.mock('./EditorPane', () => ({
   EditorPane: ({
@@ -102,6 +104,43 @@ const serve = (byDir: Record<string, Entry[]>, home = '/') => {
       ok: true,
       status: 200,
       json: async () => ({ path: dir, parent: '/', entries }),
+    });
+  });
+};
+
+/**
+ * Like `serve`, but answers the way the real route does (`server/files.ts` `listDir`):
+ * the requested `dir` goes through `path.resolve` EXACTLY AS GIVEN (whitespace is part
+ * of a name, so nothing is trimmed) and the listing's `path` is the result. `serve`
+ * echoes the request back, so it can never show a key the server reports differently.
+ * Resolves with `node:path`, not the client's own `normalizePin`, so the mock cannot
+ * agree with the code under test by construction.
+ *
+ * `trims` plays a server from BEFORE batch 11, which trimmed the request: it answers a
+ * folder named `report ` with the listing of its sibling `report`. The client still
+ * has to refuse that answer, because a new client can meet an old server until the
+ * server is restarted.
+ */
+const serveResolved = (byDir: Record<string, Entry[]>, home = '/', trims = false) => {
+  fetchMock.mockImplementation((url: string) => {
+    if (url.startsWith('/file-icons/')) {
+      return Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
+    }
+    const param = new URL(url, 'http://x').searchParams.get('dir');
+    const asked = param === null ? home : decodeURIComponent(param);
+    const path = posix.resolve(trims ? asked.trim() : asked);
+    const entries = byDir[path];
+    if (!entries) {
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        json: async () => ({ error: 'not found' }),
+      });
+    }
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      json: async () => ({ path, parent: posix.dirname(path), entries }),
     });
   });
 };
@@ -716,9 +755,10 @@ describe('Explorer remembers its open roots', () => {
     expect(stored()).toEqual({ v: 1, open: [] });
   });
 
-  // B8-CODE-02: a root is seeded into the shared `expanded` set as it ENTERS the
-  // open set, never again while it stays open. A pin nested in HOME is also a
-  // folder row inside HOME, so re-seeding it reopened that row.
+  // B8-CODE-02: toggling or re-delivering a root must not reopen a folder the user
+  // collapsed. A pin nested in HOME is also a folder row inside HOME, and it used
+  // to share the set that fetched roots, so re-seeding the root reopened that row.
+  // B9-02 removed the sharing itself (see 'Explorer remembers its expanded folders').
   const nested = {
     '/home/u': [folder('project'), file('a.txt')],
     '/home/u/project': [file('p.ts')],
@@ -733,15 +773,19 @@ describe('Explorer remembers its open roots', () => {
     return row;
   };
   const projectInHome = (): Element => rowIn('/home/u', '/home/u/project');
-  /** Restore all three roots open, then collapse `project` inside HOME. */
+  /** Restore all three roots open, open `project` inside HOME, then collapse it. */
   const collapseProjectInHome = async () => {
     seed(['/home/u', '/home/u/project', '/work']);
     serve(nested, '/home/u');
     const view = render(tree(['/home/u/project', '/work']));
     expect(await screen.findByTestId('ft-row-/work/app.ts')).toBeTruthy();
-    // The restore seeded the pinned root into `expanded`, so its folder inside
-    // HOME opens with it — what opening that section's header has always done.
-    await waitFor(() => expect(projectInHome()).toHaveAttribute('aria-expanded', 'true'));
+    // REALIGNED (B9-02): this used to wait for the restore to seed the pinned root
+    // into `expanded` and open its folder row inside HOME. Roots are loaded
+    // directly now and `expanded` holds only user folder expansions, so the row
+    // starts collapsed and the user opens it before collapsing it.
+    await waitFor(() => expect(projectInHome()).toHaveAttribute('aria-expanded', 'false'));
+    fireEvent.click(projectInHome());
+    expect(projectInHome()).toHaveAttribute('aria-expanded', 'true');
     fireEvent.click(projectInHome());
     expect(projectInHome()).toHaveAttribute('aria-expanded', 'false');
     // Its own pinned section is untouched: a root lists itself regardless.
@@ -789,6 +833,976 @@ describe('Explorer remembers its open roots', () => {
     expect(isOpen('/')).toBe('false');
     fireEvent.click(screen.getByTestId('ft-sect-toggle-/'));
     expect(isOpen('/')).toBe('true');
+  });
+});
+
+// ── Folders opened inside a root are remembered per device ────────────────────
+//
+// An installed PWA is relaunched from nothing, so the folders a user opened
+// inside the Explorer have to come back from storage. They are a second key from
+// the open roots, and nothing but the user's own toggle and the Explorer's own
+// delete may change them: no listing is proof that a folder is gone.
+describe('Explorer remembers its expanded folders', () => {
+  const OPEN = 'palmux-explorer-open';
+  const EXPANDED = 'palmux-explorer-expanded';
+  const fs: Record<string, Entry[]> = {
+    '/home/u': [folder('docs'), folder('pro'), folder('proj'), file('a.txt')],
+    '/home/u/pro': [file('x.txt')],
+    '/home/u/proj': [folder('src'), file('p.md')],
+    '/home/u/proj/src': [file('main.ts')],
+    '/home/u/docs': [file('d.md')],
+    '/work': [folder('sub'), file('app.ts')],
+    '/work/sub': [file('deep.ts')],
+  };
+
+  const seedOpen = (open: string[]) =>
+    localStorage.setItem(OPEN, JSON.stringify({ v: 1, open }));
+  const seedExpanded = (dirs: string[]): string => {
+    const raw = JSON.stringify({ v: 1, dirs });
+    localStorage.setItem(EXPANDED, raw);
+    return raw;
+  };
+  const storedDirs = (): unknown => JSON.parse(localStorage.getItem(EXPANDED) ?? 'null');
+  const isOpen = (root: string): string | null =>
+    screen.getByTestId(`ft-sect-${root}`).getAttribute('data-open');
+  const tree = (pins: string[] = [], onPinsChange = vi.fn()) => (
+    <FileTree onOpenFile={vi.fn()} pins={pins} onPinsChange={onPinsChange} onNotice={vi.fn()} />
+  );
+  const listedDirs = (): (string | null)[] =>
+    fetchMock.mock.calls
+      .map(([url]) => String(url))
+      .filter((url) => url.startsWith('/files/list'))
+      .map((url) => new URL(url, 'http://x').searchParams.get('dir'));
+  const settle = () =>
+    act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  const rowIn = (root: string, path: string): Element => {
+    const row = screen
+      .getByTestId(`ft-sect-${root}`)
+      .querySelector(`[data-testid="ft-row-${path}"]`);
+    if (!row) throw new Error(`no row ${path} in the ${root} section`);
+    return row;
+  };
+  /** Answer /files/delete too: every path outcome comes from `ok`. */
+  const withDelete = (ok: (path: string) => boolean = () => true) => {
+    const answer = fetchMock.getMockImplementation() as (url: string) => Promise<unknown>;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url) !== '/files/delete') return answer(url);
+      const paths = (JSON.parse(String(init?.body ?? '{}')) as { paths: string[] }).paths;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          results: paths.map((path) =>
+            ok(path)
+              ? { path, ok: true, kind: 'directory', entries: 1 }
+              : { path, ok: false, message: 'refused' },
+          ),
+        }),
+      });
+    });
+  };
+  const deleteRow = async (path: string) => {
+    fireEvent.contextMenu(screen.getByTestId(`ft-row-${path}`));
+    fireEvent.click(await screen.findByTestId(`ft-menu-${path}-delete`));
+  };
+
+  it('stores a folder toggle and opens it again after a remount', async () => {
+    serve(fs, '/home/u');
+    const first = render(tree());
+    fireEvent.click(await screen.findByTestId('ft-row-/home/u/proj'));
+    expect(await screen.findByTestId('ft-row-/home/u/proj/p.md')).toBeTruthy();
+    expect(storedDirs()).toEqual({ v: 1, dirs: ['/home/u/proj'] });
+    first.unmount();
+
+    fetchMock.mockClear();
+    render(tree());
+    expect(await screen.findByTestId('ft-row-/home/u/proj/p.md')).toBeTruthy();
+    expect(screen.getByTestId('ft-row-/home/u/proj')).toHaveAttribute('aria-expanded', 'true');
+    expect(listedDirs()).toContain('/home/u/proj');
+  });
+
+  // REALIGNED in batch 10 (it was "opens nested stored folders without waiting for
+  // their parents"). A folder is now fetched only once its parent's listing proves it
+  // exists, so a restore costs one round trip per depth. The parent is held to see
+  // that the child is NOT asked for early, then released to see it asked for once.
+  it('restores nested stored folders level by level, asking for a child only once its parent lists it', async () => {
+    seedOpen(['/home/u']);
+    seedExpanded(['/home/u/proj', '/home/u/proj/src']);
+    serve(fs, '/home/u');
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const answer = fetchMock.getMockImplementation() as (url: string) => Promise<unknown>;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === `/files/list?dir=${encodeURIComponent('/home/u/proj')}`) await gate;
+      return answer(url);
+    });
+
+    render(tree());
+    await waitFor(() => expect(listedDirs()).toContain('/home/u/proj'));
+    await settle();
+    expect(listedDirs()).not.toContain('/home/u/proj/src'); // the parent has not proven it yet
+
+    release();
+    expect(await screen.findByTestId('ft-row-/home/u/proj/src/main.ts')).toBeTruthy();
+    expect(screen.getByTestId('ft-row-/home/u/proj/src')).toHaveAttribute('aria-expanded', 'true');
+    expect(listedDirs().filter((d) => d === '/home/u/proj/src')).toHaveLength(1);
+  });
+
+  it('does not fetch a stored folder under a collapsed root until the root opens', async () => {
+    seedOpen(['/home/u']);
+    seedExpanded(['/work/sub']);
+    serve(fs, '/home/u');
+    render(tree(['/work']));
+    await screen.findByTestId('ft-row-/home/u/a.txt');
+    await settle();
+    expect(isOpen('/work')).toBe('false');
+    expect(listedDirs().filter((d) => d?.startsWith('/work'))).toEqual([]);
+
+    fireEvent.click(screen.getByTestId('ft-sect-toggle-/work'));
+    expect(await screen.findByTestId('ft-row-/work/sub/deep.ts')).toBeTruthy();
+    expect(screen.getByTestId('ft-row-/work/sub')).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('does not fetch the folders of a dormant root, and loads them when it comes back', async () => {
+    seedOpen(['/home/u', '/work']);
+    seedExpanded(['/work/sub']);
+    serve(fs, '/home/u');
+    const { rerender } = render(tree());
+    await screen.findByTestId('ft-row-/home/u/a.txt');
+    await settle();
+    expect(listedDirs().filter((d) => d?.startsWith('/work'))).toEqual([]);
+
+    rerender(tree(['/work']));
+    expect(await screen.findByTestId('ft-row-/work/sub/deep.ts')).toBeTruthy();
+  });
+
+  it('does not fetch a stored folder whose ancestor is collapsed', async () => {
+    seedOpen(['/home/u']);
+    seedExpanded(['/home/u/proj/src']); // `proj` itself is not expanded
+    serve(fs, '/home/u');
+    render(tree());
+    await screen.findByTestId('ft-row-/home/u/a.txt');
+    await settle();
+    expect(listedDirs()).not.toContain('/home/u/proj/src');
+    expect(listedDirs()).not.toContain('/home/u/proj');
+
+    fireEvent.click(screen.getByTestId('ft-row-/home/u/proj'));
+    expect(await screen.findByTestId('ft-row-/home/u/proj/src/main.ts')).toBeTruthy();
+    expect(screen.getByTestId('ft-row-/home/u/proj/src')).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  // Collapse removes the folder's own record and nothing else, so opening the
+  // parent again brings its open children back, as VS Code does.
+  it('removes a collapsed folder from storage and keeps its stored descendants', async () => {
+    seedOpen(['/home/u']);
+    seedExpanded(['/home/u/proj', '/home/u/proj/src']);
+    serve(fs, '/home/u');
+    render(tree());
+    expect(await screen.findByTestId('ft-row-/home/u/proj/src/main.ts')).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('ft-row-/home/u/proj'));
+    expect(storedDirs()).toEqual({ v: 1, dirs: ['/home/u/proj/src'] });
+    await waitFor(() => expect(screen.queryByTestId('ft-row-/home/u/proj/p.md')).toBeNull());
+
+    fireEvent.click(screen.getByTestId('ft-row-/home/u/proj'));
+    expect(storedDirs()).toEqual({ v: 1, dirs: ['/home/u/proj/src', '/home/u/proj'] });
+    expect(await screen.findByTestId('ft-row-/home/u/proj/src/main.ts')).toBeTruthy();
+    expect(screen.getByTestId('ft-row-/home/u/proj/src')).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  // B9-02: a root is loaded as a root. It used to be put into the set that also
+  // drives folder rows, so a folder the user had collapsed inside HOME came back
+  // open on every relaunch whenever the same path was also a pinned section.
+  describe('a root is not a folder row', () => {
+    const nested = {
+      '/home/u': [folder('project'), file('a.txt')],
+      '/home/u/project': [file('p.ts')],
+    };
+    const projectInHome = () => rowIn('/home/u', '/home/u/project');
+
+    it('keeps a folder collapsed inside HOME on a remount while its own section lists', async () => {
+      seedOpen(['/home/u', '/home/u/project']);
+      serve(nested, '/home/u');
+      const first = render(tree(['/home/u/project']));
+      await waitFor(() => expect(projectInHome()).toHaveAttribute('aria-expanded', 'false'));
+      expect(await screen.findByTestId('ft-row-/home/u/project/p.ts')).toBeTruthy();
+      expect(storedDirs()).toBeNull(); // restoring a root wrote nothing about folders
+
+      // Opened and collapsed again: the collapse is what is remembered.
+      fireEvent.click(projectInHome());
+      expect(projectInHome()).toHaveAttribute('aria-expanded', 'true');
+      fireEvent.click(projectInHome());
+      first.unmount();
+
+      render(tree(['/home/u/project']));
+      await waitFor(() => expect(projectInHome()).toHaveAttribute('aria-expanded', 'false'));
+      expect(isOpen('/home/u')).toBe('true');
+      expect(isOpen('/home/u/project')).toBe('true');
+      expect(rowIn('/home/u/project', '/home/u/project/p.ts')).toBeTruthy(); // the section lists
+      expect(storedDirs()).toEqual({ v: 1, dirs: [] });
+    });
+
+    it('keeps a folder OPEN inside HOME on a remount while its own section lists', async () => {
+      seedOpen(['/home/u', '/home/u/project']);
+      seedExpanded(['/home/u/project']);
+      serve(nested, '/home/u');
+      render(tree(['/home/u/project']));
+      await waitFor(() => expect(projectInHome()).toHaveAttribute('aria-expanded', 'true'));
+      expect(rowIn('/home/u', '/home/u/project/p.ts')).toBeTruthy();
+      expect(rowIn('/home/u/project', '/home/u/project/p.ts')).toBeTruthy();
+    });
+
+    it('does not open the folder inside HOME when its pinned section is opened', async () => {
+      seedOpen(['/home/u']);
+      serve(nested, '/home/u');
+      render(tree(['/home/u/project']));
+      await waitFor(() => expect(projectInHome()).toHaveAttribute('aria-expanded', 'false'));
+
+      fireEvent.click(screen.getByTestId('ft-sect-toggle-/home/u/project'));
+      expect(await screen.findByTestId('ft-row-/home/u/project/p.ts')).toBeTruthy();
+      expect(projectInHome()).toHaveAttribute('aria-expanded', 'false');
+      expect(storedDirs()).toBeNull();
+    });
+
+    it('does not record the new root as an expanded folder when a folder is pinned', async () => {
+      serve(nested, '/home/u');
+      const onPinsChange = vi.fn();
+      const { rerender } = render(tree([], onPinsChange));
+      await waitFor(() => expect(projectInHome()).toBeTruthy());
+      fireEvent.contextMenu(projectInHome());
+      fireEvent.click(await screen.findByTestId('ft-menu-/home/u/project-pin'));
+      expect(onPinsChange).toHaveBeenCalledWith(['/home/u/project']);
+
+      rerender(tree(['/home/u/project'], onPinsChange));
+      expect(await screen.findByTestId('ft-row-/home/u/project/p.ts')).toBeTruthy();
+      expect(isOpen('/home/u/project')).toBe('true');
+      expect(isOpen('/home/u')).toBe('false');
+      expect(storedDirs()).toBeNull();
+    });
+  });
+
+  // B9-CODE-02. The poll reads the same visibility-gated set as the load effect. A
+  // listing cached while it was visible must not keep being re-read once it is
+  // hidden, and the cache holds every listing ever shown under a root.
+  describe('the poll', () => {
+    afterEach(() => vi.restoreAllMocks());
+    /** Spy BEFORE rendering; the returned function runs the tree's 2-minute poll. */
+    const watchPoll = () => {
+      const intervals = vi.spyOn(globalThis, 'setInterval');
+      return () => {
+        const poll = intervals.mock.calls.find(([, delay]) => delay === POLL_INTERVAL_MS)?.[0];
+        expect(typeof poll).toBe('function');
+        act(() => (poll as () => void)());
+      };
+    };
+
+    // HOME holds `project`, whose row inside HOME is collapsed; `project` is also its
+    // own pinned section, and `src` was restored open beneath it.
+    it('stops re-reading a restored subtree once its nested pinned section collapses', async () => {
+      seedOpen(['/home/u', '/home/u/project']);
+      const raw = seedExpanded(['/home/u/project/src']);
+      serve(
+        {
+          '/home/u': [folder('project'), file('a.txt')],
+          '/home/u/project': [folder('src'), file('p.ts')],
+          '/home/u/project/src': [file('main.ts')],
+        },
+        '/home/u',
+      );
+      const poll = watchPoll();
+      render(tree(['/home/u/project']));
+      expect(await screen.findByTestId('ft-row-/home/u/project/src/main.ts')).toBeTruthy();
+      expect(rowIn('/home/u', '/home/u/project')).toHaveAttribute('aria-expanded', 'false');
+
+      fireEvent.click(screen.getByTestId('ft-sect-toggle-/home/u/project'));
+      expect(isOpen('/home/u/project')).toBe('false');
+      expect(isOpen('/home/u')).toBe('true');
+      fetchMock.mockClear();
+
+      poll();
+      // The positive control: the poll ran, and it re-read the root that IS open.
+      await waitFor(() => expect(listedDirs()).toContain('/home/u'));
+      await settle();
+      expect(listedDirs().filter((d) => d?.startsWith('/home/u/project'))).toEqual([]);
+      expect(localStorage.getItem(EXPANDED)).toBe(raw); // hidden, not forgotten
+
+      // Visible again, polled again.
+      fireEvent.click(screen.getByTestId('ft-sect-toggle-/home/u/project'));
+      fetchMock.mockClear();
+      poll();
+      await waitFor(() =>
+        expect(listedDirs()).toEqual(
+          expect.arrayContaining(['/home/u', '/home/u/project', '/home/u/project/src']),
+        ),
+      );
+    });
+
+    // B10. Visibility is proven by the parent's listing, so a record for a folder that
+    // is not in it (deleted by a cross-window race, renamed, never produced by any
+    // listing) is not requested on mount and not polled either. The fixture DOES serve
+    // `/home/u/deleted`, so a tree that fetched it would find something to show.
+    it('never requests or polls a stored folder its parent listing does not contain', async () => {
+      seedOpen(['/home/u']);
+      const raw = seedExpanded(['/home/u/deleted', '/home/u/deleted/inner', '/home/u/docs']);
+      serve(
+        {
+          '/home/u': [folder('docs'), file('a.txt')],
+          '/home/u/docs': [file('d.md')],
+          '/home/u/deleted': [folder('inner'), file('x.txt')],
+          '/home/u/deleted/inner': [file('y.txt')],
+        },
+        '/home/u',
+      );
+      const poll = watchPoll();
+      render(tree());
+      expect(await screen.findByTestId('ft-row-/home/u/docs/d.md')).toBeTruthy();
+
+      for (let tick = 0; tick < 3; tick++) {
+        poll();
+        await settle();
+      }
+      // The positive control: the poll ran and re-read what IS on screen.
+      await waitFor(() => expect(listedDirs().filter((d) => d === '/home/u')).toHaveLength(3));
+      await waitFor(() => expect(listedDirs().filter((d) => d === '/home/u/docs')).toHaveLength(4));
+      expect(listedDirs().filter((d) => d?.startsWith('/home/u/deleted'))).toEqual([]);
+      expect(screen.queryByTestId('ft-row-/home/u/deleted')).toBeNull();
+      expect(localStorage.getItem(EXPANDED)).toBe(raw); // dormant, not forgotten
+    });
+
+    it('stops re-reading a folder collapsed inside an open root', async () => {
+      seedOpen(['/home/u']);
+      serve(fs, '/home/u');
+      const poll = watchPoll();
+      render(tree());
+      fireEvent.click(await screen.findByTestId('ft-row-/home/u/proj'));
+      expect(await screen.findByTestId('ft-row-/home/u/proj/p.md')).toBeTruthy();
+      fireEvent.click(screen.getByTestId('ft-row-/home/u/proj'));
+      fetchMock.mockClear();
+
+      poll();
+      await waitFor(() => expect(listedDirs()).toContain('/home/u'));
+      await settle();
+      expect(listedDirs()).not.toContain('/home/u/proj');
+    });
+  });
+
+  // ── What forgets a stored folder: the Explorer's own delete, and only that ──────
+  describe('deleting', () => {
+    // The confirm spy would otherwise outlive a test that failed before its end.
+    afterEach(() => vi.restoreAllMocks());
+
+    it('drops the deleted folder and every stored folder under it', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      seedOpen(['/home/u']);
+      seedExpanded(['/home/u/docs', '/home/u/proj', '/home/u/proj/src']);
+      serve(fs, '/home/u');
+      withDelete();
+      render(tree());
+      expect(await screen.findByTestId('ft-row-/home/u/proj/src/main.ts')).toBeTruthy();
+
+      await deleteRow('/home/u/proj');
+      await waitFor(() =>
+        expect(storedDirs()).toEqual({ v: 1, dirs: ['/home/u/docs'] }),
+      );
+      // The listing that showed it is re-read; the folder it held is no longer open.
+      expect(screen.getByTestId('ft-row-/home/u/docs')).toHaveAttribute('aria-expanded', 'true');
+      expect(screen.getByTestId('ft-row-/home/u/proj')).toHaveAttribute('aria-expanded', 'false');
+      // The rows close their space over --mo-micro and are dropped after it.
+      await waitFor(() => expect(screen.queryByTestId('ft-row-/home/u/proj/src/main.ts')).toBeNull());
+    });
+
+    // `/home/u/pro` is a prefix of `/home/u/proj` as a STRING and not as a path.
+    it('matches by path segment, not by string prefix', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      seedOpen(['/home/u']);
+      seedExpanded(['/home/u/pro', '/home/u/proj']);
+      serve(fs, '/home/u');
+      withDelete();
+      render(tree());
+      expect(await screen.findByTestId('ft-row-/home/u/proj/p.md')).toBeTruthy();
+
+      await deleteRow('/home/u/pro');
+      await waitFor(() => expect(storedDirs()).toEqual({ v: 1, dirs: ['/home/u/proj'] }));
+    });
+
+    it('drops every folder a bulk delete removed', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      seedOpen(['/home/u']);
+      seedExpanded(['/home/u/docs', '/home/u/proj']);
+      serve(fs, '/home/u');
+      withDelete();
+      render(tree());
+      expect(await screen.findByTestId('ft-row-/home/u/proj/p.md')).toBeTruthy();
+
+      fireEvent.contextMenu(screen.getByTestId('ft-row-/home/u/docs'));
+      fireEvent.click(await screen.findByTestId('ft-menu-/home/u/docs-select'));
+      fireEvent.click(screen.getByTestId('ft-row-/home/u/proj'));
+      fireEvent.click(screen.getByTestId('ft-bulk-delete'));
+      await waitFor(() => expect(storedDirs()).toEqual({ v: 1, dirs: [] }));
+    });
+
+    /** Like `withDelete`, but the answer waits until the returned function runs. */
+    const holdDelete = (): (() => void) => {
+      withDelete();
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const answer = fetchMock.getMockImplementation() as (
+        url: string,
+        init?: RequestInit,
+      ) => Promise<unknown>;
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (String(url) === '/files/delete') await gate;
+        return answer(url, init);
+      });
+      return release;
+    };
+    const deleteCalls = (): number =>
+      fetchMock.mock.calls.filter(([url]) => String(url) === '/files/delete').length;
+
+    // B9-CODE-03. Switching the Explorer away and back mounts a NEW tree while the old
+    // one's delete is still in flight. By the time it lands the old tree's memory is
+    // stale: writing it back would erase what the new tree opened meanwhile, and the
+    // new tree's own memory still holds the folder the delete removed.
+    it('applies a delete that lands after a remount to what is stored now and to the live tree', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      seedOpen(['/home/u']);
+      seedExpanded(['/home/u/proj', '/home/u/proj/src']);
+      serve(fs, '/home/u');
+      const release = holdDelete();
+      const first = render(tree());
+      expect(await screen.findByTestId('ft-row-/home/u/proj/src/main.ts')).toBeTruthy();
+      await deleteRow('/home/u/proj');
+      await waitFor(() => expect(deleteCalls()).toBe(1));
+      first.unmount(); // the Explorer is switched away mid-delete ...
+
+      render(tree()); // ... and back
+      expect(await screen.findByTestId('ft-row-/home/u/proj/src/main.ts')).toBeTruthy();
+      fireEvent.click(screen.getByTestId('ft-row-/home/u/docs')); // opened meanwhile
+      expect(storedDirs()).toEqual({
+        v: 1,
+        dirs: ['/home/u/proj', '/home/u/proj/src', '/home/u/docs'],
+      });
+
+      await act(async () => {
+        release();
+        await Promise.resolve();
+      });
+      await waitFor(() => expect(storedDirs()).toEqual({ v: 1, dirs: ['/home/u/docs'] }));
+      // The live tree forgot it too: its listing still shows the row until a re-read,
+      // and the row is closed ...
+      expect(screen.getByTestId('ft-row-/home/u/proj')).toHaveAttribute('aria-expanded', 'false');
+      expect(screen.getByTestId('ft-row-/home/u/docs')).toHaveAttribute('aria-expanded', 'true');
+      // ... so its next toggle cannot write it back.
+      fireEvent.click(screen.getByTestId('ft-row-/home/u/docs'));
+      expect(storedDirs()).toEqual({ v: 1, dirs: [] });
+    });
+
+    it('keeps a folder whose delete the server refused', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      seedOpen(['/home/u']);
+      seedExpanded(['/home/u/proj', '/home/u/docs']);
+      const raw = JSON.stringify({ v: 1, dirs: ['/home/u/proj', '/home/u/docs'] });
+      serve(fs, '/home/u');
+      withDelete((path) => path !== '/home/u/proj');
+      const notice = vi.fn();
+      render(<FileTree onOpenFile={vi.fn()} pins={[]} onPinsChange={vi.fn()} onNotice={notice} />);
+      expect(await screen.findByTestId('ft-row-/home/u/proj/p.md')).toBeTruthy();
+
+      await deleteRow('/home/u/proj');
+      await waitFor(() => expect(notice).toHaveBeenCalledWith('Delete failed: refused'));
+      expect(localStorage.getItem(EXPANDED)).toBe(raw);
+      expect(screen.getByTestId('ft-row-/home/u/proj')).toHaveAttribute('aria-expanded', 'true');
+    });
+  });
+
+  // No listing is proof of absence. The route answers a transient failure as 404,
+  // omits an entry whose `lstat` failed, and reports a directory symlink whose
+  // target stat failed as `dir:false` — so none of these may forget a folder.
+  describe('a listing never forgets a folder', () => {
+    it('keeps a folder whose own listing answers 404', async () => {
+      seedOpen(['/home/u']);
+      const raw = seedExpanded(['/home/u/gone']);
+      serve({ '/home/u': [folder('gone'), file('a.txt')] }, '/home/u'); // no `gone` listing
+      const first = render(tree());
+      expect(await screen.findByTestId('ft-error-/home/u/gone')).toHaveTextContent('not found');
+      await settle();
+      expect(localStorage.getItem(EXPANDED)).toBe(raw);
+      first.unmount();
+
+      // It comes back the moment the directory is readable again.
+      serve({ '/home/u': [folder('gone'), file('a.txt')], '/home/u/gone': [file('g.txt')] }, '/home/u');
+      render(tree());
+      expect(await screen.findByTestId('ft-row-/home/u/gone/g.txt')).toBeTruthy();
+      expect(localStorage.getItem(EXPANDED)).toBe(raw);
+    });
+
+    it('keeps a folder the parent listing omits (an entry whose lstat failed)', async () => {
+      seedOpen(['/home/u']);
+      const raw = seedExpanded(['/home/u/ghost']);
+      serve(
+        { '/home/u': [file('a.txt')], '/home/u/ghost': [file('g.txt')] }, // `ghost` not listed
+        '/home/u',
+      );
+      render(tree());
+      await screen.findByTestId('ft-row-/home/u/a.txt');
+      await settle();
+      expect(screen.queryByTestId('ft-row-/home/u/ghost')).toBeNull();
+      expect(localStorage.getItem(EXPANDED)).toBe(raw);
+
+      // The next read lists it, and it is still open.
+      serve(
+        { '/home/u': [folder('ghost'), file('a.txt')], '/home/u/ghost': [file('g.txt')] },
+        '/home/u',
+      );
+      fireEvent.click(screen.getByTestId('ft-refresh-/home/u'));
+      expect(await screen.findByTestId('ft-row-/home/u/ghost/g.txt')).toBeTruthy();
+      expect(screen.getByTestId('ft-row-/home/u/ghost')).toHaveAttribute('aria-expanded', 'true');
+      expect(localStorage.getItem(EXPANDED)).toBe(raw);
+    });
+
+    it('keeps a folder the parent listing reports as dir:false (a symlink whose target stat failed)', async () => {
+      seedOpen(['/home/u']);
+      const raw = seedExpanded(['/home/u/link']);
+      const link = (dir: boolean): Entry => ({ ...file('link'), dir, symlink: true });
+      serve({ '/home/u': [link(false), file('a.txt')], '/home/u/link': [file('l.txt')] }, '/home/u');
+      render(tree());
+      await screen.findByTestId('ft-row-/home/u/link');
+      await settle();
+      expect(screen.getByTestId('ft-row-/home/u/link')).not.toHaveAttribute('aria-expanded');
+      expect(localStorage.getItem(EXPANDED)).toBe(raw);
+
+      serve({ '/home/u': [link(true), file('a.txt')], '/home/u/link': [file('l.txt')] }, '/home/u');
+      fireEvent.click(screen.getByTestId('ft-refresh-/home/u'));
+      expect(await screen.findByTestId('ft-row-/home/u/link/l.txt')).toBeTruthy();
+      expect(screen.getByTestId('ft-row-/home/u/link')).toHaveAttribute('aria-expanded', 'true');
+      expect(localStorage.getItem(EXPANDED)).toBe(raw);
+    });
+  });
+
+  // The dock and the drawer (or two windows) can each hold a live tree. Each toggle is
+  // a change to what is stored now, so neither mount's memory overwrites the other's.
+  it("keeps two mounted Explorers from erasing each other's folders", async () => {
+    seedOpen(['/home/u']);
+    serve(fs, '/home/u');
+    const dock = render(tree());
+    const drawer = render(tree());
+    fireEvent.click(await within(dock.container).findByTestId('ft-row-/home/u/docs'));
+    fireEvent.click(await within(drawer.container).findByTestId('ft-row-/home/u/proj'));
+    expect(storedDirs()).toEqual({ v: 1, dirs: ['/home/u/docs', '/home/u/proj'] });
+
+    fireEvent.click(within(dock.container).getByTestId('ft-row-/home/u/docs'));
+    expect(storedDirs()).toEqual({ v: 1, dirs: ['/home/u/proj'] });
+  });
+
+  it('keeps only the newest 200 folders, dropping the oldest on a write', async () => {
+    seedOpen(['/home/u']);
+    // Under a root that is not shown, so restoring all of them costs no request.
+    const old = Array.from({ length: 200 }, (_, i) => `/elsewhere/d${i}`);
+    seedExpanded(old);
+    serve(fs, '/home/u');
+    render(tree());
+    fireEvent.click(await screen.findByTestId('ft-row-/home/u/proj'));
+
+    const dirs = (storedDirs() as { dirs: string[] }).dirs;
+    expect(dirs).toHaveLength(200);
+    expect(dirs[0]).toBe('/elsewhere/d1'); // the oldest went
+    expect(dirs.at(-1)).toBe('/home/u/proj');
+  });
+
+  it('still expands a folder for this mount when storage throws', async () => {
+    const denied = vi.fn(() => {
+      throw new Error('denied');
+    });
+    vi.stubGlobal('localStorage', { getItem: denied, setItem: denied, removeItem: denied });
+    serve(fs, '/home/u');
+    render(tree());
+    fireEvent.click(await screen.findByTestId('ft-row-/home/u/proj'));
+    expect(await screen.findByTestId('ft-row-/home/u/proj/p.md')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('ft-row-/home/u/proj'));
+    expect(screen.getByTestId('ft-row-/home/u/proj')).toHaveAttribute('aria-expanded', 'false');
+  });
+});
+
+// ── One identity for a path, and visibility proven by the listing (batch 10) ──────
+//
+// The server names every listing by the `path.resolve`d path. Anything the client
+// asks for in another spelling is answered under a different key, which looped the
+// load effect (B9-INSPECT2-02); `normalizePin` is now the one identity, and a folder
+// is fetched only when its parent's listing shows it.
+describe('Explorer paths have one identity', () => {
+  const OPEN = 'palmux-explorer-open';
+  const EXPANDED = 'palmux-explorer-expanded';
+  const seedOpen = (open: string[]) => localStorage.setItem(OPEN, JSON.stringify({ v: 1, open }));
+  const seedExpanded = (dirs: string[]) =>
+    localStorage.setItem(EXPANDED, JSON.stringify({ v: 1, dirs }));
+  const storedDirs = (): unknown => JSON.parse(localStorage.getItem(EXPANDED) ?? 'null');
+  const tree = (pins: string[] = [], onPinsChange = vi.fn()) => (
+    <FileTree onOpenFile={vi.fn()} pins={pins} onPinsChange={onPinsChange} onNotice={vi.fn()} />
+  );
+  const listedDirs = (): (string | null)[] =>
+    fetchMock.mock.calls
+      .map(([url]) => String(url))
+      .filter((url) => url.startsWith('/files/list'))
+      .map((url) => new URL(url, 'http://x').searchParams.get('dir'));
+  const settle = async (times = 5) => {
+    for (let i = 0; i < times; i++) {
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    }
+  };
+  const isOpen = (root: string): string | null =>
+    screen.getByTestId(`ft-sect-${root}`).getAttribute('data-open');
+  const rowIn = (root: string, path: string): Element => {
+    const row = screen
+      .getByTestId(`ft-sect-${root}`)
+      .querySelector(`[data-testid="ft-row-${path}"]`);
+    if (!row) throw new Error(`no row ${path} in the ${root} section`);
+    return row;
+  };
+
+  const work: Record<string, Entry[]> = {
+    '/home/u': [folder('docs'), file('a.txt')],
+    '/home/u/docs': [file('d.md')],
+    '/work/project': [folder('src'), file('p.md')],
+    '/work/project/src': [file('main.ts')],
+  };
+
+  it('keeps a synced pin stored as /work/./project open, with its expanded child, across a remount', async () => {
+    serveResolved(work, '/home/u');
+    const pins = ['/work/./project'];
+    const first = render(tree(pins));
+    // The section is the canonical root: one header, not one per spelling.
+    fireEvent.click(await screen.findByTestId('ft-sect-toggle-/work/project'));
+    fireEvent.click(await screen.findByTestId('ft-row-/work/project/src'));
+    expect(await screen.findByTestId('ft-row-/work/project/src/main.ts')).toBeTruthy();
+    first.unmount();
+
+    render(tree(pins));
+    expect(await screen.findByTestId('ft-row-/work/project/src/main.ts')).toBeTruthy();
+    expect(isOpen('/work/project')).toBe('true');
+    expect(rowIn('/work/project', '/work/project/src')).toHaveAttribute('aria-expanded', 'true');
+    expect(storedDirs()).toEqual({ v: 1, dirs: ['/work/project/src'] });
+  });
+
+  it('unpins a pin stored in another spelling by its canonical path', async () => {
+    serveResolved(work, '/home/u');
+    const onPinsChange = vi.fn();
+    render(tree(['/work/./project'], onPinsChange));
+    fireEvent.click(await screen.findByTestId('ft-unpin-/work/project'));
+    expect(onPinsChange).toHaveBeenCalledWith([]);
+  });
+
+  // The reported loop: a stored `<HOME>/.` was requested as such, the server answered
+  // under `<HOME>`, and the load effect saw its own key missing and asked again.
+  it('restores a stored /home/u/. and a pin /work/./project with one request each', async () => {
+    seedOpen(['/home/u/.', '/work/./project']);
+    seedExpanded(['/home/u/.', '/home/u//docs/../docs']);
+    serveResolved(work, '/home/u');
+    render(tree(['/work/./project']));
+    expect(await screen.findByTestId('ft-row-/home/u/docs/d.md')).toBeTruthy();
+    expect(await screen.findByTestId('ft-row-/work/project/p.md')).toBeTruthy();
+    await settle(8);
+
+    expect(isOpen('/home/u')).toBe('true');
+    expect(isOpen('/work/project')).toBe('true');
+    expect(listedDirs().filter((d) => d?.includes('/.'))).toEqual([]); // never asked non-canonically
+    expect(listedDirs().filter((d) => d === '/work/project')).toHaveLength(1);
+    expect(listedDirs().filter((d) => d === '/home/u/docs')).toHaveLength(1);
+    expect(listedDirs().filter((d) => d === '/home/u')).toHaveLength(0); // HOME came from the null ask
+  });
+
+  it('asks a server that answers /a/./b with /a/b exactly once', async () => {
+    seedOpen(['/a/./b']);
+    serveResolved({ '/home/u': [file('a.txt')], '/a/b': [file('x.txt')] }, '/home/u');
+    render(tree(['/a/./b']));
+    expect(await screen.findByTestId('ft-row-/a/b/x.txt')).toBeTruthy();
+    await settle(8);
+    expect(listedDirs().filter((d) => d !== null && d.startsWith('/a'))).toEqual(['/a/b']);
+  });
+
+  // Defence in depth. A listing names ONE directory, the one the server reports, so a
+  // response under another path is never shown under the requested one: the tree builds
+  // child paths from the requested key, and every row would name a path the listing
+  // never described. The requested key gets a TERMINAL error instead — a key with no
+  // state would be asked for again after every answer, for ever (B9-INSPECT2-02).
+  it('asks once for a root the server reports under a different path, and shows an error instead of its listing', async () => {
+    seedOpen(['/home/u', '/link']);
+    serve({ '/home/u': [file('a.txt')], '/real': [file('x.txt')] }, '/home/u');
+    const answer = fetchMock.getMockImplementation() as (url: string) => Promise<unknown>;
+    fetchMock.mockImplementation((url: string) =>
+      answer(
+        url === `/files/list?dir=${encodeURIComponent('/link')}`
+          ? `/files/list?dir=${encodeURIComponent('/real')}`
+          : url,
+      ),
+    );
+    render(tree(['/link']));
+    expect(await screen.findByTestId('ft-error-/link')).toHaveTextContent(
+      'the server listed a different path: /real',
+    );
+    await settle(8);
+    expect(screen.queryByTestId('ft-row-/link/x.txt')).toBeNull();
+    expect(listedDirs().filter((d) => d === '/link')).toHaveLength(1);
+    expect(listedDirs().filter((d) => d === '/real')).toHaveLength(0);
+  });
+
+  // B10-INSPECT1-01. A server from before batch 11 TRIMS what it is asked for, so a
+  // folder named `report ` is answered with its sibling `report`'s listing. Shown
+  // under the requested key, `report/x` (a file) became the row `report /x` (really a
+  // directory), and a Delete confirmed as a file would remove a whole tree. The server
+  // no longer trims, but a new client can meet an old server until it is restarted, so
+  // the mismatch guard stays and is exercised against a server that still trims.
+  it('never shows a trailing-space folder the listing of the sibling an old server trimmed it to', async () => {
+    seedOpen(['/home/u']);
+    serveResolved(
+      {
+        '/home/u': [folder('report'), folder('report ')],
+        '/home/u/report': [file('x')],
+        // Unreachable through a trimming server, which is the point: it drops the space.
+        '/home/u/report ': [folder('x')],
+      },
+      '/home/u',
+      true,
+    );
+    // Testing Library trims a test id before comparing, which would make `report ` and
+    // `report` the same row; these two names differ ONLY by that space.
+    const exact = { trim: false, collapseWhitespace: false };
+    render(tree());
+    fireEvent.click(await screen.findByTestId('ft-row-/home/u/report ', exact));
+    expect(await screen.findByTestId('ft-error-/home/u/report ', exact)).toHaveTextContent(
+      'the server listed a different path: /home/u/report',
+    );
+    await settle(8);
+
+    // Nothing of `report` is drawn under `report `, so nothing of it can be clicked,
+    // opened, picked or deleted there.
+    const section = screen.getByTestId('ft-sect-/home/u');
+    expect(section.querySelectorAll('[data-testid^="ft-row-/home/u/report /"]')).toHaveLength(0);
+    expect(screen.queryByTestId('ft-row-/home/u/report /x', exact)).toBeNull();
+    // Asked once: the error is terminal, so the load effect never asks again.
+    expect(listedDirs().filter((d) => d === '/home/u/report ')).toHaveLength(1);
+    expect(listedDirs().filter((d) => d === '/home/u/report')).toHaveLength(0);
+  });
+
+  // ── Batch 11: a path is the path ───────────────────────────────────────────────
+  //
+  // The server stopped trimming, and `normalizePin` with it. `report ` and `report` are
+  // two folders; neither may be drawn with, requested as, or deleted as the other.
+  // Testing Library trims a test id before comparing, which would make the two the same
+  // row, so every lookup of a trailing-space id passes `exact`.
+  const exact = { trim: false, collapseWhitespace: false };
+  const spacedWork: Record<string, Entry[]> = {
+    '/home/u': [folder('docs')],
+    '/home/u/docs': [file('d.md')],
+    '/work/report': [file('plain.txt')],
+    '/work/report ': [folder('src'), file('spaced.txt')],
+    '/work/report /src': [file('inner.ts')],
+  };
+  /** What a synced `explorerPins` becomes between the server and the tree: the wire
+   *  subset, merged over the defaults, sanitised, which `loadSettings` repeats. */
+  const roundTrip = (pins: string[]): string[] =>
+    sanitize(
+      mergeServerSettings(DEFAULTS, toServerSettings({ ...DEFAULTS, explorerPins: pins })),
+    ).explorerPins;
+
+  it('lists a folder named `report ` and its sibling `report`, each with its own entries', async () => {
+    seedOpen(['/home/u']);
+    serveResolved(
+      {
+        '/home/u': [folder('report'), folder('report ')],
+        '/home/u/report': [file('plain.txt')],
+        '/home/u/report ': [file('spaced.txt')],
+      },
+      '/home/u',
+    );
+    render(tree());
+    fireEvent.click(await screen.findByTestId('ft-row-/home/u/report ', exact));
+    fireEvent.click(await screen.findByTestId('ft-row-/home/u/report', exact));
+    expect(await screen.findByTestId('ft-row-/home/u/report /spaced.txt')).toBeTruthy();
+    expect(await screen.findByTestId('ft-row-/home/u/report/plain.txt')).toBeTruthy();
+    await settle(8);
+
+    // Each folder shows ONLY its own file, and nothing was refused as a mismatch.
+    expect(screen.queryByTestId('ft-row-/home/u/report /plain.txt')).toBeNull();
+    expect(screen.queryByTestId('ft-row-/home/u/report/spaced.txt')).toBeNull();
+    expect(screen.queryByTestId('ft-error-/home/u/report ', exact)).toBeNull();
+    expect(listedDirs().filter((d) => d === '/home/u/report ')).toHaveLength(1);
+    expect(listedDirs().filter((d) => d === '/home/u/report')).toHaveLength(1);
+  });
+
+  // B10-INSPECT2-01. The pin arrives as `/work/report /.`. Trimming made the canonical
+  // form a moving target (`/work/report ` once, `/work/report` on the next pass), so a
+  // restored section, its stored open flag and its expanded child could each land on
+  // the sibling.
+  it('restores a synced pin /work/report /. as the `report ` section, after a settings round trip and a remount', async () => {
+    seedOpen(['/work/report /.']); // the stored open root, in a non-canonical spelling
+    seedExpanded(['/work/report /src']);
+    serveResolved(spacedWork, '/home/u');
+    const pins = roundTrip(['/work/report /.']);
+    expect(pins).toEqual(['/work/report ']);
+
+    const check = async () => {
+      expect(await screen.findByTestId('ft-row-/work/report /spaced.txt')).toBeTruthy();
+      expect(await screen.findByTestId('ft-row-/work/report /src/inner.ts')).toBeTruthy();
+      await settle(8);
+      const section = screen.getByTestId('ft-sect-/work/report ', exact);
+      expect(section).toHaveAttribute('data-open', 'true');
+      // The header names the folder with its space, byte for byte.
+      expect(screen.getByTestId('ft-sect-toggle-/work/report ', exact)).toHaveAttribute(
+        'title',
+        '/work/report ',
+      );
+      expect(section.querySelector('[data-testid="ft-row-/work/report /src"]')).toHaveAttribute(
+        'aria-expanded',
+        'true',
+      );
+      // Nothing of the sibling is drawn, and the sibling is never asked for.
+      expect(screen.queryByTestId('ft-row-/work/report/plain.txt')).toBeNull();
+      expect(screen.queryByTestId('ft-sect-/work/report', exact)).toBeNull();
+      expect(listedDirs().filter((d) => d === '/work/report ')).toHaveLength(1);
+      expect(listedDirs().filter((d) => d === '/work/report /src')).toHaveLength(1);
+      expect(listedDirs().filter((d) => d === '/work/report')).toHaveLength(0);
+      expect(listedDirs().filter((d) => d !== null && d.includes('/.'))).toEqual([]);
+    };
+
+    const first = render(tree(pins));
+    await check();
+    first.unmount();
+
+    // A second pass through the settings pipeline must hand back the same pin.
+    fetchMock.mockClear();
+    const again = roundTrip(pins);
+    expect(again).toEqual(pins);
+    render(tree(again));
+    await check();
+    expect(storedDirs()).toEqual({ v: 1, dirs: ['/work/report /src'] });
+  });
+
+  it('unpins `report ` and leaves a pinned `report` where it is', async () => {
+    serveResolved(spacedWork, '/home/u');
+    const onPinsChange = vi.fn();
+    render(tree(['/work/report ', '/work/report'], onPinsChange));
+    fireEvent.click(await screen.findByTestId('ft-unpin-/work/report ', exact));
+    expect(onPinsChange).toHaveBeenCalledWith(['/work/report']);
+  });
+
+  it('sends a Delete of `report ` with that exact path, never the sibling', async () => {
+    seedOpen(['/home/u']);
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const listing = {
+      '/home/u': [folder('report'), folder('report ')],
+      '/home/u/report': [file('plain.txt')],
+      '/home/u/report ': [file('spaced.txt')],
+    };
+    serveResolved(listing, '/home/u');
+    const answer = fetchMock.getMockImplementation() as (url: string) => Promise<unknown>;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/files/delete') {
+        const paths = JSON.parse(String(init?.body ?? '{}')).paths as string[];
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            results: paths.map((p) => ({ path: p, ok: true, kind: 'directory', entries: 1 })),
+          }),
+        });
+      }
+      return answer(url);
+    });
+    try {
+      render(tree());
+      fireEvent.contextMenu(await screen.findByTestId('ft-row-/home/u/report ', exact));
+      fireEvent.click(await screen.findByTestId('ft-menu-/home/u/report -delete'));
+      await waitFor(() =>
+        expect(fetchMock.mock.calls.some(([u]) => String(u) === '/files/delete')).toBe(true),
+      );
+      const call = fetchMock.mock.calls.find(([u]) => String(u) === '/files/delete');
+      const init = call?.[1] as RequestInit | undefined;
+      expect(JSON.parse(String(init?.body))).toEqual({ paths: ['/home/u/report '] });
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  it('still asks the server where home is, and files that answer under the path it reports', async () => {
+    serve({ '/home/u': [file('a.txt')] }, '/home/u');
+    render(tree());
+    expect(await screen.findByTestId('ft-row-/home/u/a.txt')).toBeTruthy();
+    await settle();
+    expect(listedDirs()).toEqual([null]); // one ask, and no retry for the key it replaced
+  });
+
+  // B10-R2-01, outcome (c), end to end. Two windows of ONE device share localStorage and
+  // have no lock: this window opens `docs` while another collapses `proj` inside the gap
+  // between its read and its write, so the write puts `proj` back. `proj` still exists,
+  // so it REOPENS on the next mount. Accepted and documented (CLAUDE.md, Explorer
+  // persistence); this test is here so a change to the scheme notices.
+  it('reopens a folder whose collapse lost a cross-window race, on the next mount (outcome c)', async () => {
+    seedOpen(['/home/u']);
+    seedExpanded(['/home/u/proj']);
+    serve(
+      {
+        '/home/u': [folder('docs'), folder('proj'), file('a.txt')],
+        '/home/u/docs': [file('d.md')],
+        '/home/u/proj': [file('p.md')],
+      },
+      '/home/u',
+    );
+    const first = render(tree());
+    expect(await screen.findByTestId('ft-row-/home/u/proj/p.md')).toBeTruthy();
+
+    // Spied on the INSTANCE: happy-dom's Storage does not route through the prototype.
+    const real = localStorage.getItem.bind(localStorage);
+    let raced = false;
+    let otherWindowWrote: unknown = null;
+    let competingWrites = 0;
+    let reads = 0;
+    const read = vi.spyOn(localStorage, 'getItem').mockImplementation((key: string) => {
+      if (key !== EXPANDED) return real(key);
+      reads++;
+      const seen = real(key); // this window reads: `proj` is stored
+      if (!raced) {
+        // Spent BEFORE the other window runs: its own read comes back through this
+        // mock, and a guard still unset there re-runs it inside itself until the stack
+        // overflows, which `readExpandedDirs` swallows.
+        raced = true;
+        competingWrites++;
+        writeExpandedDir('/home/u/proj', false); // the other window, start to finish
+        otherWindowWrote = JSON.parse(real(key) ?? 'null');
+      }
+      return seen;
+    });
+    const write = vi.spyOn(localStorage, 'setItem');
+    let writes = 0;
+    try {
+      fireEvent.click(screen.getByTestId('ft-row-/home/u/docs')); // this window's write
+      writes = write.mock.calls.filter(([key]) => key === EXPANDED).length;
+    } finally {
+      read.mockRestore();
+      write.mockRestore();
+    }
+    // One race, run once: this window's read and the other's, then both writes.
+    expect(competingWrites).toBe(1);
+    expect(reads).toBe(2);
+    expect(writes).toBe(2);
+    // The other window's collapse really did commit first ...
+    expect(otherWindowWrote).toEqual({ v: 1, dirs: [] });
+    // ... and this window's write brought the record back.
+    expect(storedDirs()).toEqual({ v: 1, dirs: ['/home/u/proj', '/home/u/docs'] });
+    first.unmount();
+
+    render(tree());
+    expect(await screen.findByTestId('ft-row-/home/u/proj/p.md')).toBeTruthy();
+    expect(screen.getByTestId('ft-row-/home/u/proj')).toHaveAttribute('aria-expanded', 'true');
   });
 });
 

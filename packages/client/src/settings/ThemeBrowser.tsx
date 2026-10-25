@@ -23,19 +23,59 @@
 // mobile drawer a press that focused the button natively took focus from
 // #mobile-kbd and dismissed the soft keyboard, and this list scrolls, so a touch
 // that moves must stay a scroll and pick nothing.
+//
+// This is the whole theme sub-view, not just the list. With `controls` it opens on
+// the mode switch (Fixed | Match system, and in Match system which scheme a tap
+// fills), then the Import section, then the Dark / Light groups: importing a theme
+// is the same errand as choosing one, and it used to sit in the form's Appearance
+// card, two screens away from the list its result appears in. The browser holds no
+// selection state of its own — what is current, and what a pick means, belong to
+// the host (SettingsFields), which knows the settings.
 
-import { useId } from 'react';
+import { useId, useState } from 'react';
 import { hex, isLightBg, type ColorProfile } from './themes';
+import type { ThemeMode, ThemeSlot } from './settings';
 import { groupByBrightness, PREVIEW_LINES, type PreviewToken } from './theme-preview';
+import { Button, Input, Segmented } from '../ui';
+import type { SegmentedOption } from '../ui';
 import { Icon } from '../ui/icons';
 import { pressMove } from '../panes/press';
 import './theme-browser.css';
 
+/** The controls above the list. Omit them and the browser is the bare list. */
+export interface ThemeBrowserControls {
+  mode: ThemeMode;
+  onModeChange: (mode: ThemeMode) => void;
+  /** Match system: the scheme a tap fills ("For dark" / "For light"). */
+  slot: ThemeSlot;
+  onSlotChange: (slot: ThemeSlot) => void;
+  /** The scheme this device is in right now: a pick for it shows at once. */
+  activeSlot: ThemeSlot;
+  /** The name of each slot's current pick, for the note under the slot picker. */
+  slotNames: Record<ThemeSlot, string>;
+  /** Import a theme from a URL/name/command. Omit to hide the Import section. */
+  onImport?: ((source: string) => void) | undefined;
+  /** True while an import is in flight. */
+  importing?: boolean | undefined;
+}
+
 export interface ThemeBrowserProps {
   profiles: ColorProfile[];
+  /** The id marked current: the fixed pick, or in Match system the edited slot's. */
   value: string;
   onChange: (id: string) => void;
+  controls?: ThemeBrowserControls | undefined;
 }
+
+const MODE_OPTIONS: ReadonlyArray<SegmentedOption<ThemeMode>> = [
+  { value: 'fixed', label: 'Fixed' },
+  { value: 'system', label: 'Match system' },
+];
+
+const SLOT_OPTIONS: ReadonlyArray<SegmentedOption<ThemeSlot>> = [
+  { value: 'dark', label: 'For dark' },
+  { value: 'light', label: 'For light' },
+];
 
 /** The colour a token paints in, resolved against one profile. */
 const colorOf = (p: ColorProfile, token: PreviewToken): string =>
@@ -117,10 +157,95 @@ const Group = ({ label, profiles, value, onChange }: GroupProps) => {
   );
 };
 
-export const ThemeBrowser = ({ profiles, value, onChange }: ThemeBrowserProps) => {
+/**
+ * Paste-a-theme field. It owns one piece of transient text; the outcome arrives
+ * asynchronously as a toast, so the field clears itself on submit. A long URL or
+ * install command does not fit a 140px control column, which is why this is a
+ * full-width line of its own rather than a settings row.
+ */
+const ThemeImport = ({
+  onImport,
+  busy,
+}: {
+  onImport: (source: string) => void;
+  busy: boolean | undefined;
+}) => {
+  const labelId = useId();
+  const [source, setSource] = useState('');
+  const submit = (): void => {
+    const value = source.trim();
+    if (!value || busy) return;
+    onImport(value);
+    setSource('');
+  };
+  return (
+    <div className="tb-group" role="group" aria-labelledby={labelId}>
+      <div className="tb-group-label" id={labelId}>
+        Import
+      </div>
+      <div className="tb-import">
+        <Input
+          id="set-theme-import"
+          data-testid="set-theme-import"
+          aria-label="Import a theme"
+          value={source}
+          placeholder="Gogh name, URL, or install command"
+          spellCheck={false}
+          autoCapitalize="off"
+          autoCorrect="off"
+          onChange={(e) => setSource(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') submit();
+          }}
+        />
+        <Button
+          data-testid="set-theme-import-add"
+          onClick={submit}
+          disabled={busy || !source.trim()}
+        >
+          {busy ? '…' : 'Add'}
+        </Button>
+      </div>
+    </div>
+  );
+};
+
+const ModeControls = ({ controls }: { controls: ThemeBrowserControls }) => {
+  const { mode, slot, activeSlot, slotNames } = controls;
+  return (
+    <div className="tb-mode">
+      <Segmented
+        label="Theme mode"
+        data-testid="set-theme-mode"
+        value={mode}
+        options={MODE_OPTIONS}
+        onValueChange={controls.onModeChange}
+      />
+      {mode === 'system' && (
+        <>
+          <Segmented
+            label="Theme slot"
+            data-testid="set-theme-slot"
+            value={slot}
+            options={SLOT_OPTIONS}
+            onValueChange={controls.onSlotChange}
+          />
+          <p className="tb-note" data-testid="theme-slots-note">
+            Dark: {slotNames.dark} · Light: {slotNames.light}
+            {slot !== activeSlot && ` Shows when the system turns ${slot}.`}
+          </p>
+        </>
+      )}
+    </div>
+  );
+};
+
+export const ThemeBrowser = ({ profiles, value, onChange, controls }: ThemeBrowserProps) => {
   const { dark, light } = groupByBrightness(profiles, isLightBg);
   return (
     <div className="tb" data-testid="theme-browser">
+      {controls && <ModeControls controls={controls} />}
+      {controls?.onImport && <ThemeImport onImport={controls.onImport} busy={controls.importing} />}
       <Group label="Dark" profiles={dark} value={value} onChange={onChange} />
       <Group label="Light" profiles={light} value={value} onChange={onChange} />
     </div>

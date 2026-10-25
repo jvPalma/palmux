@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createRef, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { parse, type AtRule, type Root } from 'postcss';
 import { SettingsFields, type SettingsFieldsProps } from './SettingsFields';
@@ -39,7 +39,6 @@ const FULL: SettingsFieldsProps = {
   onChange: () => {},
   onOpenKeybindings: () => {},
   onOpenTips: () => {},
-  onOpenDictationHistory: () => {},
   onImportTheme: () => {},
   onEditConfig: () => {},
   appVersion: '1.2.3',
@@ -120,41 +119,6 @@ describe('shortcuts & tips', () => {
     render(<SettingsFields settings={DEFAULTS} onChange={() => {}} onOpenTips={onOpenTips} />);
     fireEvent.click(screen.getByTestId('open-tips'));
     expect(onOpenTips).toHaveBeenCalledTimes(1);
-  });
-
-  // With the topbar action cluster gone, the rail is the only POINTER route to
-  // Files, Dictation, the chooser AND Upload/Download. The warning has to name
-  // what disappears — "panels" hid the fact that two ACTIONS go with it.
-  it('names upload and download in the rail warning, not just panels', () => {
-    render(<SettingsFields settings={{ ...DEFAULTS, sidebarRail: 'always' }} onChange={() => {}} />);
-    const warning = screen.getByText(/command palette/i).textContent ?? '';
-    expect(warning).toMatch(/upload/i);
-    expect(warning).toMatch(/download/i);
-    expect(warning).toMatch(/keybinding|command palette/i);
-  });
-
-  // Settings is the one entry hiding the rail does NOT cost a pointer route: the
-  // topbar's app menu keeps it. The hint must say so, and must not list settings
-  // among what goes away — in either state of the preference.
-  it('tells the user Settings stays in the app menu while the rail is shown', () => {
-    render(
-      <SettingsFields settings={{ ...DEFAULTS, sidebarRail: 'always' }} onChange={() => {}} />,
-    );
-    const hint = screen.getByText(/command palette/i).textContent ?? '';
-    expect(hint).toMatch(/settings stays in the app menu/i);
-    const lost = /only route to ([^;]*)/i.exec(hint)?.[1] ?? '';
-    expect(lost).toMatch(/files/i);
-    expect(lost).not.toMatch(/settings/i);
-  });
-
-  it('tells the user Settings is in the app menu once the rail is hidden', () => {
-    render(
-      <SettingsFields settings={{ ...DEFAULTS, sidebarRail: 'hidden' }} onChange={() => {}} />,
-    );
-    const hint = screen.getByText(/command palette/i).textContent ?? '';
-    expect(hint).toMatch(/settings is in the app menu/i);
-    expect(hint).not.toMatch(/settings[^;]*reachable from the command palette/i);
-    expect(hint).toMatch(/upload and download/i);
   });
 });
 
@@ -284,37 +248,6 @@ describe('layout', () => {
     cleanup();
     render(<SettingsFields {...FULL} subView="themes" />);
     expect(document.querySelectorAll('select')).toHaveLength(0);
-  });
-
-  it('lets a stacked row span the whole card', () => {
-    render(<SettingsFields {...FULL} />);
-    const row = screen.getByTestId('set-theme-import').closest('.srow');
-    expect(row).toHaveClass('srow-stacked');
-    // Its field and its button are one control group, not two columns.
-    expect(row?.querySelectorAll('.srow-control')).toHaveLength(1);
-    expect(within(row as HTMLElement).getByTestId('set-theme-import-add')).toBeInTheDocument();
-  });
-
-  // A sentence that long in the label column was a 180px strip of one-word lines.
-  // It is a note under the row, across the whole of it, and the label stays short.
-  it('puts the sidebar-rail warning in a full-width note, not in the label column', () => {
-    render(<SettingsFields {...FULL} />);
-    const note = screen.getByText(/command palette/i);
-    expect(note).toHaveClass('srow-note');
-    const row = note.closest('.srow');
-    expect(row?.querySelector('.srow-label')).toHaveTextContent(/^Sidebar rail$/);
-    expect(row?.querySelector('.srow-label')).not.toContainElement(note);
-    expect(row?.querySelector('.srow-control')).toContainElement(
-      screen.getByTestId('set-sidebar-rail'),
-    );
-    // Spans both columns of the row's grid.
-    let span = '';
-    parse(cssText('settings/settings-view.css')).walkRules('.settings-view .srow-note', (rule) => {
-      rule.walkDecls('grid-column', (d) => {
-        span = d.value;
-      });
-    });
-    expect(span).toBe('1 / -1');
   });
 
   // The section title is the kit's: the form restates none of its type. (What the
@@ -1083,12 +1016,6 @@ describe('row geometry', () => {
     expect(column['min-width']).toBe('0');
   });
 
-  it('collapses a stacked row to one column', () => {
-    expect(rule(VIEW, '.settings-view .srow-stacked')['grid-template-columns']).toBe(
-      'minmax(0, 1fr)',
-    );
-  });
-
   // The hint lives INSIDE the label, so a row with one is still two cells and a
   // taller label cell, never a third column or a second grid row for the control.
   it('keeps a hint inside the label: every row is a label cell and a control cell', () => {
@@ -1099,7 +1026,7 @@ describe('row geometry', () => {
 
     for (const row of document.querySelectorAll('.srow')) {
       const cells = [...row.children].map((c) => c.className.split(' ')[0]);
-      // A note (the sidebar-rail warning) is the one optional third cell.
+      // A note is the one optional third cell.
       expect(cells.slice(0, 2), row.querySelector('.srow-label')?.textContent ?? '').toEqual([
         'srow-label',
         'srow-control',
@@ -1253,7 +1180,6 @@ describe('focus rings, as the cascade resolves them', () => {
       ['the Theme button', by('set-theme')],
       ['a text Button', by('open-keybindings')],
       ['a number Input', by('set-scrollback')],
-      ['the import Input', by('set-theme-import')],
       ['the Select trigger', by('set-font')],
       ['a Segmented item', by('set-cursor').querySelector('.ui-seg-item') as Element],
       ['a Switch', by('set-blink')],
@@ -1273,11 +1199,16 @@ describe('focus rings, as the cascade resolves them', () => {
     }
   });
 
-  it('draws the keyboard ring on every theme entry and on the sub-view’s back control', () => {
+  it('draws the keyboard ring on every control of the theme sub-view', () => {
     render(<SettingsFields {...FULL} subView="themes" />);
     const entries = [...document.querySelectorAll("[data-testid^='theme-opt-']")];
     expect(entries.length).toBeGreaterThan(5);
-    for (const el of [...entries, screen.getByTestId('settings-themes-back')]) {
+    const controls = [
+      screen.getByTestId('settings-themes-back'),
+      screen.getByTestId('set-theme-import'),
+      screen.getByTestId('set-theme-mode-fixed'),
+    ];
+    for (const el of [...entries, ...controls]) {
       const rings = reaching(el, /^outline(?:-style|-width|-color)?$/, 'keyboard');
       expect(winner(rings, 'outline')?.value, el.getAttribute('data-testid') ?? '').toBe(RING);
     }
@@ -2034,8 +1965,6 @@ describe('the press’s own click, landing on what the press drew', () => {
 describe('test ids', () => {
   const BEFORE_THE_REDESIGN = [
     'set-theme',
-    'set-theme-import',
-    'set-theme-import-add',
     'set-font',
     'set-size',
     'set-cursor',
@@ -2051,8 +1980,6 @@ describe('test ids', () => {
     'set-kbsel',
     'set-altdig',
     'set-vim',
-    'set-sidebar-rail',
-    'open-dictation-history',
     'reload-app',
     'install-pwa',
     'set-latency',
@@ -2068,11 +1995,327 @@ describe('test ids', () => {
     expect(missing).toEqual([]);
   });
 
+  // The Import field moved into the theme sub-view; its ids went with it.
+  it('keeps the import field’s ids, now in the theme sub-view', () => {
+    render(<SettingsFields {...FULL} subView="themes" />);
+    expect(screen.getByTestId('set-theme-import')).toBeInTheDocument();
+    expect(screen.getByTestId('set-theme-import-add')).toBeInTheDocument();
+  });
+
   it('keeps the theme entries’ and swatches’ ids, now in the browser', () => {
     render(<SettingsFields {...FULL} subView="themes" />);
     for (const p of allProfiles()) {
       expect(screen.getByTestId(`theme-opt-${p.id}`)).toBeInTheDocument();
       expect(screen.getByTestId(`theme-swatch-${p.id}`)).toBeInTheDocument();
     }
+  });
+});
+
+// ── Settings › App: no Sidebar rail, no Dictation history (batch 12) ──────────
+//
+// The rail is always shown on desktop and already has a Dictation entry, so both
+// rows are gone. A stored `sidebarRail` is still parsed, and ignored.
+describe('App section', () => {
+  it('has no Sidebar rail row, whatever the stored value', () => {
+    for (const sidebarRail of ['always', 'hidden'] as const) {
+      render(<SettingsFields {...FULL} settings={{ ...DEFAULTS, sidebarRail }} />);
+      expect(screen.queryByTestId('set-sidebar-rail')).toBeNull();
+      expect(screen.queryByText('Sidebar rail')).toBeNull();
+      expect(screen.queryByText(/command palette/i)).toBeNull();
+      cleanup();
+    }
+  });
+
+  it('has no Dictation history row', () => {
+    render(<SettingsFields {...FULL} />);
+    expect(screen.queryByTestId('open-dictation-history')).toBeNull();
+    expect(screen.queryByText('History…')).toBeNull();
+  });
+
+  it('keeps the rows that stay, in order', () => {
+    render(<SettingsFields {...FULL} />);
+    const rows = [...screen.getByTestId('settings-section-app-content').querySelectorAll('.srow')];
+    expect(rows.map((r) => r.querySelector('.srow-label')?.textContent ?? r.textContent)).toEqual([
+      expect.stringMatching(/^Reload app/),
+      expect.stringMatching(/^Install as app/),
+      expect.stringMatching(/^Latency overlay/),
+      'Edit config.json',
+    ]);
+  });
+});
+
+// ── Theme sub-view: Import and Match system (batch 12) ────────────────────────
+describe('theme sub-view: Import', () => {
+  it('is gone from the form', () => {
+    render(<SettingsFields {...FULL} />);
+    expect(screen.queryByTestId('set-theme-import')).toBeNull();
+    expect(screen.queryByTestId('set-theme-import-add')).toBeNull();
+    expect(screen.queryByText('Import theme')).toBeNull();
+  });
+
+  it('is the first section of the theme sub-view, above the Dark and Light groups', () => {
+    render(<SettingsFields {...FULL} subView="themes" />);
+    const section = screen.getByRole('group', { name: 'Import' });
+    const browser = screen.getByTestId('theme-browser');
+    // The first section: nothing titled sits between the mode switch and it.
+    const groups = [...browser.querySelectorAll('[role="group"][aria-labelledby]')];
+    expect(groups[0]).toBe(section);
+    expect(section.compareDocumentPosition(screen.getByRole('group', { name: 'Dark' }))).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+
+  it('is offered only when the host can import', () => {
+    const { onImportTheme: _omit, ...without } = FULL;
+    render(<SettingsFields {...without} subView="themes" />);
+    expect(screen.queryByTestId('set-theme-import')).toBeNull();
+  });
+
+  it('hands the source to the host', async () => {
+    const onImportTheme = vi.fn();
+    render(<SettingsFields {...FULL} subView="themes" onImportTheme={onImportTheme} />);
+    await userEvent.type(screen.getByTestId('set-theme-import'), 'Tokyo Night');
+    await userEvent.click(screen.getByTestId('set-theme-import-add'));
+    expect(onImportTheme).toHaveBeenCalledTimes(1);
+    expect(onImportTheme.mock.calls[0]?.[0]).toBe('Tokyo Night');
+    expect((screen.getByTestId('set-theme-import') as HTMLInputElement).value).toBe('');
+  });
+
+  it('is busy while an import is in flight', () => {
+    render(<SettingsFields {...FULL} subView="themes" importingTheme />);
+    expect(screen.getByTestId('set-theme-import-add')).toBeDisabled();
+    expect(screen.getByTestId('set-theme-import-add')).toHaveTextContent('…');
+  });
+
+  it('works in both hosts: the sub-view is the same component either way', () => {
+    // The drawer lifts `subView` and hides ‹ Settings by CSS; neither touches Import.
+    render(<SettingsFields {...FULL} subView="themes" onSubViewChange={() => {}} />);
+    expect(screen.getByTestId('settings-themes')).toContainElement(
+      screen.getByTestId('set-theme-import'),
+    );
+  });
+
+  // The target is captured when the request is SUBMITTED (B12-04); App routes the
+  // answer through it. Fixed mode: today's behaviour, the import becomes themeId.
+  it('tags a fixed-mode import as a fixed target', async () => {
+    const onImportTheme = vi.fn();
+    render(<SettingsFields {...FULL} subView="themes" onImportTheme={onImportTheme} />);
+    await userEvent.type(screen.getByTestId('set-theme-import'), 'Dracula{Enter}');
+    expect(onImportTheme).toHaveBeenCalledWith('Dracula', { mode: 'fixed' });
+  });
+});
+
+/** A `matchMedia` the test can flip, as the browser would on a scheme change. */
+const stubScheme = (initialDark: boolean) => {
+  let dark = initialDark;
+  const listeners = new Set<() => void>();
+  vi.spyOn(window, 'matchMedia').mockImplementation(
+    (query: string) =>
+      ({
+        media: query,
+        get matches() {
+          return query.includes('prefers-color-scheme: dark') ? dark : false;
+        },
+        addEventListener: (_: string, cb: () => void) => listeners.add(cb),
+        removeEventListener: (_: string, cb: () => void) => listeners.delete(cb),
+      }) as unknown as MediaQueryList,
+  );
+  return {
+    set: (next: boolean) => {
+      dark = next;
+      act(() => listeners.forEach((cb) => cb()));
+    },
+  };
+};
+
+describe('theme sub-view: Match system', () => {
+  const [A, B, C] = allProfiles().filter((p) => p.id !== DEFAULTS.themeId);
+  if (!A || !B || !C) throw new Error('the registry needs three themes besides the default');
+  const SYSTEM: ClientSettings = {
+    ...DEFAULTS,
+    themeMode: 'system',
+    themeId: DEFAULTS.themeId,
+    themeDark: A.id,
+    themeLight: B.id,
+  };
+  afterEach(() => vi.restoreAllMocks());
+
+  /** The host's side of `onChange`: apply it, so the form re-renders with it. */
+  const mount = (initial: ClientSettings, extra: Partial<SettingsFieldsProps> = {}) => {
+    const onChange = vi.fn();
+    const Host = () => {
+      const [settings, setSettings] = useState<ClientSettings>(initial);
+      return (
+        <SettingsFields
+          {...FULL}
+          settings={settings}
+          subView="themes"
+          onChange={(partial) => {
+            onChange(partial);
+            setSettings((s) => ({ ...s, ...partial }));
+          }}
+          {...extra}
+        />
+      );
+    };
+    render(<Host />);
+    return onChange;
+  };
+
+  describe('the mode switch', () => {
+    it('shows Fixed selected by default, with no slot picker', () => {
+      stubScheme(true);
+      mount(DEFAULTS);
+      expect(screen.getByTestId('set-theme-mode-fixed')).toHaveAttribute('data-state', 'on');
+      expect(screen.queryByTestId('set-theme-slot')).toBeNull();
+    });
+
+    it('switching to Match system starts both slots at the current theme', async () => {
+      stubScheme(true);
+      const onChange = mount({ ...DEFAULTS, themeId: C.id });
+      await userEvent.click(screen.getByTestId('set-theme-mode-system'));
+      expect(onChange).toHaveBeenCalledWith({
+        themeMode: 'system',
+        themeDark: C.id,
+        themeLight: C.id,
+      });
+      expect(screen.getByTestId('set-theme-slot')).toBeInTheDocument();
+    });
+
+    it('switching back to Fixed keeps what is on screen as the fixed pick', async () => {
+      stubScheme(false); // light: the light slot (B) is what shows
+      const onChange = mount(SYSTEM);
+      await userEvent.click(screen.getByTestId('set-theme-mode-fixed'));
+      expect(onChange).toHaveBeenCalledWith({ themeMode: 'fixed', themeId: B.id });
+      expect(screen.queryByTestId('set-theme-slot')).toBeNull();
+    });
+  });
+
+  describe('a pick', () => {
+    it('fixed mode: applies and persists as themeId, as it always did', () => {
+      stubScheme(true);
+      const onChange = mount(DEFAULTS);
+      fireEvent.click(screen.getByTestId(`theme-opt-${A.id}`));
+      expect(onChange).toHaveBeenLastCalledWith({ themeId: A.id });
+    });
+
+    it('opens on the slot of the scheme the device is in', () => {
+      stubScheme(true);
+      mount(SYSTEM);
+      expect(screen.getByTestId('set-theme-slot-dark')).toHaveAttribute('data-state', 'on');
+      cleanup();
+      stubScheme(false);
+      mount(SYSTEM);
+      expect(screen.getByTestId('set-theme-slot-light')).toHaveAttribute('data-state', 'on');
+    });
+
+    it('marks the edited slot’s pick, and follows the slot picker', async () => {
+      stubScheme(true);
+      mount(SYSTEM);
+      expect(screen.getByTestId(`theme-opt-${A.id}`)).toHaveAttribute('data-state', 'checked');
+      await userEvent.click(screen.getByTestId('set-theme-slot-light'));
+      expect(screen.getByTestId(`theme-opt-${B.id}`)).toHaveAttribute('data-state', 'checked');
+      expect(screen.getByTestId(`theme-opt-${A.id}`)).toHaveAttribute('data-state', 'unchecked');
+      expect(document.querySelectorAll('.tb-check')).toHaveLength(1);
+    });
+
+    it('a pick for the slot on screen also moves the export; one for the other slot does not', async () => {
+      stubScheme(true);
+      const onChange = mount(SYSTEM);
+      // Dark is active: this pick changes what the device shows, so themeId follows.
+      fireEvent.click(screen.getByTestId(`theme-opt-${C.id}`));
+      expect(onChange).toHaveBeenLastCalledWith({ themeDark: C.id, themeId: C.id });
+
+      await userEvent.click(screen.getByTestId('set-theme-slot-light'));
+      fireEvent.click(screen.getByTestId(`theme-opt-${C.id}`));
+      expect(onChange).toHaveBeenLastCalledWith({ themeLight: C.id });
+      expect(onChange).toHaveBeenCalledTimes(2);
+    });
+
+    it('names both picks, and says when an inactive slot’s pick will show', async () => {
+      stubScheme(true);
+      mount(SYSTEM);
+      const note = screen.getByTestId('theme-slots-note');
+      expect(note).toHaveTextContent(`Dark: ${A.name} · Light: ${B.name}`);
+      expect(note).not.toHaveTextContent(/shows when/i);
+      await userEvent.click(screen.getByTestId('set-theme-slot-light'));
+      expect(screen.getByTestId('theme-slots-note')).toHaveTextContent(
+        'Shows when the system turns light.',
+      );
+    });
+
+    it('treats a slot that was never chosen as the fixed theme', () => {
+      stubScheme(true);
+      mount({ ...SYSTEM, themeId: C.id, themeDark: '', themeLight: '' });
+      expect(screen.getByTestId(`theme-opt-${C.id}`)).toHaveAttribute('data-state', 'checked');
+    });
+  });
+
+  describe('an import', () => {
+    it('is tagged with the slot being edited at the moment it is submitted', async () => {
+      stubScheme(true);
+      const onImportTheme = vi.fn();
+      mount(SYSTEM, { onImportTheme });
+      await userEvent.type(screen.getByTestId('set-theme-import'), 'First{Enter}');
+      expect(onImportTheme).toHaveBeenLastCalledWith('First', { mode: 'system', slot: 'dark' });
+
+      // The slot picker moves on; the NEXT submit is tagged with the new slot. The
+      // first is already on its way, and App answers it with the slot it was
+      // submitted for (App.test.tsx: a completion after a slot switch).
+      await userEvent.click(screen.getByTestId('set-theme-slot-light'));
+      await userEvent.type(screen.getByTestId('set-theme-import'), 'Second{Enter}');
+      expect(onImportTheme).toHaveBeenLastCalledWith('Second', { mode: 'system', slot: 'light' });
+      expect(onImportTheme).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('the Theme row', () => {
+    it('reads "System · <dark> / <light>" on one line, with the whole text as its title', () => {
+      stubScheme(true);
+      render(<SettingsFields {...FULL} settings={SYSTEM} />);
+      const label = `System · ${A.name} / ${B.name}`;
+      const row = screen.getByTestId('set-theme');
+      expect(row).toHaveAttribute('title', label);
+      expect(row).toHaveAttribute('aria-label', `Theme: ${label}`);
+      expect(row.querySelector('.srow-theme-name')).toHaveTextContent(label);
+      expect(row).toHaveClass('srow-theme');
+    });
+
+    it('names the theme itself in fixed mode, as before', () => {
+      render(<SettingsFields {...FULL} settings={{ ...DEFAULTS, themeId: A.id }} />);
+      expect(screen.getByTestId('set-theme')).toHaveTextContent(A.name);
+      expect(screen.getByTestId('set-theme')).not.toHaveTextContent('System');
+    });
+
+    it('stands in themeId for a slot never chosen', () => {
+      render(
+        <SettingsFields
+          {...FULL}
+          settings={{ ...SYSTEM, themeId: C.id, themeDark: '', themeLight: B.id }}
+        />,
+      );
+      expect(screen.getByTestId('set-theme')).toHaveAttribute(
+        'title',
+        `System · ${C.name} / ${B.name}`,
+      );
+    });
+
+    it('shows the id of a slot theme that is no longer registered, rather than nothing', () => {
+      render(<SettingsFields {...FULL} settings={{ ...SYSTEM, themeDark: 'user:gone' }} />);
+      expect(screen.getByTestId('set-theme')).toHaveAttribute(
+        'title',
+        `System · user:gone / ${B.name}`,
+      );
+    });
+  });
+
+  it('follows a scheme change while the sub-view is open: the default slot is only the opening one', async () => {
+    const scheme = stubScheme(true);
+    mount(SYSTEM);
+    await userEvent.click(screen.getByTestId('set-theme-slot-light'));
+    scheme.set(false);
+    // What the user chose to edit stays chosen; the note now reads against the new scheme.
+    expect(screen.getByTestId('set-theme-slot-light')).toHaveAttribute('data-state', 'on');
+    expect(screen.getByTestId('theme-slots-note')).not.toHaveTextContent(/shows when/i);
   });
 });

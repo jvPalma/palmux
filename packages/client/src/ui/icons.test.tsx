@@ -229,7 +229,6 @@ describe('rendered consumers', () => {
     render(
       <DockPanel
         view="files"
-        rail
         onView={vi.fn()}
         actions={[
           { id: 'upload', label: 'Upload a file', onRun: vi.fn() },
@@ -256,7 +255,6 @@ describe('rendered consumers', () => {
     render(
       <DockPanel
         view="files"
-        rail
         onView={vi.fn()}
         actions={[
           { id: 'upload', label: 'Upload a file', onRun: vi.fn() },
@@ -282,7 +280,7 @@ describe('rendered consumers', () => {
   });
 
   it('the dock close button keeps its accessible name now that it has no text', () => {
-    render(<DockPanel view="settings" rail={false} onView={vi.fn()} />);
+    render(<DockPanel view="settings" onView={vi.fn()} />);
     expect(screen.getByRole('button', { name: 'Close panel' })).toBe(
       screen.getByTestId('dock-close'),
     );

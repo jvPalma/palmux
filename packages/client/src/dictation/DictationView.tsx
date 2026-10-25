@@ -16,11 +16,24 @@
 // Transcribe button: nothing was lost, something is owed. Drawing it as a
 // failure would be a lie about the data — the audio is right there.
 //
+// A CARD IS A HEADER OVER A TRANSCRIPT. The header carries date · duration on the
+// left and the actions on the right; the transcript sits under it at the card's
+// full width, clamped to four lines. It used to sit BESIDE the actions, which
+// left a long dictation a ~150px column that wrapped at every other word and ran
+// the card to the height of the dock.
+//
 // The record button drives its OWN useDictation. This view is self-contained by
 // design (its props are just the two sinks, Copy and Insert); a host that owns
 // the recorder should lift that state rather than run a second recorder.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  type SyntheticEvent,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
 import { Button, IconButton } from '../ui';
 import { Icon } from '../ui/icons';
 import { useDictation } from './useDictation';
@@ -60,6 +73,58 @@ const durationLabel = (seconds: number): string => {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 };
 
+/** A transcript clamped to four lines, with a Show more / Show less toggle when
+ *  there is more than that. Whether it overflows is MEASURED, not guessed from
+ *  the length: the answer depends on the card's width (300px dock, phone drawer)
+ *  and on the font that happens to be loaded. */
+function Transcript({ name, text }: { name: string; text: string }) {
+  const ref = useRef<HTMLParagraphElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    // Expanded text has no clamp to overflow, so there is nothing to measure.
+    // `overflows` keeps its last answer, which is what keeps "Show less" on screen.
+    if (!el || expanded) return;
+    const measure = (): void => setOverflows(el.scrollHeight > el.clientHeight);
+    measure();
+    // The dock can be resized and a webfont can land after the first paint; both
+    // re-wrap the text without touching it.
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [text, expanded]);
+
+  const textId = `dictation-text-${name}`;
+  return (
+    <>
+      <p
+        className="dictation-card-text"
+        id={textId}
+        ref={ref}
+        data-clamped={String(!expanded)}
+        data-testid={`dv-text-${name}`}
+      >
+        {text}
+      </p>
+      {overflows && (
+        <button
+          type="button"
+          className="dictation-card-toggle"
+          aria-expanded={expanded}
+          aria-controls={textId}
+          data-testid={`dv-toggle-${name}`}
+          onClick={() => setExpanded((open) => !open)}
+        >
+          {expanded ? 'Show less' : 'Show more'}
+        </button>
+      )}
+    </>
+  );
+}
+
 export function DictationView({ onCopy, onInsert }: DictationViewProps) {
   const [entries, setEntries] = useState<Entry[] | null>(null);
   const [error, setError] = useState('');
@@ -71,6 +136,11 @@ export function DictationView({ onCopy, onInsert }: DictationViewProps) {
   const [durations, setDurations] = useState<Record<string, number>>({});
   /** The one entry currently playing back, if any. */
   const [playing, setPlaying] = useState('');
+  /** The entry whose scrubber is showing: from its first play until it ends. It
+   *  outlives a pause, or the scrubber would vanish exactly when you want to seek. */
+  const [scrubbing, setScrubbing] = useState('');
+  /** Playback position (seconds) of the `scrubbing` entry. */
+  const [position, setPosition] = useState(0);
   const players = useRef<Record<string, HTMLAudioElement | null>>({});
 
   const load = useCallback(async (): Promise<void> => {
@@ -124,9 +194,14 @@ export function DictationView({ onCopy, onInsert }: DictationViewProps) {
   const togglePlay = (name: string): void => {
     const el = players.current[name];
     if (!el) return;
-    if (el.paused)
+    if (el.paused) {
+      // One clip at a time: `playing` and the scrubber each name a single entry,
+      // so a second clip left running would be audible and have no controls.
+      for (const [other, player] of Object.entries(players.current)) {
+        if (other !== name && player && !player.paused) player.pause();
+      }
       void el.play().catch(() => setFailed((f) => ({ ...f, [name]: 'playback failed' })));
-    else el.pause();
+    } else el.pause();
   };
 
   const count = entries?.length ?? 0;
@@ -162,36 +237,111 @@ export function DictationView({ onCopy, onInsert }: DictationViewProps) {
 
       {entries?.map((entry) => {
         const duration = durationLabel(durations[entry.name] ?? 0);
+        const total = durations[entry.name] ?? 0;
+        const scrubMax = Number.isFinite(total) && total > 0 ? total : 0;
+        // Read the duration HERE, not inside the updater. React calls a
+        // functional setState lazily, during the next render, and by then it has
+        // nulled the synthetic event's currentTarget — so the deferred read threw
+        // and took the whole app down with it (a render-phase throw, above every
+        // handler's try/catch). Both events land here: a MediaRecorder clip says
+        // Infinity at loadedmetadata and only learns its length later.
+        const takeDuration = (e: SyntheticEvent<HTMLAudioElement>): void => {
+          const seconds = e.currentTarget.duration;
+          setDurations((d) => ({ ...d, [entry.name]: seconds }));
+        };
         return (
           <div
             className={entry.text ? 'dictation-card' : 'dictation-card dictation-card-pending'}
             data-testid={`dv-card-${entry.name}`}
             key={entry.name}
           >
-            <span className="dictation-card-body">
-              {entry.text ? (
-                <span className="dictation-card-text">{`“${entry.text}”`}</span>
-              ) : (
-                <span className="dictation-card-text dictation-card-muted">
-                  <i>audio only</i> · {timeLabel(entry.time)}
-                </span>
-              )}
-              {entry.text ? (
-                <span className="dictation-card-sub">
-                  {timeLabel(entry.time)}
-                  {duration && ` · ${duration}`}
-                </span>
-              ) : (
-                <span className="dictation-card-sub dictation-card-warn">
-                  {entry.audio
-                    ? 'the model failed · your words are kept'
-                    : 'the recording aged out'}
-                </span>
-              )}
-              {failed[entry.name] && (
-                <span className="dictation-card-sub dictation-card-warn">{failed[entry.name]}</span>
-              )}
-            </span>
+            <div className="dictation-card-head" data-testid={`dv-head-${entry.name}`}>
+              <span className="dictation-card-when" data-testid={`dv-when-${entry.name}`}>
+                {timeLabel(entry.time)}
+                {duration && ` · ${duration}`}
+              </span>
+
+              <span className="dictation-card-actions">
+                {entry.audio && (
+                  <IconButton
+                    label={playing === entry.name ? 'Pause' : 'Play recording'}
+                    size="sm"
+                    data-testid={`dv-play-${entry.name}`}
+                    onClick={() => togglePlay(entry.name)}
+                  >
+                    <Icon name={playing === entry.name ? 'pause' : 'play'} size={14} />
+                  </IconButton>
+                )}
+                {entry.text ? (
+                  <>
+                    <IconButton
+                      label="Copy transcript"
+                      size="sm"
+                      data-testid={`dv-copy-${entry.name}`}
+                      onClick={() => onCopy(entry.text)}
+                    >
+                      <Icon name="copy" size={14} />
+                    </IconButton>
+                    <IconButton
+                      label="Insert into terminal"
+                      size="sm"
+                      data-testid={`dv-insert-${entry.name}`}
+                      onClick={() => onInsert(entry.text)}
+                    >
+                      <Icon name="newline" size={14} />
+                    </IconButton>
+                  </>
+                ) : (
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    data-testid={`dv-transcribe-${entry.name}`}
+                    disabled={!entry.audio || !!busy}
+                    onClick={() => void transcribe(entry.name)}
+                  >
+                    {busy === entry.name ? 'Transcribing…' : 'Transcribe'}
+                  </Button>
+                )}
+              </span>
+            </div>
+
+            {entry.text ? (
+              <Transcript name={entry.name} text={entry.text} />
+            ) : (
+              <p className="dictation-card-sub dictation-card-warn">
+                <i>audio only</i> ·{' '}
+                {entry.audio ? 'the model failed · your words are kept' : 'the recording aged out'}
+              </p>
+            )}
+            {failed[entry.name] && (
+              <p className="dictation-card-sub dictation-card-warn">{failed[entry.name]}</p>
+            )}
+
+            {scrubbing === entry.name && (
+              // A native range: keyboard-operable and announced as a slider for
+              // free. It sits under the text, where the eye already is, rather
+              // than in the header, which has no room for a track at 300px.
+              <input
+                type="range"
+                className="dictation-card-scrub"
+                aria-label="Seek recording"
+                data-testid={`dv-scrub-${entry.name}`}
+                min={0}
+                max={scrubMax}
+                step={0.1}
+                // Until the length is known there is nowhere to seek TO: a 0..0
+                // track that accepts input only pretends to work.
+                disabled={scrubMax === 0}
+                value={Math.min(position, scrubMax)}
+                onChange={(e) => {
+                  // Read the value HERE, not in a deferred updater (see takeDuration).
+                  const seconds = Number(e.currentTarget.value);
+                  const el = players.current[entry.name];
+                  if (el) el.currentTime = seconds;
+                  setPosition(seconds);
+                }}
+              />
+            )}
 
             {entry.audio && (
               // preload="metadata" is what gives the card its duration, and it
@@ -204,63 +354,25 @@ export function DictationView({ onCopy, onInsert }: DictationViewProps) {
                 ref={(el) => {
                   players.current[entry.name] = el;
                 }}
-                onLoadedMetadata={(e) => {
-                  // Read the duration HERE, not inside the updater. React calls
-                  // a functional setState lazily, during the next render, and by
-                  // then it has nulled the synthetic event's currentTarget — so
-                  // the deferred read threw and took the whole app down with it
-                  // (a render-phase throw, above every handler's try/catch).
-                  const seconds = e.currentTarget.duration;
-                  setDurations((d) => ({ ...d, [entry.name]: seconds }));
+                onLoadedMetadata={takeDuration}
+                onDurationChange={takeDuration}
+                onPlay={(e) => {
+                  const seconds = e.currentTarget.currentTime;
+                  setPlaying(entry.name);
+                  setScrubbing(entry.name);
+                  setPosition(seconds);
                 }}
-                onPlay={() => setPlaying(entry.name)}
+                onTimeUpdate={(e) => {
+                  const seconds = e.currentTarget.currentTime;
+                  if (scrubbing === entry.name) setPosition(seconds);
+                }}
                 onPause={() => setPlaying((p) => (p === entry.name ? '' : p))}
-                onEnded={() => setPlaying((p) => (p === entry.name ? '' : p))}
+                onEnded={() => {
+                  setPlaying((p) => (p === entry.name ? '' : p));
+                  setScrubbing((s) => (s === entry.name ? '' : s));
+                }}
               />
             )}
-
-            <span className="dictation-card-actions">
-              {entry.audio && (
-                <IconButton
-                  label={playing === entry.name ? 'Pause' : 'Play recording'}
-                  size="sm"
-                  data-testid={`dv-play-${entry.name}`}
-                  onClick={() => togglePlay(entry.name)}
-                >
-                  <Icon name={playing === entry.name ? 'pause' : 'play'} size={14} />
-                </IconButton>
-              )}
-              {entry.text ? (
-                <>
-                  <IconButton
-                    label="Copy transcript"
-                    size="sm"
-                    data-testid={`dv-copy-${entry.name}`}
-                    onClick={() => onCopy(entry.text)}
-                  >
-                    <Icon name="copy" size={14} />
-                  </IconButton>
-                  <IconButton
-                    label="Insert into terminal"
-                    size="sm"
-                    data-testid={`dv-insert-${entry.name}`}
-                    onClick={() => onInsert(entry.text)}
-                  >
-                    <Icon name="newline" size={14} />
-                  </IconButton>
-                </>
-              ) : (
-                <Button
-                  variant="primary"
-                  size="sm"
-                  data-testid={`dv-transcribe-${entry.name}`}
-                  disabled={!entry.audio || !!busy}
-                  onClick={() => void transcribe(entry.name)}
-                >
-                  {busy === entry.name ? 'Transcribing…' : 'Transcribe'}
-                </Button>
-              )}
-            </span>
           </div>
         );
       })}

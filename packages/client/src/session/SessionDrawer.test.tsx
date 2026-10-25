@@ -1080,6 +1080,38 @@ describe('header', () => {
       expect(screen.getByTestId('theme-browser')).toBeTruthy();
     });
 
+    // Import lives in the sub-view now (batch 12), in the drawer as in the dock, and
+    // the drawer hands the host the target along with the source.
+    it('offers Import first in the sub-view, and tags it with the target', () => {
+      const onImportTheme = vi.fn();
+      renderDrawer({ onImportTheme });
+      expect(screen.queryByTestId('set-theme-import')).toBeNull(); // not in the form
+      openThemes();
+      const section = screen.getByRole('group', { name: 'Import' });
+      expect(section).toContainElement(screen.getByTestId('set-theme-import'));
+      expect(section.compareDocumentPosition(screen.getByRole('group', { name: 'Dark' }))).toBe(
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      );
+
+      // fireEvent, not userEvent: this file runs on a fake clock, which a typing
+      // simulation waits on forever.
+      const field = screen.getByTestId('set-theme-import');
+      fireEvent.change(field, { target: { value: 'Nord' } });
+      fireEvent.keyDown(field, { key: 'Enter' });
+      expect(onImportTheme).toHaveBeenCalledWith('Nord', { mode: 'fixed' });
+    });
+
+    it('lets Match system be chosen from the drawer', () => {
+      const { onChangeSettings } = renderDrawer();
+      openThemes();
+      fireEvent.click(screen.getByTestId('set-theme-mode-system'));
+      expect(onChangeSettings).toHaveBeenCalledWith({
+        themeMode: 'system',
+        themeDark: DEFAULTS.themeId,
+        themeLight: DEFAULTS.themeId,
+      });
+    });
+
     // Settings draws no switcher, so the way out is the back header: its first
     // press pops the browser, its second leaves. (A host moving the view out from
     // under an OPEN browser is the controlled-host case below.)
@@ -1339,7 +1371,7 @@ describe('header', () => {
 
   // The theme switch replaces the control that holds focus. Here the form's own
   // `‹ Settings` is hidden (settings-view.css), so the first control the sub-view
-  // draws is the first theme, one Shift+Tab below this header; the way out is
+  // draws is the Fixed segment of the mode switch, one Shift+Tab below this header; the way out is
   // the header, and it hands focus back to the Theme row. Every step is a key:
   // no focus() call stands in for one.
   describe('focus across the theme sub-view', () => {
@@ -1354,19 +1386,22 @@ describe('header', () => {
     });
     afterEach(() => sheet.remove());
 
-    const firstTheme = () => document.querySelector<HTMLElement>("[data-testid^='theme-opt-']")!;
+    // Realigned (batch 12): the sub-view now opens on the mode switch, so the first
+    // control it draws — where focus lands, the drawer having hidden ‹ Settings —
+    // is its Fixed segment, one Tab above Import and the list.
+    const firstControl = () => screen.getByTestId('set-theme-mode-fixed');
 
     it.each([
       ['Enter', '{Enter}'],
       ['Space', ' '],
-    ])('%s: in to the first theme, out through the header to the Theme row', async (_, key) => {
+    ])('%s: in to the first control, out through the header to the Theme row', async (_, key) => {
       renderDrawer();
       fireEvent.pointerDown(screen.getByTestId('drawer-settings'));
       await tabTo(screen.getByTestId('set-theme'));
 
       await user().keyboard(key);
       expect(inThemes()).toBe(true);
-      expect(document.activeElement).toBe(firstTheme());
+      expect(document.activeElement).toBe(firstControl());
 
       await tabTo(settingsBack(), true);
       await user().keyboard(key);

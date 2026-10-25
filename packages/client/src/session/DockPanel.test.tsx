@@ -13,22 +13,30 @@ afterEach(() => {
 });
 
 describe('DockPanel', () => {
-  it('renders nothing at all when closed and railless', () => {
-    // `sidebarRail: 'hidden'` has to cost the terminal ZERO pixels — that is the
-    // entire promise of the setting.
-    const { container } = render(<DockPanel view={null} rail={false} onView={noop} />);
-    expect(container.firstChild).toBeNull();
-  });
-
-  it('keeps the rail while closed', () => {
-    render(<DockPanel view={null} rail onView={noop} />);
+  // Realigned (batch 12): there is no `rail` prop and no railless state any more.
+  // The "renders nothing when closed and railless" test went with the option.
+  it('always draws the rail, with the dock closed', () => {
+    render(<DockPanel view={null} onView={noop} />);
     expect(screen.getByTestId('dock-rail')).toBeInTheDocument();
     expect(screen.queryByTestId('dock')).not.toBeInTheDocument();
   });
 
+  it('draws the rail beside an open view too', () => {
+    render(<DockPanel view="files" onView={noop} />);
+    expect(screen.getByTestId('dock-rail')).toBeInTheDocument();
+    expect(screen.getByTestId('dock')).toBeInTheDocument();
+  });
+
+  it('puts every view on the rail, Dictation included', () => {
+    render(<DockPanel view={null} onView={noop} />);
+    for (const id of ['newtab', 'files', 'dictation', 'settings']) {
+      expect(screen.getByTestId(`dock-rail-${id}`)).toBeInTheDocument();
+    }
+  });
+
   it('shows the open view and marks its rail button pressed', () => {
     render(
-      <DockPanel view="files" rail onView={noop}>
+      <DockPanel view="files" onView={noop}>
         <p>tree</p>
       </DockPanel>,
     );
@@ -40,7 +48,7 @@ describe('DockPanel', () => {
 
   it('clicking the OPEN view closes the dock, a different one switches', async () => {
     const onView = vi.fn();
-    render(<DockPanel view="settings" rail onView={onView} />);
+    render(<DockPanel view="settings" onView={onView} />);
     await userEvent.click(screen.getByTestId('dock-rail-settings'));
     expect(onView).toHaveBeenLastCalledWith(null);
     await userEvent.click(screen.getByTestId('dock-rail-files'));
@@ -49,7 +57,7 @@ describe('DockPanel', () => {
 
   it('the close button closes', async () => {
     const onView = vi.fn();
-    render(<DockPanel view="dictation" rail onView={onView} />);
+    render(<DockPanel view="dictation" onView={onView} />);
     await userEvent.click(screen.getByTestId('dock-close'));
     expect(onView).toHaveBeenCalledWith(null);
   });
@@ -107,7 +115,7 @@ describe('rail actions', () => {
     ] as const;
 
   it('renders no action buttons, and no separator, without the prop', () => {
-    const { container } = render(<DockPanel view={null} rail onView={noop} />);
+    const { container } = render(<DockPanel view={null} onView={noop} />);
     expect(screen.queryByTestId('dock-rail-upload')).not.toBeInTheDocument();
     expect(container.querySelector('.dock-rail-sep')).toBeNull();
   });
@@ -116,7 +124,7 @@ describe('rail actions', () => {
   // behind their separator, then Settings alone at the bottom edge.
   it('renders New tab, Explorer, Dictation, a separator, Upload, Download, Settings', () => {
     const { container } = render(
-      <DockPanel view={null} rail onView={noop} actions={[...actions(noop)]} />,
+      <DockPanel view={null} onView={noop} actions={[...actions(noop)]} />,
     );
     const rail = screen.getByTestId('dock-rail');
     const order = [...rail.children].map(
@@ -135,7 +143,7 @@ describe('rail actions', () => {
   });
 
   it('pins Settings, and only Settings, to the bottom of the rail', () => {
-    render(<DockPanel view={null} rail onView={noop} actions={[...actions(noop)]} />);
+    render(<DockPanel view={null} onView={noop} actions={[...actions(noop)]} />);
     const rail = screen.getByTestId('dock-rail');
     expect(rail.lastElementChild).toBe(screen.getByTestId('dock-rail-settings'));
     expect([...rail.querySelectorAll('.dock-rail-pinned')]).toEqual([
@@ -144,7 +152,7 @@ describe('rail actions', () => {
   });
 
   it('still ends on Settings with no actions, and draws no separator', () => {
-    const { container } = render(<DockPanel view={null} rail onView={noop} />);
+    const { container } = render(<DockPanel view={null} onView={noop} />);
     const rail = screen.getByTestId('dock-rail');
     expect(rail.lastElementChild).toBe(screen.getByTestId('dock-rail-settings'));
     expect(container.querySelector('.dock-rail-sep')).toBeNull();
@@ -152,7 +160,7 @@ describe('rail actions', () => {
 
   it('Settings is still a pressed-state view, not an action', async () => {
     const onView = vi.fn();
-    render(<DockPanel view="settings" rail onView={onView} actions={[...actions(noop)]} />);
+    render(<DockPanel view="settings" onView={onView} actions={[...actions(noop)]} />);
     const settings = screen.getByTestId('dock-rail-settings');
     expect(settings).toHaveAttribute('aria-pressed', 'true');
     await userEvent.click(settings);
@@ -179,7 +187,7 @@ describe('rail actions', () => {
   it('runs the action and never opens a view', async () => {
     const onRun = vi.fn();
     const onView = vi.fn();
-    render(<DockPanel view={null} rail onView={onView} actions={[...actions(onRun)]} />);
+    render(<DockPanel view={null} onView={onView} actions={[...actions(onRun)]} />);
     await userEvent.click(screen.getByTestId('dock-rail-upload'));
     expect(onRun).toHaveBeenCalledTimes(1);
     expect(onView).not.toHaveBeenCalled();
@@ -188,14 +196,8 @@ describe('rail actions', () => {
   // An action never lights up, so it must not claim the pressed state the four
   // views use — that would read as a panel that refuses to open.
   it('carries no aria-pressed', () => {
-    render(<DockPanel view="files" rail onView={noop} actions={[...actions(noop)]} />);
+    render(<DockPanel view="files" onView={noop} actions={[...actions(noop)]} />);
     expect(screen.getByTestId('dock-rail-upload')).not.toHaveAttribute('aria-pressed');
     expect(screen.getByTestId('dock-rail-files')).toHaveAttribute('aria-pressed', 'true');
-  });
-
-  it('stays hidden with the rail, since it is rail chrome', () => {
-    render(<DockPanel view="files" rail={false} onView={noop} actions={[...actions(noop)]} />);
-    expect(screen.queryByTestId('dock-rail-upload')).not.toBeInTheDocument();
-    expect(screen.getByTestId('dock')).toBeInTheDocument();
   });
 });

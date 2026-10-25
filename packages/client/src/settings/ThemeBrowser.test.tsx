@@ -11,7 +11,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import userEvent from '@testing-library/user-event';
 import { parse } from 'postcss';
 import { allProfiles, isLightBg, type ColorProfile } from './themes';
-import { ThemeBrowser } from './ThemeBrowser';
+import { ThemeBrowser, type ThemeBrowserControls } from './ThemeBrowser';
 import { Icon } from '../ui/icons';
 
 const ramp = (base: number): number[] => Array.from({ length: 16 }, (_, i) => base + i * 0x010101);
@@ -432,5 +432,172 @@ describe('theme-browser.css', () => {
     const check = declarationsOf('.tb-check');
     expect(check.find((d) => d.prop === 'background')?.value).toBe('var(--t-mantle)');
     expect(check.find((d) => d.prop === 'position')?.value).toBe('absolute');
+  });
+});
+
+// ── Import, and Match system (batch 12) ───────────────────────────────────────
+//
+// The browser is the one place a theme is chosen, so it also holds what used to sit
+// in the form's Appearance card (Import) and the new mode switch. All of it comes
+// in through `controls`: without it the browser is the bare list tested above.
+describe('ThemeBrowser controls', () => {
+  const controls = (extra: Partial<ThemeBrowserControls> = {}): ThemeBrowserControls => ({
+    mode: 'fixed',
+    onModeChange: vi.fn(),
+    slot: 'dark',
+    onSlotChange: vi.fn(),
+    activeSlot: 'dark',
+    slotNames: { dark: 'Dark One', light: 'Light One' },
+    onImport: vi.fn(),
+    importing: false,
+    ...extra,
+  });
+  const mount = (c: ThemeBrowserControls, value = 'dark-one') =>
+    render(<ThemeBrowser profiles={PROFILES} value={value} onChange={vi.fn()} controls={c} />);
+
+  it('renders the bare list when no controls are given', () => {
+    render(<ThemeBrowser profiles={PROFILES} value="dark-one" onChange={vi.fn()} />);
+    expect(screen.queryByTestId('set-theme-import')).toBeNull();
+    expect(screen.queryByTestId('set-theme-mode')).toBeNull();
+    expect(screen.queryByRole('group', { name: 'Import' })).toBeNull();
+  });
+
+  describe('Import', () => {
+    it('is a titled section that comes before the Dark and Light groups', () => {
+      mount(controls());
+      const section = screen.getByRole('group', { name: 'Import' });
+      expect(section).toContainElement(screen.getByTestId('set-theme-import'));
+      expect(section).toContainElement(screen.getByTestId('set-theme-import-add'));
+      const dark = screen.getByRole('group', { name: 'Dark' });
+      const light = screen.getByRole('group', { name: 'Light' });
+      for (const group of [dark, light]) {
+        expect(
+          section.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING,
+        ).toBeTruthy();
+      }
+    });
+
+    it('wears the section-title style, the one the Dark and Light labels wear', () => {
+      mount(controls());
+      const title = screen.getByText('Import');
+      expect(title).toHaveClass('tb-group-label');
+    });
+
+    it('submits what was typed, through the button or Enter, and clears the field', async () => {
+      const onImport = vi.fn();
+      mount(controls({ onImport }));
+      const field = screen.getByTestId('set-theme-import') as HTMLInputElement;
+
+      await userEvent.type(field, '  Tokyo Night  ');
+      await userEvent.click(screen.getByTestId('set-theme-import-add'));
+      expect(onImport).toHaveBeenLastCalledWith('Tokyo Night');
+      expect(field.value).toBe('');
+
+      await userEvent.type(field, 'https://example.test/t.yml{Enter}');
+      expect(onImport).toHaveBeenLastCalledWith('https://example.test/t.yml');
+      expect(onImport).toHaveBeenCalledTimes(2);
+    });
+
+    it('does nothing for an empty field, and disables Add', async () => {
+      const onImport = vi.fn();
+      mount(controls({ onImport }));
+      expect(screen.getByTestId('set-theme-import-add')).toBeDisabled();
+      await userEvent.type(screen.getByTestId('set-theme-import'), '   {Enter}');
+      expect(onImport).not.toHaveBeenCalled();
+    });
+
+    it('is busy while an import is in flight: Add shows … and nothing is submitted', async () => {
+      const onImport = vi.fn();
+      mount(controls({ onImport, importing: true }));
+      const add = screen.getByTestId('set-theme-import-add');
+      expect(add).toBeDisabled();
+      expect(add).toHaveTextContent('…');
+      await userEvent.type(screen.getByTestId('set-theme-import'), 'Dracula{Enter}');
+      expect(onImport).not.toHaveBeenCalled();
+    });
+
+    it('is absent when the host cannot import', () => {
+      mount(controls({ onImport: undefined }));
+      expect(screen.queryByTestId('set-theme-import')).toBeNull();
+      expect(screen.queryByRole('group', { name: 'Import' })).toBeNull();
+    });
+  });
+
+  describe('mode', () => {
+    it('offers Fixed and Match system, and marks the current one', () => {
+      mount(controls({ mode: 'system' }));
+      const seg = screen.getByTestId('set-theme-mode');
+      expect(seg).toHaveAccessibleName('Theme mode');
+      expect(screen.getByTestId('set-theme-mode-fixed')).toHaveTextContent('Fixed');
+      expect(screen.getByTestId('set-theme-mode-system')).toHaveTextContent('Match system');
+      expect(screen.getByTestId('set-theme-mode-system')).toHaveAttribute('data-state', 'on');
+      expect(screen.getByTestId('set-theme-mode-fixed')).toHaveAttribute('data-state', 'off');
+    });
+
+    it('reports the other mode on a press', async () => {
+      const onModeChange = vi.fn();
+      mount(controls({ onModeChange }));
+      await userEvent.click(screen.getByTestId('set-theme-mode-system'));
+      expect(onModeChange).toHaveBeenCalledWith('system');
+    });
+
+    it('shows no slot picker in fixed mode', () => {
+      mount(controls());
+      expect(screen.queryByTestId('set-theme-slot')).toBeNull();
+      expect(screen.queryByTestId('theme-slots-note')).toBeNull();
+    });
+  });
+
+  describe('Match system: the slot a tap fills', () => {
+    it('offers For dark and For light, on the slot being edited', () => {
+      mount(controls({ mode: 'system', slot: 'light' }), 'light-one');
+      expect(screen.getByTestId('set-theme-slot')).toHaveAccessibleName('Theme slot');
+      expect(screen.getByTestId('set-theme-slot-dark')).toHaveTextContent('For dark');
+      expect(screen.getByTestId('set-theme-slot-light')).toHaveTextContent('For light');
+      expect(screen.getByTestId('set-theme-slot-light')).toHaveAttribute('data-state', 'on');
+      expect(screen.getByTestId('set-theme-slot-dark')).toHaveAttribute('data-state', 'off');
+    });
+
+    it('reports the other slot on a press', async () => {
+      const onSlotChange = vi.fn();
+      mount(controls({ mode: 'system', onSlotChange }));
+      await userEvent.click(screen.getByTestId('set-theme-slot-light'));
+      expect(onSlotChange).toHaveBeenCalledWith('light');
+    });
+
+    it('names the pick of each slot', () => {
+      mount(controls({ mode: 'system', slotNames: { dark: 'Dark Two', light: 'Light One' } }));
+      expect(screen.getByTestId('theme-slots-note')).toHaveTextContent('Dark: Dark Two');
+      expect(screen.getByTestId('theme-slots-note')).toHaveTextContent('Light: Light One');
+    });
+
+    it('says a pick shows at once when the edited slot is the active scheme', () => {
+      mount(controls({ mode: 'system', slot: 'dark', activeSlot: 'dark' }));
+      expect(screen.getByTestId('theme-slots-note')).not.toHaveTextContent(/when/i);
+    });
+
+    // Picking the inactive slot persists and changes nothing on screen: the note is
+    // what stops that looking like a pick that did not work.
+    it('says a pick waits for its scheme when the edited slot is not the active one', () => {
+      mount(controls({ mode: 'system', slot: 'light', activeSlot: 'dark' }));
+      expect(screen.getByTestId('theme-slots-note')).toHaveTextContent(
+        'Shows when the system turns light.',
+      );
+    });
+  });
+
+  it('checks the entry for whatever `value` the host resolved for the edited target', () => {
+    const { rerender } = mount(controls({ mode: 'system', slot: 'dark' }), 'dark-one');
+    expect(screen.getByTestId('theme-opt-dark-one')).toHaveAttribute('data-state', 'checked');
+    rerender(
+      <ThemeBrowser
+        profiles={PROFILES}
+        value="light-one"
+        onChange={vi.fn()}
+        controls={controls({ mode: 'system', slot: 'light' })}
+      />,
+    );
+    expect(screen.getByTestId('theme-opt-light-one')).toHaveAttribute('data-state', 'checked');
+    expect(document.querySelectorAll('.tb-check')).toHaveLength(1);
   });
 });

@@ -35,7 +35,15 @@ import {
   rootLabel,
   rootParent,
 } from './explorer-pins';
-import { readOpenRoots, writeOpenRoots } from './explorer-open';
+import {
+  forgetDeletedDirs,
+  readExpandedDirs,
+  readOpenRoots,
+  subscribeDeletedDirs,
+  withoutDeleted,
+  writeExpandedDir,
+  writeOpenRoots,
+} from './explorer-open';
 import {
   affectedDirs,
   deleteConfirmMessage,
@@ -154,6 +162,43 @@ const splitPath = (path: string): { dir: string; name: string } => {
     : { dir: path.slice(0, cut + 1), name: path.slice(cut + 1) };
 };
 
+/**
+ * The listings the screen needs right now: every live open root, and each
+ * expanded folder that is really ON SCREEN.
+ *
+ * A folder is on screen when its parent is (a live open root, or itself on screen),
+ * the parent's listing is `ready` and shows it as a DIRECTORY entry, and the user
+ * has it expanded. The listing is the proof of existence, not the stored path: a
+ * record for a folder that was deleted (by another window's write resurrecting it),
+ * renamed, or spelled in a form no listing produces is never fetched and never
+ * polled. It stays dormant in storage, bounded by the 200 cap, and wakes if a listing
+ * ever shows it again. The price is that a restore loads one level per round trip.
+ *
+ * It is a gate, not a filter on what is remembered: a folder under a collapsed
+ * root, a dormant root or a collapsed ancestor stays stored and costs no request
+ * until it can be seen.
+ *
+ * Walks the Set while growing it — a Set iteration visits what is added during it —
+ * so the cost is one pass over the visible listings, the same as drawing their rows.
+ */
+function neededDirs(
+  openRoots: ReadonlySet<string>,
+  expanded: ReadonlySet<string>,
+  dirs: Readonly<Record<string, DirState>>,
+): string[] {
+  const out = new Set(openRoots);
+  for (const parent of out) {
+    const state = dirs[parent];
+    if (state?.status !== 'ready') continue;
+    for (const entry of state.entries) {
+      if (!entry.dir) continue;
+      const child = childPath(parent, entry.name);
+      if (expanded.has(child)) out.add(child);
+    }
+  }
+  return [...out];
+}
+
 const depthStyle = (depth: number): CSSProperties => ({ '--ft-depth': depth }) as CSSProperties;
 
 const rowKey = (row: Row): string => row.key;
@@ -202,7 +247,19 @@ export const FileTree = ({ onOpenFile, pins, onPinsChange, onNotice }: FileTreeP
   // Null until the server tells us where home is; the tree renders its loading
   // note until then rather than flashing the filesystem root.
   const [root, setRoot] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set<string>());
+  // The folders the USER opened, and nothing else: a root's section is open or
+  // closed by `openRoots` below and lists from `dirs[root]` directly, so a root is
+  // never put in here. When it was, the same set drove the folder row of a pin
+  // nested in HOME, and a folder collapsed there came back open on every relaunch.
+  // Restored from storage (palmux-explorer-expanded) and then changed only by a
+  // folder toggle or by the Explorer's own delete — see `showExpanded`.
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(
+    () => new Set<string>(readExpandedDirs()),
+  );
+  // Mirrors `expanded` for the callbacks that run outside a render (a delete heard
+  // from any tree) or twice in one tick (two quick toggles). Written only by
+  // `showExpanded`, the one place that changes the set, so it cannot lag the state.
+  const expandedRef = useRef(expanded);
   // The root sections this device has open, as last stored (palmux-explorer-open).
   // Null means nothing is stored — a first run — which is not the same as an
   // empty set: that is someone who collapsed everything. It is a SUPERSET of what
@@ -263,13 +320,27 @@ export const FileTree = ({ onOpenFile, pins, onPinsChange, onNotice }: FileTreeP
       const at = listing.path;
       setDirs((prev) => {
         const next = { ...prev, [at]: { status: 'ready' as const, entries: listing.entries } };
-        if (key !== at) delete next[key];
+        // HOME was asked for with no path, so its '' key is a pending REQUEST that
+        // nothing looks up: drop it.
+        if (dir === null) delete next[key];
+        // A request answered under another path did NOT get its own listing, and must
+        // never be shown one: rows take their paths from the key they are drawn under,
+        // so another directory's entries would name paths that listing never described.
+        // The route used to trim, so `report ` was answered as `report`, and a file shown
+        // that way could be a directory on disk whose Delete is recursive; a server that
+        // has not restarted onto the untrimmed route still does. The requested key
+        // gets an error, and it is TERMINAL: the load effect asks only for a key with no
+        // state, so an empty one would be asked for after every answer (B9-INSPECT2-02).
+        // Every root, pin and stored path is canonical, so this is reached only by a
+        // path the server alters on the way in (an older, trimming server).
+        else if (at !== dir) {
+          next[key] = { status: 'error', message: `the server listed a different path: ${at}` };
+        }
         return next;
       });
-      if (dir === null) {
-        setRoot(at);
-        setExpanded((prev) => new Set(prev).add(at));
-      }
+      // Home is a root, not a folder row: it is shown from `dirs[at]`, so there is
+      // nothing to expand — only the path to remember.
+      if (dir === null) setRoot(at);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setDirs((prev) => ({ ...prev, [key]: { status: 'error', message } }));
@@ -323,39 +394,30 @@ export const FileTree = ({ onOpenFile, pins, onPinsChange, onNotice }: FileTreeP
     commitOpen(remembered);
   }, [homeOwed, root, remembered, commitOpen]);
 
-  // An open root has to be EXPANDED, not just open: only expanded paths are
-  // fetched, so a restored section would otherwise be open over no rows. This is
-  // what loads a remembered pin the moment the pins arrive (or HOME the moment it
-  // does), before and after each other alike.
-  //
-  // Only roots ENTERING the open set are seeded, never every open root on every
-  // change. `expanded` is shared with the folder rows, and a pin nested in HOME is
-  // also a folder inside HOME: re-seeding it whenever another root toggled, or a
-  // settings broadcast handed back an equal pins array, reopened a folder the user
-  // had just collapsed there. Entering is also exactly what opening a header has
-  // always done: expand that one root.
-  const seededRootsRef = useRef<ReadonlySet<string>>(new Set<string>());
-  useEffect(() => {
-    const before = seededRootsRef.current;
-    seededRootsRef.current = openRoots;
-    const entering = [...openRoots].filter((r) => !before.has(r));
-    if (entering.length === 0) return;
-    setExpanded((prev) => {
-      const missing = entering.filter((r) => !prev.has(r));
-      return missing.length === 0 ? prev : new Set([...prev, ...missing]);
-    });
-  }, [openRoots]);
+  /** The ONE place `expanded` changes: state and the mirror together. Storage is
+   *  NOT written from here: this set is one mount's copy and may be stale, so each
+   *  action stores its own change against what is stored now (`explorer-open.ts`). */
+  const showExpanded = useCallback((next: ReadonlySet<string>): void => {
+    expandedRef.current = next;
+    setExpanded(next);
+  }, []);
+
+  // The listings the screen needs right now (see `neededDirs`): what the load
+  // effect fetches and what the poll re-reads.
+  const needed = useMemo(() => neededDirs(openRoots, expanded, dirs), [openRoots, expanded, dirs]);
 
   // Held in refs so the poll below does not restart on every listing change —
   // a 2-minute interval that resets whenever a folder expands never fires.
   const dirsRef = useRef(dirs);
   dirsRef.current = dirs;
-  // The live intersection, not the stored set: an unpinned root's dormant flag
-  // must not keep its subtree polling.
-  const openRootsRef = useRef(openRoots);
-  openRootsRef.current = openRoots;
+  // The visible set, not the listings cached under an open root: the cache keeps
+  // everything ever shown there (so reopening is instant), including a subtree
+  // that is now hidden behind a collapsed folder or section.
+  const neededRef = useRef(needed);
+  neededRef.current = needed;
 
-  /** Re-read every directory already loaded under `rootPath` (its subtree). */
+  /** Re-read every directory already loaded under `rootPath` (its subtree). A user's
+   *  explicit request, so it also freshens hidden cached listings for a later open. */
   const refreshRoot = useCallback(
     (rootPath: string): void => {
       const prefix = rootPath === '/' ? '/' : `${rootPath}/`;
@@ -368,15 +430,10 @@ export const FileTree = ({ onOpenFile, pins, onPinsChange, onNotice }: FileTreeP
 
   useEffect(() => {
     const timer = setInterval(() => {
-      // Only what is on screen. A collapsed root's subtree is still in `dirs`
-      // (so reopening it is instant), and re-reading it would be work nobody
-      // asked for on a tree the user cannot see.
-      for (const r of openRootsRef.current) {
-        const prefix = r === '/' ? '/' : `${r}/`;
-        for (const dir of Object.keys(dirsRef.current)) {
-          if (dir === r || dir.startsWith(prefix)) void load(dir);
-        }
-      }
+      // Only what is on screen. A hidden listing is still in `dirs` (so reopening
+      // it is instant), and re-reading it would be work nobody asked for on a tree
+      // the user cannot see.
+      for (const dir of neededRef.current) void load(dir);
     }, POLL_INTERVAL_MS);
     return () => clearInterval(timer);
   }, [load]);
@@ -398,20 +455,46 @@ export const FileTree = ({ onOpenFile, pins, onPinsChange, onNotice }: FileTreeP
     };
   }, [icons]);
 
-  // Load on demand: any expanded directory with no state yet. Declarative
-  // rather than fired from the click handler, so the root's first load and an
-  // expansion take exactly the same path.
+  // Load on demand: every open root and every expanded folder that is on screen —
+  // one its parent's listing shows (see `neededDirs`) — and that has no state yet.
+  // Declarative rather than fired from the click handler, so a restored section, a
+  // restored folder and a fresh click all take exactly the same path. A root is
+  // fetched here as a root; it is not expanded. That is also what loads a remembered
+  // pin the moment the pins arrive (or HOME the moment it does), before and after
+  // each other alike. A restored folder waits for its parent's listing, so a nested
+  // restore is one round trip per depth.
   useEffect(() => {
-    for (const dir of expanded) if (!dirs[dir]) void load(dir);
-  }, [expanded, dirs, load]);
+    for (const dir of needed) if (!dirs[dir]) void load(dir);
+  }, [needed, dirs, load]);
 
-  const toggle = useCallback((dir: string): void => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (!next.delete(dir)) next.add(dir);
-      return next;
-    });
-  }, []);
+  const toggle = useCallback(
+    (dir: string): void => {
+      const next = new Set(expandedRef.current);
+      // Collapse forgets this folder only; its stored descendants stay, so opening
+      // the parent again brings its open children back. A fresh open goes last,
+      // which is what makes the 200-entry cap drop the OLDEST.
+      const open = !next.delete(dir);
+      if (open) next.add(dir);
+      showExpanded(next);
+      writeExpandedDir(dir, open);
+    },
+    [showExpanded],
+  );
+
+  // A delete is the one signal that a folder is gone — no listing is proof of
+  // absence (the route answers a transient failure as 404 and drops an entry it
+  // could not `lstat`), so a listing never gets to forget anything. It is heard
+  // from EVERY tree, not only this one: a tree that mounted while another's delete
+  // was in flight read the deleted folder from storage and would show it open.
+  useEffect(
+    () =>
+      subscribeDeletedDirs((gone) => {
+        const current = expandedRef.current;
+        const kept = withoutDeleted(current, gone);
+        if (kept.length !== current.size) showExpanded(new Set(kept));
+      }),
+    [showExpanded],
+  );
 
   const openFile = useCallback(
     (path: string): void => {
@@ -467,6 +550,9 @@ export const FileTree = ({ onOpenFile, pins, onPinsChange, onNotice }: FileTreeP
         try {
           const results = await deletePaths(paths);
           onNotice?.(deleteSummary(results));
+          // Only what the server reports as deleted: a refused path still exists.
+          // Module-level, not this tree's: it may have unmounted while waiting.
+          forgetDeletedDirs(results.filter((r) => r.ok).map((r) => r.path));
           // Refresh the PARENTS, not the deleted paths: the listing that showed
           // them is what is now wrong.
           for (const dir of affectedDirs(paths)) {
@@ -500,9 +586,9 @@ export const FileTree = ({ onOpenFile, pins, onPinsChange, onNotice }: FileTreeP
       // HOME default, which would otherwise reopen HOME beside the new root.
       commitOpen(new Set([path]));
       setHomeOwed(null);
-      // Expanded now rather than when the pin lands: `path` is not a root until
-      // the host hands the new pins back, and the listing can load meanwhile.
-      setExpanded((prev) => new Set(prev).add(path));
+      // `path` is loaded as a root once the host hands the new pins back. It is
+      // deliberately NOT added to `expanded`: the folder row it may also be inside
+      // HOME is the user's to open, and pinning is not that.
     },
     [commitOpen, onPinsChange, pinList],
   );

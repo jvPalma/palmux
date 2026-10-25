@@ -59,14 +59,19 @@
   color: var(--t-subtext);
 }
 
-/* A settings row as a card: recessed fill, so the panel reads as the
-   surface and each entry as something sitting in it. */
+/* A card is a HEADER over a TRANSCRIPT. It was a row — the text beside its three
+   actions — and a long dictation got a ~150px column of its own, wrapping at
+   every other word and running the card as tall as the dock. Stacked, the text
+   takes the card's whole width and the actions sit in one line above it.
+   Recessed fill, so the panel reads as the surface and each entry as something
+   sitting in it; cards are --sp-2 apart. */
 .dictation-card {
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--sp-2);
   margin-bottom: var(--sp-2);
-  padding: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--t-surface);
   border-radius: var(--r-3);
   background: var(--t-base);
@@ -85,26 +90,95 @@
   border-color: color-mix(in srgb, var(--tab-c-ansi3) 48%, transparent);
 }
 
-.dictation-card-body {
-  flex: 1 1 auto;
+/* Date · duration left, actions right, ONE line. At the dock's 300px the pair
+   fits with room to spare; with a Transcribe button in place of copy + insert it
+   can run out, so the line wraps and the actions drop under the date (pushed
+   right by their auto margin) instead of squeezing the date onto two lines. */
+.dictation-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-1) var(--sp-2);
   min-width: 0;
 }
 
-.dictation-card-text {
-  display: block;
+.dictation-card-when {
+  min-width: 0;
   font-size: var(--fs-1);
+  line-height: 1.4;
+  color: var(--t-subtext);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.dictation-card-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--sp-1);
+  margin-left: auto;
+}
+
+/* The transcript, at body size (--fs-2) and a reading line height. */
+.dictation-card-text {
+  margin: 0;
+  font-size: var(--fs-2);
   line-height: 1.5;
   color: var(--t-text);
   overflow-wrap: anywhere;
 }
 
-.dictation-card-muted {
+/* Four lines, then an ellipsis. `-webkit-line-clamp` needs the -webkit-box
+   display to take effect; the unprefixed `line-clamp` is declared beside it for
+   the browsers that have dropped the prefix. The expand toggle flips
+   `data-clamped`, so the clamp is one attribute, not a second class to keep in
+   step. */
+.dictation-card-text[data-clamped='true'] {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+  overflow: hidden;
+}
+
+/* A text action, not a Button: it is a quiet aside to the transcript, and a
+   bordered control under every long card would out-shout the words. It is still
+   a real <button>, so Tab, Enter and Space work without a handler. */
+.dictation-card-toggle {
+  align-self: flex-start;
+  margin: 0;
+  padding: var(--sp-1) 0;
+  border: 0;
+  background: transparent;
   color: var(--t-subtext);
+  font: inherit;
+  font-size: var(--fs-1);
+  font-weight: 600;
+  line-height: 1.4;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: color var(--mo-micro) ease;
+}
+
+.dictation-card-toggle:hover {
+  color: var(--t-text);
+}
+
+.dictation-card-toggle:focus-visible,
+.dictation-card-scrub:focus-visible {
+  outline: 2px solid var(--t-accent);
+  outline-offset: 2px;
+}
+
+/* A thumb is the touch target, so a phone gets the --ctl-h row it gets
+   everywhere else. */
+:root[data-mobile='true'] .dictation-card-toggle {
+  min-height: var(--ctl-h);
 }
 
 .dictation-card-sub {
-  display: block;
-  margin-top: 2px;
+  margin: 0;
   font-size: var(--fs-1);
   line-height: 1.4;
   color: var(--t-subtext);
@@ -114,11 +188,14 @@
   color: var(--tab-c-ansi3);
 }
 
-.dictation-card-actions {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 4px;
+/* Under the text, full width, only while a clip is in play. */
+.dictation-card-scrub {
+  width: 100%;
+  min-width: 0;
+  height: var(--ctl-h);
+  margin: 0;
+  accent-color: var(--t-accent);
+  cursor: pointer;
 }
 
 /* ── Recording toast ───────────────────────────────────────────────────────────
@@ -257,6 +334,7 @@
    remove the only evidence the microphone is live. */
 @media (prefers-reduced-motion: reduce) {
   .dictation-card,
+  .dictation-card-toggle,
   .rec-toast,
   .rec-toast[data-state='closed'] {
     transition-duration: 0.001ms !important;

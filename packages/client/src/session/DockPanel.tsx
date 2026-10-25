@@ -13,8 +13,12 @@
 //   * animate its own width — that would fire every terminal's ResizeObserver on
 //     each frame of the transition. The panel animates its CONTENT in instead,
 //     and App pauses the PTY resize across the toggle (see `resizeBusy`).
-//   * render on mobile — there the drawer is the container, and the rail is
-//     forced off.
+//   * render on mobile — there the drawer is the container, and there is no rail.
+//
+// The rail is ALWAYS drawn on desktop. It used to be a per-device preference
+// (`sidebarRail`), which left a hidden rail with no pointer route to Explorer,
+// Dictation, Upload and Download; the option is gone and the stored value, which
+// old settings files still carry, is ignored.
 
 import type { ReactNode } from 'react';
 import { ErrorBoundary } from '../ui';
@@ -109,8 +113,6 @@ export interface RailAction {
 export interface DockPanelProps {
   /** The open view, or null when the dock is closed. */
   view: DockView | null;
-  /** Whether the always-visible icon rail is shown (per-device preference). */
-  rail: boolean;
   /** Select a view, or null to close. Selecting the open view closes it. */
   onView: (view: DockView | null) => void;
   /** Rail buttons that run an action rather than opening a view. */
@@ -122,18 +124,7 @@ export interface DockPanelProps {
 
 const titleOf = (view: DockView): string => DOCK_VIEWS.find((v) => v.id === view)?.label ?? 'Panel';
 
-export function DockPanel({
-  view,
-  rail,
-  onView,
-  actions,
-  headerExtra,
-  children,
-}: DockPanelProps) {
-  // Nothing to render at all when closed AND railless — the dock must cost the
-  // terminal zero pixels in that state, which is what `sidebarRail: 'hidden'` is for.
-  if (!view && !rail) return null;
-
+export function DockPanel({ view, onView, actions, headerExtra, children }: DockPanelProps) {
   const railButton = (v: { id: DockView; label: string }) => (
     <button
       key={v.id}
@@ -177,29 +168,27 @@ export function DockPanel({
           </div>
         </aside>
       )}
-      {rail && (
-        <nav className="dock-rail" data-testid="dock-rail" aria-label="Panels">
-          {FLOW_VIEWS.map(railButton)}
-          {actions && actions.length > 0 && (
-            <>
-              <span className="dock-rail-sep" aria-hidden="true" />
-              {actions.map((a) => (
-                <button
-                  key={a.id}
-                  className="dock-rail-btn"
-                  title={a.label}
-                  aria-label={a.label}
-                  data-testid={`dock-rail-${a.id}`}
-                  onClick={a.onRun}
-                >
-                  {ICONS[a.id]}
-                </button>
-              ))}
-            </>
-          )}
-          {PINNED_VIEWS.map(railButton)}
-        </nav>
-      )}
+      <nav className="dock-rail" data-testid="dock-rail" aria-label="Panels">
+        {FLOW_VIEWS.map(railButton)}
+        {actions && actions.length > 0 && (
+          <>
+            <span className="dock-rail-sep" aria-hidden="true" />
+            {actions.map((a) => (
+              <button
+                key={a.id}
+                className="dock-rail-btn"
+                title={a.label}
+                aria-label={a.label}
+                data-testid={`dock-rail-${a.id}`}
+                onClick={a.onRun}
+              >
+                {ICONS[a.id]}
+              </button>
+            ))}
+          </>
+        )}
+        {PINNED_VIEWS.map(railButton)}
+      </nav>
     </>
   );
 }

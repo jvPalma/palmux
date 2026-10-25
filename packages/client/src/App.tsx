@@ -4,7 +4,17 @@ import { DEFAULT_MAX_UPLOAD_BYTES, forgivingOrder, normalizeOrder } from '@palmu
 import { WsClient } from './lib/ws';
 import { Toast, type ToastAction, type ToastHandle } from './Toast';
 import { useSettings } from './settings/useSettings';
-import { DEFAULTS, resolveMobileMode, type ClientSettings } from './settings/settings';
+import {
+  DEFAULTS,
+  resolveMobileMode,
+  resolveThemeId,
+  themeModeAfter,
+  themePick,
+  type ClientSettings,
+  type ThemeMode,
+  type ThemeTarget,
+} from './settings/settings';
+import { useSystemPrefersDark } from './settings/useSystemPrefersDark';
 import { useKeybindings } from './keybindings/useKeybindings';
 import {
   ACTION_LABELS,
@@ -73,10 +83,13 @@ import {
   POPOUT_RETURN,
 } from './session/session-url';
 import {
+  readLastTab,
   readSelection,
   resolveSelection,
   selectionFor,
+  writeLastTab,
   writeSelection,
+  type WindowSelection,
 } from './session/window-selection';
 import { createSplitRegistry } from './session/SplitFocusContext';
 import { useDictation } from './dictation/useDictation';
@@ -99,7 +112,12 @@ import { DropdownMenu, IconButton, type DropdownMenuItemSpec } from './ui';
 import { ErrorBoundary } from './ui/ErrorBoundary';
 import { Icon } from './ui/icons';
 import { closeManyMessage } from './session/close-many';
-import { DashboardBody, type CreateSpec } from './panes/DashboardBody';
+import {
+  DashboardBody,
+  hasLineBreak,
+  LINE_BREAK_MESSAGE,
+  type CreateSpec,
+} from './panes/DashboardBody';
 import { focusedEditor } from './panes/editor-registry';
 import { editorKeyAction } from './mobile/editor-keys';
 import type { KeyMods } from './mobile/key-encoder';
@@ -505,13 +523,80 @@ export function App() {
   const sendExtra = useCallback((j: JsonObject) => wsControlRef.current?.sendExtraKeys(j), []);
   const {
     settings,
-    update: updateSettings,
-    applyServer: applySettings,
+    update: writeSettings,
+    applyServer: applyServerSettings,
   } = useSettings(sendSettings);
   const { config: extraKeys, applyServer: applyExtraKeys } = useExtraKeys(sendExtra);
 
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+
+  // Every theme-mode TRANSITION bumps this generation. A pending import compares
+  // the one it was submitted under, so any mode change in between supersedes it —
+  // a round trip back to the same mode included, after which the user may already
+  // have picked a newer theme the late import must not overwrite. Counted where a
+  // change is REQUESTED (a local update, a broadcast as it arrives), not where it
+  // renders: React can fold two broadcasts into one render, and Fixed → Match
+  // system → Fixed would then render as no change at all.
+  const themeModeRef = useRef(settings.themeMode);
+  const themeModeGenRef = useRef(0);
+  const noteThemeMode = useCallback((mode: ThemeMode) => {
+    if (mode === themeModeRef.current) return;
+    themeModeRef.current = mode;
+    themeModeGenRef.current += 1;
+  }, []);
+  const updateSettings = useCallback(
+    (partial: Partial<ClientSettings>) => {
+      if (partial.themeMode) noteThemeMode(partial.themeMode);
+      writeSettings(partial);
+    },
+    [noteThemeMode, writeSettings],
+  );
+  const applySettings = useCallback(
+    (server: JsonObject) => {
+      noteThemeMode(themeModeAfter(themeModeRef.current, server));
+      applyServerSettings(server);
+    },
+    [noteThemeMode, applyServerSettings],
+  );
+
+  // What this client PAINTS, resolved from its OWN colour scheme. It is the only
+  // theme id any rendering path reads — the CSS tokens below, the terminals, the
+  // `themes` broadcast, main.tsx's pre-paint — and none of them reads
+  // `settings.themeId`, which in Match system is only what the server exports. In
+  // fixed mode the two are equal.
+  const prefersDark = useSystemPrefersDark();
+  const prefersDarkRef = useRef(prefersDark);
+  prefersDarkRef.current = prefersDark;
+  const shownThemeId = resolveThemeId(settings, prefersDark);
+  const shownThemeIdRef = useRef(shownThemeId);
+  shownThemeIdRef.current = shownThemeId;
+  // The terminals take the id through the same `settings` prop they always read
+  // it from, so this override is the whole terminal-side change. Memoized so a
+  // render that changes neither does not hand every pane a new object.
+  const paneSettings = useMemo(
+    () => (shownThemeId === settings.themeId ? settings : { ...settings, themeId: shownThemeId }),
+    [settings, shownThemeId],
+  );
+
+  // The server exports `themeId` (theme.sh, theme.tmux, the Claude theme). In
+  // Match system this client writes it when ITS scheme actually changes while the
+  // app is open, so the export follows the latest real switch. Never on boot or
+  // on a reconnect: a device that opens in a different scheme from the last one
+  // to write would otherwise overwrite the export on every load, and two devices
+  // in different schemes would fight over it. Keyed on the scheme, not on the
+  // resolved id, which also moves when a slot is picked or a settings broadcast
+  // arrives — neither of those is a scheme change.
+  const lastSchemeRef = useRef(prefersDark);
+  useEffect(() => {
+    if (lastSchemeRef.current === prefersDark) return;
+    lastSchemeRef.current = prefersDark;
+    const s = settingsRef.current;
+    if (s.themeMode !== 'system') return;
+    const id = resolveThemeId(s, prefersDark);
+    if (id !== s.themeId) updateSettings({ themeId: id });
+  }, [prefersDark, updateSettings]);
+
   const mobileActive = resolveMobileMode(settings.mobileMode);
   const mobileActiveRef = useRef(mobileActive);
   mobileActiveRef.current = mobileActive;
@@ -558,8 +643,8 @@ export function App() {
   // main.tsx). useLayoutEffect so tokens land before the browser paints the new
   // frame — themes a panes-only workspace too, independent of any terminal.
   useLayoutEffect(() => {
-    applyThemeTokens(getProfile(settings.themeId));
-  }, [settings.themeId]);
+    applyThemeTokens(getProfile(shownThemeId));
+  }, [shownThemeId]);
 
   // `--font-mono` was READ in four places (markdown code blocks, the tips panel)
   // and SET in none, so all of them silently fell back to `ui-monospace` while
@@ -633,10 +718,37 @@ export function App() {
   // A popped-out window writes nothing: it is a single-tab window whose address
   // already says what it is, and it shares an origin with the main window, so
   // storing would let it overwrite the main window's selection on reload.
+  //
+  // The window's own copy (sessionStorage) is idempotent, so this effect may
+  // rewrite it on every broadcast. The DEVICE-wide copy (localStorage, read only by
+  // a window with no selection of its own — a relaunched PWA) is shared by every
+  // window, so it is written only when this window's selection really changes:
+  // `tabs` is replaced on every `sessions` broadcast, a rename included, and a
+  // window that merely heard one would overwrite the tab another window just chose.
+  //
+  // `lastStoredRef` is what this window last put in the shared key — or, after a
+  // boot that restored its remembered tab, that tab (see the first-broadcast
+  // resolve). A change is a different id OR kind — ids are recycled, and the same
+  // id as another kind is another tab. It is cleared while there is nothing to
+  // store, so the next selection always writes:
+  //  - the selected id resolves to no tab (closed, or just created and not yet
+  //    broadcast — the write then lands when the broadcast delivers it);
+  //  - the window is on the New-tab page, where `sessionId` is the dead id and
+  //    nothing is selected, so another window's tab reusing it is not our choice.
+  const lastStoredRef = useRef<WindowSelection | null>(null);
   useEffect(() => {
     if (popout || !sessionId) return;
-    writeSelection(selectionFor(tabs, sessionId));
-  }, [popout, sessionId, tabs]);
+    const selection = selectionFor(tabs, sessionId);
+    writeSelection(selection);
+    if (!selection || chooserPage) {
+      lastStoredRef.current = null;
+      return;
+    }
+    const last = lastStoredRef.current;
+    if (last && last.id === selection.id && last.kind === selection.kind) return;
+    lastStoredRef.current = selection;
+    writeLastTab(selection);
+  }, [popout, sessionId, tabs, chooserPage]);
 
   // Deep link into a pairing: the address's member takes focus over the persisted
   // slot (the focused-slot URL rule, applied once at boot — popstate and
@@ -671,13 +783,24 @@ export function App() {
   // Bumped when server-discovered themes arrive, to re-render the theme picker.
   const [, setThemesNonce] = useState(0);
   const [importingTheme, setImportingTheme] = useState(false);
-  const onImportTheme = useCallback((source: string) => {
-    if (wsControlRef.current?.sendImportTheme(source)) setImportingTheme(true);
+  // What the import in flight is FOR, captured when it was submitted: the answer
+  // has no correlation id and can land long after the user switched slot or mode.
+  // The mode generation rides along so the answer can tell whether ANY mode change
+  // happened since. One at a time — the form disables Add while `importingTheme`.
+  const importTargetRef = useRef<{ target: ThemeTarget; modeGen: number }>({
+    target: { mode: 'fixed' },
+    modeGen: 0,
+  });
+  const onImportTheme = useCallback((source: string, target: ThemeTarget) => {
+    if (wsControlRef.current?.sendImportTheme(source)) {
+      importTargetRef.current = { target, modeGen: themeModeGenRef.current };
+      setImportingTheme(true);
+    }
   }, []);
 
   const copyDiagnostics = useCallback(() => {
     const term = registry.apiFor('a')?.term() ?? registry.apiFor('b')?.term();
-    const id = settingsRef.current.themeId;
+    const id = shownThemeIdRef.current;
     const resolved = getProfile(id);
     const themeDiagnostics = () => ({
       id,
@@ -870,8 +993,22 @@ export function App() {
     const p = window.prompt(
       'Download from server — absolute path, glob, or directory\n(e.g. /home/user/notes/report.md or /home/user/notes/*.md)',
     );
+    // `trim()` only DETECTS a blank entry. The path goes out exactly as typed: a name
+    // may end in a space, and trimming downloaded its sibling. A leading space is not
+    // absolute, so the server refuses it and the toast says so.
+    //
+    // A path with a line break cannot be entered HERE: `window.prompt` sanitises the
+    // value it returns before this code sees it (Chrome strips the break, Firefox turns
+    // it into a space), and there is no paste event to intercept in a native dialog. The
+    // Explorer's own download passes the row's path unchanged and covers that case. The
+    // check below is for a value that does arrive with one, so it is never sent as the
+    // sibling without it.
     if (!p?.trim()) return;
-    void downloadFromServer(p.trim()).then((error) => {
+    if (hasLineBreak(p)) {
+      showToast(LINE_BREAK_MESSAGE);
+      return;
+    }
+    void downloadFromServer(p).then((error) => {
       if (error) showToast(error);
     });
   }, [showToast]);
@@ -1375,7 +1512,15 @@ export function App() {
             tabsRef.current = msg.tabs;
             createTabRef.current?.({ kind: 'terminal' });
           } else {
-            const target = resolveSelection({ stored: readSelection(), tabs: msg.tabs });
+            const stored = readSelection();
+            const target = resolveSelection({ stored, tabs: msg.tabs });
+            // Coming back on the remembered tab RESTORES a selection, it does not
+            // make one, so the persist effect's baseline starts at it. Without that
+            // the effect read the reload as a change and copied this window's tab
+            // over the device-wide key, which may hold a NEWER choice made in another
+            // window since. With no usable device value there is nothing to protect,
+            // and the boot choice initialises it.
+            if (stored && target === stored.id && readLastTab()) lastStoredRef.current = stored;
             if (target) showTab(target);
             else setChooserPage(true);
           }
@@ -1406,9 +1551,9 @@ export function App() {
       } else if (msg.type === 'themes') {
         registerDynamicThemes(msg.themes);
         // The active theme may be a user theme that just arrived / changed.
-        applyThemeTokens(getProfile(settingsRef.current.themeId));
+        applyThemeTokens(getProfile(shownThemeIdRef.current));
         // The xterm canvas needs the same nudge, and does NOT get it for free:
-        // themeId hasn't changed, only what it RESOLVES to, so useTerminal's
+        // the theme id hasn't changed, only what it RESOLVES to, so useTerminal's
         // settings effect won't re-run. Boot hits this every time — the control
         // socket lands after the terminal is built, so a `user:` theme rendered
         // as the default (dark) palette while the rest of the UI was correct.
@@ -1420,10 +1565,25 @@ export function App() {
         if (!msg.ok) {
           showToast(`Import failed — ${msg.detail ?? 'unknown error'}`);
         } else if (msg.id) {
-          // Select it right away. The profile itself lands a moment later on the
+          // Select it right away — for the target it was submitted for, and only
+          // if no mode change happened since: a fixed import that lands after a
+          // switch to Match system must not write `themeId` (the export would
+          // change with no scheme change behind it), and one that lands after a
+          // round trip back to Fixed must not overwrite the newer pick. A
+          // superseded import is still imported and appears in the list; it is
+          // just not selected. The profile itself lands a moment later on the
           // themes broadcast (the server watches the dir), and THAT handler
           // re-applies the tokens — so a brief fallback paint self-heals.
-          updateSettings({ themeId: msg.id });
+          // An import into the slot that is ON SCREEN changes what this device shows,
+          // so it moves the export too — exactly as a pick for that slot does.
+          const { target, modeGen } = importTargetRef.current;
+          const pick =
+            modeGen === themeModeGenRef.current
+              ? themePick(settingsRef.current, target, msg.id)
+              : null;
+          const onScreen =
+            target.mode === 'system' && target.slot === (prefersDarkRef.current ? 'dark' : 'light');
+          if (pick) updateSettings(onScreen ? { ...pick, themeId: msg.id } : pick);
           showToast(`Imported ${msg.detail ?? 'theme'}`);
         }
       }
@@ -1494,10 +1654,9 @@ export function App() {
     },
     dictate: dictation.toggle,
     dictationHistory: () => setPanel('dictationHistory'),
-    // Upload and download are RAIL actions, and the rail is a per-device
-    // preference — `sidebarRail: 'hidden'` used to leave them with no route at
-    // all once the desktop action cluster was retired. These are that route,
-    // and they put both in the command palette, where every other action is.
+    // Upload and download are RAIL actions, and the desktop action cluster that
+    // used to hold them is gone. These are the keyboard route to them, and they
+    // put both in the command palette, where every other action is.
     uploadFile: guardedOpenPicker,
     downloadFile: doDownload,
     increaseFontSize: () => updateSettings({ fontSize: settingsRef.current.fontSize + 1 }),
@@ -1943,8 +2102,7 @@ export function App() {
     [guardedOpenPicker, doDownload],
   );
 
-  // The topbar's app menu. Settings is the entry that matters: with
-  // `sidebarRail: 'hidden'` there is no rail, and this is the pointer route to it.
+  // The topbar's app menu: Settings, Tips and Reload app.
   const appMenuItems: DropdownMenuItemSpec[] = [
     {
       id: 'settings',
@@ -1994,15 +2152,6 @@ export function App() {
       )}
       {!mobileActive && !popout && (
         <div className="topbar">
-          {/* The app menu is where Settings stays one click away with the rail
-              hidden (`sidebarRail: 'hidden'` leaves the keybinding as the only
-              other way back). It replaced the `palmux` wordmark: the name of the
-              app you are already inside. */}
-          <DropdownMenu items={appMenuItems} testidPrefix="app-menu">
-            <IconButton label="palmux menu" data-testid="app-menu-button">
-              <Icon name="menu" size={16} />
-            </IconButton>
-          </DropdownMenu>
           {/* The strip derives a lot from broadcasts (fusion, groups, drop
               marks). A throw in that derivation used to grey the whole app;
               scoped here it costs the strip and leaves the terminals attached,
@@ -2028,6 +2177,20 @@ export function App() {
           />
           </ErrorBoundary>
           <span className="spacer" />
+          {/* The app menu is the bar's LAST control, so it ends over the dock rail
+              (`.topbar-menu` centres it on the rail's own buttons). The rail is
+              always shown on desktop, which makes this a second pointer route into
+              Settings that sits above the rail rather than a way back from hiding
+              it; Tips and Reload app live only here. It replaced the `palmux`
+              wordmark, the name of the app you are already inside. It stays out of
+              the scrolling strip so it is reachable however many pills overflow,
+              and opens end-aligned: at the window's right edge a start-aligned
+              menu would run off the screen. */}
+          <DropdownMenu items={appMenuItems} testidPrefix="app-menu" align="end">
+            <IconButton label="palmux menu" className="topbar-menu" data-testid="app-menu-button">
+              <Icon name="menu" size={16} />
+            </IconButton>
+          </DropdownMenu>
         </div>
       )}
 
@@ -2058,7 +2221,7 @@ export function App() {
             showSlotZones={dragTabId !== null && !!activePairing && !pairingOf(pairings, dragTabId)}
             containerRef={contentRef}
             registry={registry}
-            settings={settings}
+            settings={paneSettings}
             mobileActive={mobileActive}
             maxUploadBytes={maxUploadBytes}
             paneBlocked={paneBlocked}
@@ -2136,7 +2299,6 @@ export function App() {
         {!mobileActive && !popout && (
           <DockPanel
             view={dockView}
-            rail={settings.sidebarRail === 'always'}
             onView={openDockView}
             actions={railActions}
           >
@@ -2150,7 +2312,6 @@ export function App() {
                 fontFamilies={fontFamilies}
                 onOpenKeybindings={() => setPanel('keybindings')}
                 onOpenTips={() => setPanel('tips')}
-                onOpenDictationHistory={() => openDockView('dictation')}
                 onImportTheme={onImportTheme}
                 importingTheme={importingTheme}
                 appVersion={knownVersionRef.current}
@@ -2269,7 +2430,6 @@ export function App() {
           fontFamilies={fontFamilies}
           onOpenKeybindings={() => setPanel('keybindings')}
           onOpenTips={() => setPanel('tips')}
-          onOpenDictationHistory={() => setPanel('dictationHistory')}
           onImportTheme={onImportTheme}
           importingTheme={importingTheme}
           appVersion={knownVersionRef.current}

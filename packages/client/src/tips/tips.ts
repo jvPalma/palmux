@@ -104,7 +104,7 @@ export const TIPS: Tip[] = [
     category: 'Tabs',
     title: 'The side panel',
     description:
-      'Settings and the new-tab chooser open in a panel on the RIGHT that takes space instead of covering the terminal — the point being that you can still read the output you are changing a setting for. The icon rail switches views; Settings → App → Sidebar rail hides it if you would rather have the pixels. It is desktop-only: on mobile the drawer is the container.',
+      'Settings and the new-tab chooser open in a panel on the RIGHT that takes space instead of covering the terminal — the point being that you can still read the output you are changing a setting for. The icon rail beside it switches views. It is desktop-only: on mobile the drawer is the container.',
   },
   {
     category: 'Tabs',
@@ -122,7 +122,7 @@ export const TIPS: Tip[] = [
     category: 'Tabs',
     title: 'Where the top buttons went',
     description:
-      'There is no second row of buttons above the terminal any more. Upload (⬆) and Download (⬇) are the two icons at the bottom of the side rail, under a separator — they run something rather than opening a panel. Shortcuts & tips moved into Settings. Both also have keybindings and sit in the command palette, which is what makes hiding the rail (Settings → App → Sidebar rail) recoverable.',
+      'There is no second row of buttons above the terminal any more. Upload (⬆) and Download (⬇) are the two icons at the bottom of the side rail, under a separator — they run something rather than opening a panel. Shortcuts & tips moved into Settings. Both also have keybindings and sit in the command palette.',
   },
   {
     category: 'Side panel',

@@ -4,7 +4,10 @@
 // time it had nulled currentTarget — and the throw happened in the render phase,
 // where no handler's try/catch can reach it. Every terminal went with it.
 
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { parse, Rule } from 'postcss';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DictationView } from './DictationView';
 import { Icon } from '../ui/icons';
@@ -138,5 +141,232 @@ describe('DictationView', () => {
     expect(await screen.findByTestId('dictation-error')).toHaveTextContent(
       'Could not load history',
     );
+  });
+});
+
+// ── The card layout ───────────────────────────────────────────────────────────
+//
+// The owner's screenshot: a long transcript filled the card and the three action
+// buttons were squeezed into a column beside it, so the text wrapped at ~150px.
+// The card is now a HEADER (date · duration left, actions right) over a
+// full-width transcript clamped to four lines.
+
+const LONG = 'O card com as datas, no fundo tem o termo e depois o prazo dele. '.repeat(12).trim();
+
+const LAYOUT_ENTRIES = [
+  { name: '20260901-2200', time: 1_756_000_000_000, text: LONG, audio: true },
+  { name: '20260901-2150', time: 1_755_900_000_000, text: 'short one', audio: true },
+  { name: '20260901-2140', time: 1_755_800_000_000, text: '', audio: true },
+];
+
+/** happy-dom has no layout, so `scrollHeight`/`clientHeight` are 0. The view
+ *  decides "does this overflow its clamp" by comparing them, so the test supplies
+ *  a fake layout: a text node taller than four lines overflows, a short one fits. */
+const stubLayout = (): void => {
+  const lines = (el: HTMLElement): number => Math.ceil((el.textContent ?? '').length / 40);
+  Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
+    configurable: true,
+    get(this: HTMLElement) {
+      return lines(this) * 18;
+    },
+  });
+  Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+    configurable: true,
+    get(this: HTMLElement) {
+      return this.getAttribute('data-clamped') === 'true'
+        ? Math.min(lines(this), 4) * 18
+        : lines(this) * 18;
+    },
+  });
+};
+
+const renderLayout = async () => {
+  render(<DictationView onCopy={vi.fn()} onInsert={vi.fn()} />);
+  await screen.findByTestId('dv-card-20260901-2200');
+};
+
+describe('DictationView card layout', () => {
+  beforeEach(() => {
+    stubLayout();
+    fetchMock.mockImplementation(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ entries: LAYOUT_ENTRIES }),
+    }));
+  });
+  afterEach(() => {
+    Reflect.deleteProperty(HTMLElement.prototype, 'scrollHeight');
+    Reflect.deleteProperty(HTMLElement.prototype, 'clientHeight');
+  });
+
+  it('puts date, duration and every action in one header above the text', async () => {
+    await renderLayout();
+    const name = '20260901-2200';
+    const audio = screen.getByTestId(`dv-audio-${name}`);
+    Object.defineProperty(audio, 'duration', { value: 127, configurable: true });
+    act(() => void audio.dispatchEvent(new Event('loadedmetadata')));
+
+    const head = screen.getByTestId(`dv-head-${name}`);
+    await waitFor(() =>
+      expect(within(head).getByTestId(`dv-when-${name}`)).toHaveTextContent('2:07'),
+    );
+    expect(within(head).getByTestId(`dv-when-${name}`).textContent).toMatch(/ · 2:07$/);
+    for (const id of ['play', 'copy', 'insert']) {
+      expect(within(head).getByTestId(`dv-${id}-${name}`)).toBeTruthy();
+    }
+    // The transcript is NOT in the header: that was the squeezed column.
+    const text = screen.getByTestId(`dv-text-${name}`);
+    expect(head.contains(text)).toBe(false);
+    expect(head.compareDocumentPosition(text) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('shows the transcript bare — no quotation marks around it', async () => {
+    await renderLayout();
+    expect(screen.getByTestId('dv-text-20260901-2150').textContent).toBe('short one');
+  });
+
+  it('clamps a long transcript and lets the toggle expand and collapse it', async () => {
+    await renderLayout();
+    const name = '20260901-2200';
+    const text = () => screen.getByTestId(`dv-text-${name}`);
+    const toggle = () => screen.getByTestId(`dv-toggle-${name}`);
+
+    expect(text()).toHaveAttribute('data-clamped', 'true');
+    expect(toggle()).toHaveTextContent('Show more');
+    expect(toggle()).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(toggle());
+    expect(text()).toHaveAttribute('data-clamped', 'false');
+    expect(toggle()).toHaveTextContent('Show less');
+    expect(toggle()).toHaveAttribute('aria-expanded', 'true');
+
+    fireEvent.click(toggle());
+    expect(text()).toHaveAttribute('data-clamped', 'true');
+    expect(toggle()).toHaveTextContent('Show more');
+  });
+
+  // Keyboard operation comes from the element, not from handlers: a real <button>
+  // takes Tab, Enter and Space, a div with onClick takes none of them.
+  it('makes the toggle a real, focusable button', async () => {
+    await renderLayout();
+    const toggle = screen.getByTestId('dv-toggle-20260901-2200');
+    expect(toggle.tagName).toBe('BUTTON');
+    expect(toggle).toHaveAttribute('type', 'button');
+    expect(toggle.getAttribute('tabindex')).toBeNull();
+    expect(toggle).not.toBeDisabled();
+  });
+
+  it('offers no toggle for a transcript that fits its clamp', async () => {
+    await renderLayout();
+    expect(screen.getByTestId('dv-text-20260901-2150')).toHaveAttribute('data-clamped', 'true');
+    expect(screen.queryByTestId('dv-toggle-20260901-2150')).toBeNull();
+  });
+
+  it('keeps Transcribe in the header of an audio-only entry, with no transcript', async () => {
+    await renderLayout();
+    const name = '20260901-2140';
+    const head = screen.getByTestId(`dv-head-${name}`);
+    expect(within(head).getByTestId(`dv-transcribe-${name}`)).toHaveTextContent('Transcribe');
+    expect(within(head).getByTestId(`dv-play-${name}`)).toBeTruthy();
+    expect(screen.queryByTestId(`dv-text-${name}`)).toBeNull();
+    expect(screen.queryByTestId(`dv-toggle-${name}`)).toBeNull();
+    expect(within(head).getByTestId(`dv-when-${name}`).textContent).not.toBe('');
+  });
+
+  it('shows the scrubber under the text only once the clip has started, and seeks with it', async () => {
+    await renderLayout();
+    const name = '20260901-2200';
+    const audio = screen.getByTestId(`dv-audio-${name}`) as HTMLAudioElement;
+    Object.defineProperty(audio, 'duration', { value: 127, configurable: true });
+    act(() => void audio.dispatchEvent(new Event('loadedmetadata')));
+    expect(screen.queryByTestId(`dv-scrub-${name}`)).toBeNull();
+
+    act(() => void audio.dispatchEvent(new Event('play')));
+    const scrub = screen.getByTestId(`dv-scrub-${name}`) as HTMLInputElement;
+    expect(scrub).toBeEnabled();
+    const text = screen.getByTestId(`dv-text-${name}`);
+    expect(text.compareDocumentPosition(scrub) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(scrub).toHaveAttribute('type', 'range');
+    expect(scrub).toHaveAttribute('aria-label', 'Seek recording');
+
+    fireEvent.change(scrub, { target: { value: '42' } });
+    expect(audio.currentTime).toBe(42);
+
+    act(() => void audio.dispatchEvent(new Event('ended')));
+    expect(screen.queryByTestId(`dv-scrub-${name}`)).toBeNull();
+  });
+
+  // B12-I02. A MediaRecorder clip (webm) reports `duration: Infinity` at
+  // loadedmetadata and the real length only later, on durationchange. The scrubber
+  // read the first answer only, so it sat at max 0 and could seek nowhere.
+  it('keeps the scrubber disabled until the duration is known, and takes it from durationchange', async () => {
+    await renderLayout();
+    const name = '20260901-2200';
+    const audio = screen.getByTestId(`dv-audio-${name}`) as HTMLAudioElement;
+    Object.defineProperty(audio, 'duration', { value: Infinity, configurable: true });
+    act(() => void audio.dispatchEvent(new Event('loadedmetadata')));
+    act(() => void audio.dispatchEvent(new Event('play')));
+
+    const scrub = () => screen.getByTestId(`dv-scrub-${name}`) as HTMLInputElement;
+    expect(scrub()).toBeDisabled();
+    expect(screen.getByTestId(`dv-when-${name}`).textContent).not.toMatch(/·/);
+
+    Object.defineProperty(audio, 'duration', { value: 42.5, configurable: true });
+    act(() => void audio.dispatchEvent(new Event('durationchange')));
+    expect(scrub()).toBeEnabled();
+    expect(scrub()).toHaveAttribute('max', '42.5');
+    expect(screen.getByTestId(`dv-when-${name}`).textContent).toMatch(/ · 0:43$/);
+  });
+
+  it('keeps one clip playing at a time', async () => {
+    await renderLayout();
+    const a = screen.getByTestId('dv-audio-20260901-2200') as HTMLAudioElement;
+    const b = screen.getByTestId('dv-audio-20260901-2150') as HTMLAudioElement;
+    const pauseA = vi.spyOn(a, 'pause').mockImplementation(() => undefined);
+    vi.spyOn(a, 'paused', 'get').mockReturnValue(false);
+    vi.spyOn(b, 'play').mockResolvedValue(undefined);
+
+    fireEvent.click(screen.getByTestId('dv-play-20260901-2150'));
+    expect(pauseA).toHaveBeenCalled();
+  });
+});
+
+// happy-dom has no layout, so the cascade can only be read as text. These are the
+// facts the markup above depends on: a transcript at full card width, four lines,
+// body size, and token spacing.
+describe('dictation-view.css card rules', () => {
+  const css = parse(readFileSync(join(__dirname, 'dictation-view.css'), 'utf8'));
+  const decls = (selector: string): Record<string, string> => {
+    const out: Record<string, string> = {};
+    css.walkRules((rule: Rule) => {
+      if (rule.selectors.includes(selector)) rule.walkDecls((d) => void (out[d.prop] = d.value));
+    });
+    return out;
+  };
+
+  it('stacks the card: header over text, not text beside actions', () => {
+    expect(decls('.dictation-card')['flex-direction']).toBe('column');
+    expect(decls('.dictation-card-head')['justify-content']).toBe('space-between');
+    expect(decls('.dictation-card-head')['flex-wrap']).toBe('wrap');
+  });
+
+  it('sets the transcript at body size and clamps it to four lines', () => {
+    const text = decls('.dictation-card-text');
+    expect(text['font-size']).toBe('var(--fs-2)');
+    expect(Number(text['line-height'])).toBeGreaterThanOrEqual(1.5);
+    const clamped = decls(".dictation-card-text[data-clamped='true']");
+    expect(clamped['-webkit-line-clamp']).toBe('4');
+    expect(clamped['overflow']).toBe('hidden');
+  });
+
+  it('separates cards by --sp-2 and takes every colour from a token', () => {
+    expect(decls('.dictation-card')['margin-bottom']).toBe('var(--sp-2)');
+    const dictation: string[] = [];
+    css.walkRules((rule: Rule) => {
+      if (rule.selector.startsWith('.dictation-card')) {
+        rule.walkDecls((d) => void dictation.push(d.value));
+      }
+    });
+    expect(dictation.join(' ')).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
   });
 });

@@ -3,7 +3,7 @@ import '@xterm/xterm/css/xterm.css';
 import './index.css';
 import './ui/ui.css';
 import { App } from './App';
-import { loadSettings } from './settings/settings';
+import { loadSettings, resolveThemeId, systemPrefersDark } from './settings/settings';
 import { applyThemeTokens, getProfile } from './settings/themes';
 import { installConsoleCapture } from './diagnostics/console-capture';
 import { capturePwaInstall } from './settings/pwa-install';
@@ -19,9 +19,12 @@ const root = document.getElementById('root');
 if (!root) throw new Error('missing #root');
 
 // Skin the app to the persisted theme BEFORE the first paint — no flash of the
-// default palette when a non-default theme is saved.
+// default palette when a non-default theme is saved. In Match system the theme is
+// resolved from this device's own colour scheme (not the stored `themeId`, which is
+// just what the server last exported), or a light-scheme device would flash the
+// dark export on every load.
 const booted = loadSettings();
-applyThemeTokens(getProfile(booted.themeId));
+applyThemeTokens(getProfile(resolveThemeId(booted, systemPrefersDark())));
 // Same pre-paint reason as the theme: a markdown or tips surface restored at
 // boot would otherwise render once in the fallback face and correct itself.
 document.documentElement.style.setProperty('--font-mono', booted.fontFamily);

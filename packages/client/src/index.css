@@ -2124,11 +2124,12 @@ body {
 }
 
 /* ── Top bar / controls ───────────────────────────────────────────────────── */
-/* The topbar holds the app menu button, the tab pills and [+], centred on one
-   line. A 1px separator marks its lower edge: the old "no bottom border" rule
-   existed only so the Chrome active tab could merge into the content below it,
-   and a pill does not merge with anything. */
+/* The topbar holds the tab pills and [+], then the app menu button over the dock
+   rail, centred on one line. A 1px separator marks its lower edge: the old "no
+   bottom border" rule existed only so the Chrome active tab could merge into the
+   content below it, and a pill does not merge with anything. */
 .topbar {
+  --rail-w: 38px;
   display: flex;
   align-items: center;
   gap: var(--sp-2);
@@ -2140,6 +2141,18 @@ body {
 
 .topbar .spacer {
   flex: 1;
+}
+
+/* The app menu closes the bar, over the dock rail. The rail is a flex-basis literal
+   in session/dock.css (`.dock-rail`, 38px, 1px left border) with its 28px buttons
+   centred in what the border leaves, so the button takes that same centre line and
+   the two read as one column. The margin cancels the bar's own right padding, which
+   the rail does not have. `--rail-w` (on `.topbar`) is that literal's second copy:
+   App.test.tsx fails if the two drift. `flex: none` keeps it from shrinking while a
+   long strip scrolls, which is the point of it sitting outside the strip. */
+.topbar .topbar-menu {
+  flex: none;
+  margin-right: calc((var(--rail-w) - 1px - var(--ctl-h)) / 2 - var(--sp-2));
 }
 
 /* Popped-out window: a slim bar with just brand + return. */
