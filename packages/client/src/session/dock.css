@@ -69,12 +69,19 @@
 .dock-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   flex: 0 0 auto;
-  padding: 8px 8px 8px 12px;
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3);
   border-bottom: 1px solid var(--t-surface);
 }
 
+/* The PANEL title: the first of the dock's two heading levels. A section inside
+   the panel (a Collapsible trigger, an Explorer root, the Dictation history
+   label) is the second — small, secondary-coloured, never uppercase (ui.css
+   `.ui-collapsible-trigger`). The title used to be an uppercase tracked caption
+   at 10.5px, which made it the SAME kind of thing as the section captions
+   below it, so the panel had one heading style at the wrong size and no
+   hierarchy. */
 .dock-title {
   flex: 1 1 auto;
   min-width: 0;
@@ -82,18 +89,20 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font:
-    600 10.5px/1 system-ui,
+    650 var(--fs-4)/1.2 system-ui,
     sans-serif;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--t-subtext);
+  letter-spacing: -0.01em;
+  text-transform: none;
+  color: var(--t-text);
 }
 
+/* The gutter matches the head's left padding, so a panel's content lines up
+   under its title. (10px sat 2px off it, and is on neither scale step.) */
 .dock-body {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 10px;
+  padding: var(--sp-3);
 }
 
 /* ── Rail ─────────────────────────────────────────────────────────────────── */
@@ -103,8 +112,8 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
-  padding: 6px 0;
+  gap: var(--sp-1);
+  padding: var(--sp-2) 0;
   background: var(--t-base);
   border-left: 1px solid var(--t-surface);
 }
@@ -117,7 +126,7 @@
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--r-2);
   background: transparent;
   color: var(--t-subtext);
   font-size: 13px;
@@ -138,13 +147,22 @@
 }
 /* Views above, ACTIONS below. The separator is what stops upload/download from
    reading as two more panels: they run and nothing opens, so a rail entry that
-   never lights up would look broken sitting among the four that do. */
+   never lights up would look broken sitting among the views that do. */
 .dock-rail-sep {
   flex: 0 0 auto;
   width: 16px;
   height: 1px;
   margin: 4px 0;
   background: var(--t-surface);
+}
+
+/* Settings is a view like the others but the least reached for mid-session, so
+   it leaves the flow and takes the bottom edge: the free space above it is what
+   separates it from the entries that get used. `margin-top: auto` on the
+   element itself, not `justify-content: space-between` on the rail, which would
+   also spread the views and the actions apart when the rail has room. */
+.dock-rail-pinned {
+  margin-top: auto;
 }
 
 /* The active marker is a bar on the rail's outer edge, the way VS Code marks the
@@ -155,7 +173,7 @@
   left: -5px;
   width: 2px;
   height: 16px;
-  border-radius: 0 2px 2px 0;
+  border-radius: 0 var(--r-1) var(--r-1) 0;
   background: var(--t-accent);
 }
 

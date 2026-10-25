@@ -5,7 +5,8 @@
 // `DashboardBody`.
 
 import { DashboardBody, type DashboardBodyProps } from './DashboardBody';
-import { press } from './press';
+import { pressClick } from './press';
+import { Icon } from '../ui/icons';
 
 interface DashboardTabProps extends DashboardBodyProps {
   /** Mobile: opens the session drawer. */
@@ -16,8 +17,8 @@ export const DashboardTab = ({ onMenu, ...body }: DashboardTabProps) => (
   <div className="pane-frame dashboard" data-testid="dashboard-pane">
     <div className="pane-header">
       {onMenu && (
-        <button className="pane-btn" aria-label="Open drawer" onPointerDown={press(onMenu)}>
-          ☰
+        <button className="pane-btn" aria-label="Open drawer" {...pressClick(onMenu)}>
+          <Icon name="menu" />
         </button>
       )}
       <span className="pane-title">Dashboard</span>

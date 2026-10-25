@@ -29,6 +29,25 @@ export function groupIdOf(tabs: TabMeta[], id: string): string | undefined {
 }
 
 /**
+ * A drop boundary pinned to a GROUP's leading edge, not to a tab. A drag hovers
+ * for as long as the user likes while other windows keep editing the strip, so a
+ * tab id captured at hover time (the group's first member, then) can leave the
+ * group and take the drop with it. The group is what the preview drew the
+ * marker on, so the group is what the commit resolves — via `groupEdgeTarget`,
+ * against the order the drop actually applies to.
+ */
+export interface GroupEdge {
+  groupId: string;
+  edge: 'before';
+}
+
+/** The tab a group edge lands before right now — the group's first member in
+ *  FULL order (collapsed or not) — or undefined once the group has no members. */
+export function groupEdgeTarget(tabs: TabMeta[], anchor: GroupEdge): string | undefined {
+  return tabs.find((t) => t.groupId === anchor.groupId)?.id;
+}
+
+/**
  * id → groupId for the tabs that have one — an O(1) membership accessor. Build
  * this once per operation instead of calling `groupIdOf` (an O(n) `find`) inside
  * a loop, which would be O(n²) over the strip.
@@ -150,16 +169,44 @@ export function nearestOutside(
 }
 
 /**
+ * Move an insertion point that falls BETWEEN two members of a group the dragged
+ * entry is not in (`own`) to that group's nearer outer edge, ties going before
+ * it. A boundary drop — anything but the centre of a member: a gap, a pill's
+ * half, a chip's half — never joins a group, and between two members is the one
+ * place an order alone reads as a join. `rest` is the order without the dragged entry, `at` an
+ * insertion index into it; returns the index to use instead (unchanged when the
+ * point is not inside a foreign group).
+ */
+export function outsideForeignGroup(
+  rest: string[],
+  at: number,
+  groupOf: (id: string) => string | undefined,
+  own: string | undefined,
+): number {
+  if (at <= 0 || at >= rest.length) return at;
+  const g = groupOf(rest[at - 1]!);
+  if (g === undefined || g === own || groupOf(rest[at]!) !== g) return at;
+  let first = at - 1;
+  while (first > 0 && groupOf(rest[first - 1]!) === g) first--;
+  let end = at;
+  while (end < rest.length && groupOf(rest[end]!) === g) end++;
+  return at - first <= end - at ? first : end;
+}
+
+/**
  * Decide whether a completed tab drop is a plain reorder, a JOIN, or a LEAVE,
  * given the resulting `order` (dragged already at its dropped index). `centerJoin`
- * is the group id when the drop landed ON a member tab's center. Pure; the
- * decision table lives in docs/dnd-decision-table.md.
+ * is the group id when the drop landed ON a member tab's center. `boundary` marks
+ * any other strip drop (a gap, a pill's half, a chip's half): it never joins,
+ * whatever its neighbours are.
+ * Pure; the decision table lives in docs/dnd-decision-table.md.
  */
 export function decideGroupDrop(
   order: string[],
   groupIdOf: (id: string) => string | undefined,
   dragged: string,
   centerJoin?: string | undefined,
+  boundary?: boolean,
 ): { join?: string; leave?: string } {
   const dg = groupIdOf(dragged);
   if (centerJoin && centerJoin !== dg) return { join: centerJoin };
@@ -168,8 +215,10 @@ export function decideGroupDrop(
   const R = j < order.length - 1 ? order[j + 1] : undefined;
   const gL = L ? groupIdOf(L) : undefined;
   const gR = R ? groupIdOf(R) : undefined;
-  // Interior of some OTHER group → join it.
-  if (gL && gL === gR && gL !== dg) return { join: gL };
+  // Interior of some OTHER group → join it. Only an order without the boundary
+  // flag can get here; every strip drop carries it, and was already moved to
+  // the group's edge by outsideForeignGroup.
+  if (!boundary && gL && gL === gR && gL !== dg) return { join: gL };
   // Leave only when FULLY detached from its own group (neither neighbor is a
   // member). Reordering a member to the edge of its own span keeps it — dragging
   // it clearly OUT (both sides non-group) ejects it. (Refined from the doc's

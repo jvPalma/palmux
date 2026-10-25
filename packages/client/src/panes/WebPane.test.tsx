@@ -5,10 +5,19 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { TabMeta } from '@palmux/shared';
 import { WebPane } from './WebPane';
+import { Icon } from '../ui/icons';
 
 const TAB: TabMeta = { id: '4', kind: 'web', url: 'https://sb.local' };
 
 afterEach(() => vi.restoreAllMocks());
+
+/** The drawn shapes of a registered icon, to compare against what a control
+ *  rendered. Rendered into a detached node so `screen` never sees it. */
+const iconPaths = (name: string): string | undefined => {
+  const host = document.createElement('div');
+  render(<Icon name={name} />, { container: host });
+  return host.querySelector('svg')?.innerHTML;
+};
 
 const renderPane = () => {
   const onChangeUrl = vi.fn();
@@ -81,10 +90,33 @@ describe('WebPane', () => {
     expect(open).toHaveBeenCalledWith('https://sb.local', '_blank', 'noopener');
   });
 
-  it('☰ opens the drawer on mobile', () => {
+  it('the menu button opens the drawer on mobile', () => {
     const p = renderPane();
-    fireEvent.pointerDown(screen.getByTestId('pane-menu'));
+    const menu = screen.getByTestId('pane-menu');
+    expect(menu.querySelector('svg')?.innerHTML).toBe(iconPaths('menu'));
+    expect(menu).toHaveAttribute('aria-label', 'Open drawer');
+    fireEvent.pointerDown(menu);
     expect(p.onMenu).toHaveBeenCalled();
+  });
+
+  // Every header control is icon-only now, and the icon is aria-hidden: the
+  // label is the whole accessible name, so losing one would leave a nameless button.
+  it('draws each header control as an icon and keeps its accessible name', () => {
+    renderPane();
+    for (const [id, label, icon] of [
+      ['pane-back', 'Back', 'arrow-left'],
+      ['pane-forward', 'Forward', 'arrow-right'],
+      ['pane-reload', 'Reload', 'reload'],
+      ['pane-external', 'Open externally', 'external'],
+    ] as const) {
+      const button = screen.getByTestId(id);
+      expect(button.querySelectorAll('svg')).toHaveLength(1);
+      // Back points left and forward points right: swapping them would still
+      // draw four different shapes, so each is compared to ITS icon.
+      expect(button.querySelector('svg')?.innerHTML, id).toBe(iconPaths(icon));
+      expect(button).toHaveAttribute('aria-label', label);
+      expect(button.textContent).toBe('');
+    }
   });
 
   it('routes a loopback url through the proxy and KEEPS allow-same-origin', () => {
@@ -117,7 +149,7 @@ describe('WebPane', () => {
     );
   });
 
-  it('← / → walk the top-level joint history (the framed page is unreachable)', () => {
+  it('back / forward walk the top-level joint history (the framed page is unreachable)', () => {
     const back = vi.spyOn(window.history, 'back').mockImplementation(() => {});
     const forward = vi.spyOn(window.history, 'forward').mockImplementation(() => {});
     renderPane();

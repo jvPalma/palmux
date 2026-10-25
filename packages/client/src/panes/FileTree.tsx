@@ -20,9 +20,11 @@
 // header here is the current path, which that title cannot carry.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { Button } from '../ui';
 import { ContextMenu, type ContextMenuItemSpec } from '../ui/ContextMenu';
+import { Icon } from '../ui/icons';
+import { useLeavingItems } from '../ui/useLeavingItems';
 import { downloadFromServer } from '../terminal/download';
 import { entryIconUrl, iconIndex, loadIconIndex, type IconIndex } from './file-icons';
 import {
@@ -33,6 +35,7 @@ import {
   rootLabel,
   rootParent,
 } from './explorer-pins';
+import { readOpenRoots, writeOpenRoots } from './explorer-open';
 import {
   affectedDirs,
   deleteConfirmMessage,
@@ -153,16 +156,74 @@ const splitPath = (path: string): { dir: string; name: string } => {
 
 const depthStyle = (depth: number): CSSProperties => ({ '--ft-depth': depth }) as CSSProperties;
 
+const rowKey = (row: Row): string => row.key;
+
+interface RootRowsProps {
+  rows: Row[];
+  renderRow: (row: Row) => ReactNode;
+}
+
+/**
+ * One root's rows, each inside a wrapper that animates its OWN space (files.css
+ * `.ft-leaf`). A deleted file, a collapsed folder or a replaced "Loading…" note
+ * is dropped from `rows` the instant its data goes, so without this the node is
+ * unmounted before it can fade and every row below jumps by its height.
+ *
+ * A component of its own because the hook is per list and the tree has one list
+ * per root, a count that changes — hooks cannot be called in `roots.map`.
+ */
+const RootRows = ({ rows, renderRow }: RootRowsProps) => {
+  const tracked = useLeavingItems(rows, rowKey);
+  return (
+    <>
+      {tracked.map(({ key, item, phase, enter }, index) => (
+        <div
+          key={key}
+          className="ft-leaf"
+          data-phase={phase}
+          data-enter={enter}
+          // The first fill staggers by position (files.css caps how far).
+          style={{ '--ft-i': index } as CSSProperties}
+          // A row on its way out must take no click and no focus. `inert` is not
+          // in React 18's typings, but the attribute reaches the DOM from a
+          // spread, and it also drops the focus a keyboard delete leaves on the
+          // row being deleted, which `aria-hidden` would warn about.
+          {...(phase === 'leaving' ? { inert: '' } : {})}
+        >
+          <div className="ft-leaf-inner">{renderRow(item)}</div>
+        </div>
+      ))}
+    </>
+  );
+};
+
 export const FileTree = ({ onOpenFile, pins, onPinsChange, onNotice }: FileTreeProps) => {
   const [dirs, setDirs] = useState<Record<string, DirState>>({});
   // Null until the server tells us where home is; the tree renders its loading
   // note until then rather than flashing the filesystem root.
   const [root, setRoot] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set<string>());
-  // Which ROOT sections are open. Several may be, unlike a strict accordion —
-  // the exclusivity the design asks for applies when a pin is ADDED, not as a
-  // permanent restriction on what you can look at.
-  const [openRoots, setOpenRoots] = useState<ReadonlySet<string>>(() => new Set<string>());
+  // The root sections this device has open, as last stored (palmux-explorer-open).
+  // Null means nothing is stored — a first run — which is not the same as an
+  // empty set: that is someone who collapsed everything. It is a SUPERSET of what
+  // is shown: an entry for a path that is not a root right now stays here, and in
+  // storage, until a user action replaces the set. See `openRoots` below. While
+  // HOME's first-run default is owed (`homeOwed`) a toggle lands here and not yet
+  // in storage.
+  const [storedOpen, setStoredOpen] = useState<ReadonlySet<string> | null>(() => {
+    const stored = readOpenRoots();
+    return stored ? new Set(stored) : null;
+  });
+  // A first run owes HOME its default ("open") until HOME is KNOWN, and that can
+  // take a failed request and a retry. Tracked apart from `storedOpen` because a
+  // toggle of another root in the meantime makes `storedOpen` non-null, and "is
+  // something stored?" must not be what settles the default. Holds the roots
+  // toggled while it is owed — a pin can be HOME's own path, and choosing it
+  // before HOME lands is a choice about HOME — or null once nothing is owed.
+  // Read once at mount: `storedOpen` is its initial value here.
+  const [homeOwed, setHomeOwed] = useState<ReadonlySet<string> | null>(() =>
+    storedOpen === null ? new Set<string>() : null,
+  );
   /**
    * Selected paths for a bulk action, or null when not selecting.
    *
@@ -179,7 +240,13 @@ export const FileTree = ({ onOpenFile, pins, onPinsChange, onNotice }: FileTreeP
   /** `dir: null` asks the server for the home directory and adopts it as root. */
   const load = useCallback(async (dir: string | null): Promise<void> => {
     const key = dir ?? '';
-    setDirs((prev) => ({ ...prev, [key]: { status: 'loading' } }));
+    // A listing that is already on screen stays there while it is re-read. Swapping
+    // it for "Loading…" would drop EVERY row of the directory and bring them back,
+    // so a delete (which re-reads the parent) could not fade the one row that went,
+    // and the 2-minute poll would collapse the list under the user's scroll offset.
+    setDirs((prev) =>
+      prev[key]?.status === 'ready' ? prev : { ...prev, [key]: { status: 'loading' } },
+    );
     try {
       // An ABSENT dir asks the server for home. Passing '' would be an error —
       // the route distinguishes "no dir given" from "a broken dir given".
@@ -202,9 +269,6 @@ export const FileTree = ({ onOpenFile, pins, onPinsChange, onNotice }: FileTreeP
       if (dir === null) {
         setRoot(at);
         setExpanded((prev) => new Set(prev).add(at));
-        // HOME opens on arrival. A tree whose only root started collapsed would
-        // present an empty panel with one word in it.
-        setOpenRoots((prev) => (prev.has(at) ? prev : new Set([...prev, at])));
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -220,21 +284,74 @@ export const FileTree = ({ onOpenFile, pins, onPinsChange, onNotice }: FileTreeP
   const pinList = useMemo(() => pins ?? [], [pins]);
   const roots = useMemo(() => explorerRoots(root, pinList), [root, pinList]);
 
-  // A newly pinned root opens and the others close, so the thing just pinned is
-  // what is on screen. A root that disappears (unpinned elsewhere, or a settings
-  // sync) must not leave its open flag behind to reopen if it comes back.
+  // What is open: the stored set restricted to the roots that exist right now.
+  // On a first run HOME opens as it arrives, beside whatever else was toggled
+  // before it — a tree whose only root started collapsed would be an empty panel
+  // with one word in it.
+  //
+  // The stored set is never pruned against `roots`, because `roots` is incomplete
+  // twice over at boot: HOME is unknown until its request lands, and nothing says
+  // when the synced pins are authoritative. A prune keyed to it erases a
+  // remembered pinned root whichever of the two arrives second, and stores the
+  // loss. So an entry for a path that is not a root today simply stays dormant,
+  // costs nothing, and reopens if the root comes back. Every reader of "open" —
+  // rendering, the restore-load below and the poll — goes through this
+  // intersection, never the stored set.
+  const remembered = useMemo(() => {
+    const base = storedOpen ?? new Set<string>();
+    if (homeOwed === null || root === null || homeOwed.has(root) || base.has(root)) return base;
+    return new Set(base).add(root);
+  }, [storedOpen, homeOwed, root]);
+  const openRoots = useMemo(
+    () => new Set(roots.filter((r) => remembered.has(r))),
+    [roots, remembered],
+  );
+
+  /** Replace the open set and remember it. Only user actions (and the first-run
+   *  default) call this, so a dormant entry is never lost to a render. */
+  const commitOpen = useCallback((next: ReadonlySet<string>): void => {
+    setStoredOpen(next);
+    writeOpenRoots(next);
+  }, []);
+
+  // A first run stores its default the moment HOME is known, together with any
+  // toggle held back while it was owed, so the next mount reads a state rather
+  // than guessing again. `remembered` already shows it, so nothing moves on screen.
   useEffect(() => {
-    setOpenRoots((prev) => {
-      const live = new Set(roots);
-      const next = new Set([...prev].filter((r) => live.has(r)));
-      return next.size === prev.size ? prev : next;
+    if (homeOwed === null || root === null) return;
+    setHomeOwed(null);
+    commitOpen(remembered);
+  }, [homeOwed, root, remembered, commitOpen]);
+
+  // An open root has to be EXPANDED, not just open: only expanded paths are
+  // fetched, so a restored section would otherwise be open over no rows. This is
+  // what loads a remembered pin the moment the pins arrive (or HOME the moment it
+  // does), before and after each other alike.
+  //
+  // Only roots ENTERING the open set are seeded, never every open root on every
+  // change. `expanded` is shared with the folder rows, and a pin nested in HOME is
+  // also a folder inside HOME: re-seeding it whenever another root toggled, or a
+  // settings broadcast handed back an equal pins array, reopened a folder the user
+  // had just collapsed there. Entering is also exactly what opening a header has
+  // always done: expand that one root.
+  const seededRootsRef = useRef<ReadonlySet<string>>(new Set<string>());
+  useEffect(() => {
+    const before = seededRootsRef.current;
+    seededRootsRef.current = openRoots;
+    const entering = [...openRoots].filter((r) => !before.has(r));
+    if (entering.length === 0) return;
+    setExpanded((prev) => {
+      const missing = entering.filter((r) => !prev.has(r));
+      return missing.length === 0 ? prev : new Set([...prev, ...missing]);
     });
-  }, [roots]);
+  }, [openRoots]);
 
   // Held in refs so the poll below does not restart on every listing change —
   // a 2-minute interval that resets whenever a folder expands never fires.
   const dirsRef = useRef(dirs);
   dirsRef.current = dirs;
+  // The live intersection, not the stored set: an unpinned root's dormant flag
+  // must not keep its subtree polling.
   const openRootsRef = useRef(openRoots);
   openRootsRef.current = openRoots;
 
@@ -378,11 +495,33 @@ export const FileTree = ({ onOpenFile, pins, onPinsChange, onNotice }: FileTreeP
       if (!onPinsChange) return;
       onPinsChange(addPin(pinList, path));
       // Collapse everything else and open the new root: pinning is immediately
-      // followed by working in the thing you just pinned.
-      setOpenRoots(new Set([path]));
+      // followed by working in the thing you just pinned. Replacing the set is
+      // the point, so it also clears any dormant entries — and settles an owed
+      // HOME default, which would otherwise reopen HOME beside the new root.
+      commitOpen(new Set([path]));
+      setHomeOwed(null);
+      // Expanded now rather than when the pin lands: `path` is not a root until
+      // the host hands the new pins back, and the listing can load meanwhile.
       setExpanded((prev) => new Set(prev).add(path));
     },
-    [onPinsChange, pinList],
+    [commitOpen, onPinsChange, pinList],
+  );
+
+  const toggleRoot = useCallback(
+    (r: string): void => {
+      const next = new Set(remembered);
+      if (!next.delete(r)) next.add(r);
+      if (homeOwed === null) {
+        commitOpen(next);
+        return;
+      }
+      // Held, not written, until HOME lands and is stored with it: a set written
+      // without HOME would make a remount or a reload in the meantime read "HOME
+      // collapsed" instead of "first run", and lose the default for good.
+      setStoredOpen(next);
+      setHomeOwed(new Set(homeOwed).add(r));
+    },
+    [commitOpen, homeOwed, remembered],
   );
 
   const unpin = useCallback(
@@ -398,24 +537,44 @@ export const FileTree = ({ onOpenFile, pins, onPinsChange, onNotice }: FileTreeP
         if (onPinsChange) {
           items.push(
             isPinned(pinList, path)
-              ? { id: 'unpin', label: 'Unpin from Explorer', icon: '📌', onSelect: () => unpin(path) }
-              : { id: 'pin', label: 'Pin as a root', icon: '📌', onSelect: () => pin(path) },
+              ? {
+                  id: 'unpin',
+                  label: 'Unpin from Explorer',
+                  icon: <Icon name="pin" size={14} />,
+                  onSelect: () => unpin(path),
+                }
+              : {
+                  id: 'pin',
+                  label: 'Pin as a root',
+                  icon: <Icon name="pin" size={14} />,
+                  onSelect: () => pin(path),
+                },
           );
         }
       } else {
-        items.push({ id: 'open', label: 'Open', icon: '↗', onSelect: () => openFile(path) });
+        items.push({
+          id: 'open',
+          label: 'Open',
+          icon: <Icon name="external" size={14} />,
+          onSelect: () => openFile(path),
+        });
       }
       items.push({
         id: 'download',
         label: dir ? 'Download as zip' : 'Download',
-        icon: '⬇',
+        icon: <Icon name="download" size={14} />,
         onSelect: () => download([path]),
       });
-      items.push({ id: 'select', label: 'Select', icon: '☑', onSelect: () => startPicking(path) });
+      items.push({
+        id: 'select',
+        label: 'Select',
+        icon: <Icon name="checkbox-on" size={14} />,
+        onSelect: () => startPicking(path),
+      });
       items.push({
         id: 'delete',
         label: 'Delete',
-        icon: '✕',
+        icon: <Icon name="close" size={14} />,
         danger: true,
         separatorBefore: true,
         onSelect: () => remove([{ path, dir }]),
@@ -558,17 +717,21 @@ export const FileTree = ({ onOpenFile, pins, onPinsChange, onNotice }: FileTreeP
         >
           {pickedSet && (
             <span className="ft-pick" data-checked={isPicked} aria-hidden="true">
-              {isPicked ? '☑' : '☐'}
+              <Icon name={isPicked ? 'checkbox-on' : 'checkbox-off'} size={12} />
             </span>
           )}
+          {/* 12px like every other chevron, so it overhangs the 8px `.ft-caret` box,
+              ink included for the open chevron; the overhang ends inside the row's
+              gap, short of the glyph. Shrunk to fit, the 1.75 stroke goes sub-pixel
+              and all but vanishes at 1x (measured), so the box is what has to give. */}
           <span className="ft-caret" aria-hidden="true">
-            {isDir ? (row.open ? '▾' : '▸') : ''}
+            {isDir && <Icon name={row.open ? 'chevron-down' : 'chevron-right'} size={12} />}
           </span>
           {row.icon ? (
             <img className="ft-glyph" src={row.icon} alt="" aria-hidden="true" loading="lazy" />
           ) : (
             <span className="ft-glyph ft-glyph-fallback" aria-hidden="true">
-              {isDir ? '▸' : '◆'}
+              <Icon name={isDir ? 'folder' : 'file'} size={14} />
             </span>
           )}
           <span className="ft-name">{row.name}</span>
@@ -607,19 +770,10 @@ export const FileTree = ({ onOpenFile, pins, onPinsChange, onNotice }: FileTreeP
                   data-testid={`ft-sect-toggle-${r}`}
                   aria-expanded={open}
                   title={r}
-                  onClick={() => {
-                    setOpenRoots((prev) => {
-                      const next = new Set(prev);
-                      if (!next.delete(r)) {
-                        next.add(r);
-                        setExpanded((e) => new Set(e).add(r));
-                      }
-                      return next;
-                    });
-                  }}
+                  onClick={() => toggleRoot(r)}
                 >
                   <span className="ft-sect-caret" aria-hidden="true">
-                    {open ? '▾' : '▸'}
+                    <Icon name={open ? 'chevron-down' : 'chevron-right'} size={12} />
                   </span>
                   <span className="ft-sect-name">{rootLabel(r)}</span>
                   {pinned && (
@@ -639,7 +793,7 @@ export const FileTree = ({ onOpenFile, pins, onPinsChange, onNotice }: FileTreeP
                   title="Refresh this root"
                   onClick={() => refreshRoot(r)}
                 >
-                  ⟳
+                  <Icon name="reload" size={12} />
                 </button>
                 {pinned && (
                   <button
@@ -650,12 +804,14 @@ export const FileTree = ({ onOpenFile, pins, onPinsChange, onNotice }: FileTreeP
                     title="Unpin this root"
                     onClick={() => unpin(r)}
                   >
-                    ✕
+                    <Icon name="close" size={12} />
                   </button>
                 )}
               </div>
               {open && (
-                <div className="ft-sect-body">{(rowsByRoot.get(r) ?? []).map(renderRow)}</div>
+                <div className="ft-sect-body">
+                  <RootRows rows={rowsByRoot.get(r) ?? []} renderRow={renderRow} />
+                </div>
               )}
             </section>
           );
@@ -676,7 +832,8 @@ export const FileTree = ({ onOpenFile, pins, onPinsChange, onNotice }: FileTreeP
             disabled={pickedSet.size === 0 || busy}
             onClick={() => download([...pickedSet])}
           >
-            ⬇ Download
+            <Icon name="download" size={14} />
+            Download
           </Button>
           <Button
             size="sm"
@@ -685,7 +842,8 @@ export const FileTree = ({ onOpenFile, pins, onPinsChange, onNotice }: FileTreeP
             disabled={pickedSet.size === 0 || busy}
             onClick={() => remove(pickedTargets)}
           >
-            ✕ Delete
+            <Icon name="close" size={14} />
+            Delete
           </Button>
           <Button size="sm" variant="ghost" data-testid="ft-bulk-cancel" onClick={() => setPicked(null)}>
             Cancel

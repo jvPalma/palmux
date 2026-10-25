@@ -13,14 +13,24 @@
 // refuses anything it would drop (see server/src/config-file.ts). A successful
 // save says "restart required" plainly — nothing here applies live.
 //
-// The Raw/Form toggle lives here; Form mode renders NOTHING but the header,
-// because the form is the settings view the app already has. The raw body is
-// hidden rather than unmounted when the toggle flips, so unsaved edits — and
-// the cursor, and the undo stack — survive Raw → Form → Raw.
+// Settings opens this from its "Edit config.json" row (`mode` goes `raw`), and the
+// `‹ Settings` control in the header returns to the form. In Form mode the whole
+// component renders nothing VISIBLE — the form is the settings view the app
+// already has — but it stays MOUNTED, hidden, never unmounted. Monaco is created
+// once, as the file arrives, into the host element; a component that rendered
+// nothing in Form mode would have no host then and would never get an editor, so
+// the first Raw would open onto nothing. Keeping the same host mounted is also
+// what lets unsaved edits, the cursor and the undo stack survive
+// Raw → Form → Raw.
+//
+// The form's Edit config.json row goes away as Raw comes in, and the focus it
+// held falls on the body, so `‹ Settings` takes it (`focusLost`). The way back
+// is the host's: the form it returns to is a new one (see App).
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type * as Monaco from 'monaco-editor';
-import { Button, Segmented } from '../ui';
+import { Button } from '../ui';
+import { Icon } from '../ui/icons';
 import { loadSettings } from './settings';
 import './config-editor.css';
 import { editorLayoutOptions, observeEditorWidth } from '../panes/editor-layout';
@@ -34,12 +44,14 @@ export type ConfigEditorMode = 'raw' | 'form';
 export interface ConfigEditorProps {
   mode: ConfigEditorMode;
   onMode: (mode: ConfigEditorMode) => void;
+  /**
+   * Whether the buffer differs from what config.json last held (as loaded, or
+   * as last SAVED — a refused save stays dirty). This text exists nowhere else,
+   * so the host's Reload guard has to know about it. Reports `false` on unmount:
+   * the buffer goes with the editor.
+   */
+  onDirtyChange?: ((dirty: boolean) => void) | undefined;
 }
-
-const MODE_OPTIONS = [
-  { value: 'raw' as const, label: 'Raw' },
-  { value: 'form' as const, label: 'Form' },
-];
 
 // Monaco ships no JSON tokenizer in `basic-languages` (JSON highlighting there
 // comes bundled with the language SERVICE and its own worker, which
@@ -133,8 +145,21 @@ function checkJson(text: string): LocalCheck {
 const asRecord = (v: unknown): Record<string, unknown> =>
   typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : {};
 
-export const ConfigEditor = ({ mode, onMode }: ConfigEditorProps) => {
+/**
+ * Whether focus sits on nothing a user can see: on the body, because the control
+ * that held it was removed, or inside a subtree that is `hidden` now (this
+ * editor's own `‹ Settings`, as Form hides it). Only then does a Raw ↔ Form
+ * switch move focus. Anywhere else (a text field above all, whose focus may be a
+ * soft keyboard) it was put there on purpose and stays.
+ */
+export const focusLost = (): boolean => {
+  const active = document.activeElement;
+  return active === null || active === document.body || active.closest('[hidden]') !== null;
+};
+
+export const ConfigEditor = ({ mode, onMode, onDirtyChange }: ConfigEditorProps) => {
   const hostRef = useRef<HTMLDivElement>(null);
+  const backRef = useRef<HTMLButtonElement>(null);
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<typeof Monaco | null>(null);
   const [load, setLoad] = useState<'loading' | 'ready' | 'error'>('loading');
@@ -146,8 +171,18 @@ export const ConfigEditor = ({ mode, onMode }: ConfigEditorProps) => {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<({ message: string } & Located) | null>(null);
   const [savedNote, setSavedNote] = useState('');
+  // What config.json holds on disk as far as this editor knows: null until the
+  // file arrives, so the empty pre-load buffer never reads as an edit.
+  const [stored, setStored] = useState<string | null>(null);
   const textRef = useRef(text);
   textRef.current = text;
+
+  const dirty = stored !== null && text !== stored;
+  useEffect(() => {
+    if (!onDirtyChange) return;
+    onDirtyChange(dirty);
+    return () => onDirtyChange(false);
+  }, [dirty, onDirtyChange]);
 
   const check = useMemo(() => checkJson(text), [text]);
 
@@ -209,6 +244,7 @@ export const ConfigEditor = ({ mode, onMode }: ConfigEditorProps) => {
         // first real measurement arrives only when Raw is selected.
         stopWidthWatch = observeEditorWidth(hostRef.current, (opts) => editor.updateOptions(opts));
         setText(content);
+        setStored(content);
         setPath(typeof body['path'] === 'string' ? body['path'] : '');
         setLoad('ready');
         editor.getModel()?.onDidChangeContent(() => {
@@ -262,6 +298,16 @@ export const ConfigEditor = ({ mode, onMode }: ConfigEditorProps) => {
     if (mode === 'raw') editorRef.current?.layout();
   }, [mode]);
 
+  // Raw coming into view, not the first render: a dock that opens straight onto
+  // Raw was opened by something that still holds focus. A layout effect, so focus
+  // has moved before the new view paints.
+  const shownMode = useRef(mode);
+  useLayoutEffect(() => {
+    if (shownMode.current === mode) return;
+    shownMode.current = mode;
+    if (mode === 'raw' && focusLost()) backRef.current?.focus();
+  }, [mode]);
+
   const save = useCallback(() => {
     const body = textRef.current;
     setSaving(true);
@@ -274,6 +320,9 @@ export const ConfigEditor = ({ mode, onMode }: ConfigEditorProps) => {
     })
       .then(async (res) => {
         if (res.ok) {
+          // The text that was SENT, not the buffer now: an edit made while the
+          // PUT was in flight is still unsaved.
+          setStored(body);
           setSavedNote('Saved · restart palmux to apply');
           return;
         }
@@ -303,21 +352,26 @@ export const ConfigEditor = ({ mode, onMode }: ConfigEditorProps) => {
   else status = `Valid JSON · ${check.ok ? check.keys : 0} keys`;
 
   return (
-    <div className="config-editor" data-testid="config-editor">
+    // `hidden`, not a conditional return: see the header comment. `.config-editor`
+    // sets `display`, which outranks the attribute's own `display: none`, so the
+    // stylesheet restates it for `[hidden]`.
+    <div className="config-editor" data-testid="config-editor" hidden={mode !== 'raw'}>
       <div className="config-editor-head">
+        <Button
+          ref={backRef}
+          variant="ghost"
+          className="config-editor-back"
+          onClick={() => onMode('form')}
+          data-testid="config-back"
+        >
+          <Icon name="chevron-left" size={14} />
+          Settings
+        </Button>
         <span className="config-editor-title" title={path}>
           config.json
         </span>
-        <Segmented
-          value={mode}
-          onValueChange={onMode}
-          options={MODE_OPTIONS}
-          label="Config editor mode"
-          className="config-editor-modes"
-          data-testid="config-mode"
-        />
       </div>
-      <div className="config-editor-body" data-off={mode === 'raw' ? undefined : ''}>
+      <div className="config-editor-body">
         <div className="config-editor-host" ref={hostRef} data-testid="config-editor-host" />
         <div className="config-editor-status" data-invalid={errored ? '' : undefined}>
           <span className="config-editor-dot" />

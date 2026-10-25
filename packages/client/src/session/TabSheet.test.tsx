@@ -1,15 +1,26 @@
 // Mobile tab sheet: rename via Done/Enter, palette recolor, close-tab routing.
 
-import { createEvent, fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { act, createEvent, fireEvent, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { TabGroup, TabMeta } from '@palmux/shared';
 import { TabSheet } from './TabSheet';
+import { Icon } from '../ui/icons';
 
 const TAB: TabMeta = { id: '3', kind: 'web', url: 'https://sb.local', name: 'SB', color: 'teal' };
 const GROUPS: TabGroup[] = [
   { id: 'gaaaaa', name: 'dev', color: 'ansi2' },
   { id: 'gbbbbb', color: 'ansi4' },
 ];
+
+/** The drawn shapes of a registered icon, to compare against what a control
+ *  rendered. Rendered into a detached node so `screen` never sees it. */
+const iconPaths = (name: string): string | undefined => {
+  const host = document.createElement('div');
+  render(<Icon name={name} />, { container: host });
+  return host.querySelector('svg')?.innerHTML;
+};
 
 const renderSheet = (tab: TabMeta = TAB) => {
   const props = {
@@ -28,6 +39,23 @@ const renderSheet = (tab: TabMeta = TAB) => {
 };
 
 describe('TabSheet', () => {
+  it('draws the kind and the close action as icons next to their text', () => {
+    renderSheet();
+    const title = document.querySelector('.sheet-title');
+    expect(title?.querySelectorAll('svg')).toHaveLength(1);
+    expect(title?.querySelector('svg')?.innerHTML).toBe(iconPaths('globe')); // TAB is a web tab
+    expect(title).toHaveTextContent(/^SB$/);
+    const close = screen.getByTestId('sheet-close-tab');
+    expect(close.querySelectorAll('svg')).toHaveLength(1);
+    expect(close.querySelector('svg')?.innerHTML).toBe(iconPaths('close'));
+    expect(close).toHaveTextContent(/^Close tab$/);
+  });
+
+  it('draws the kind of the tab it was opened for', () => {
+    renderSheet({ id: '4', kind: 'markdown', url: '/docs/a.md' });
+    expect(document.querySelector('.sheet-title svg')?.innerHTML).toBe(iconPaths('book'));
+  });
+
   it('commits a changed name on Done and dismisses', () => {
     const p = renderSheet();
     fireEvent.change(screen.getByTestId('sheet-rename'), { target: { value: 'notes' } });
@@ -155,5 +183,279 @@ describe('TabSheet group rows are scroll-safe', () => {
     });
     fireEvent(screen.getByTestId('sheet-new-group'), ev);
     expect(ev.defaultPrevented).toBe(false);
+  });
+});
+
+// Done, Close tab and ∅ are fixed buttons: a pointer acts on pointerdown, with
+// the default prevented, which keeps #mobile-kbd focused. They are focusable
+// buttons too, so Enter, Space and a click with no pointer press behind it
+// (assistive tech, `element.click()`) reach them as well, and a pointer press's
+// own trailing click is not a second activation.
+describe('TabSheet buttons as buttons', () => {
+  // A mark armed by one test's press must not swallow the next test's first click.
+  afterEach(() => void fireEvent.keyDown(document));
+
+  type Props = ReturnType<typeof renderSheet>;
+  const BUTTONS = [
+    ['sheet-done', (p: Props) => p.onDismiss],
+    ['sheet-close-tab', (p: Props) => p.onCloseTab],
+    ['sheet-color-none', (p: Props) => p.onRecolor],
+  ] as const;
+
+  it.each(BUTTONS)('%s acts once on Enter', async (id, spy) => {
+    const p = renderSheet();
+    screen.getByTestId(id).focus();
+    await userEvent.setup().keyboard('{Enter}');
+    expect(spy(p)).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(BUTTONS)('%s acts once on Space', async (id, spy) => {
+    const p = renderSheet();
+    screen.getByTestId(id).focus();
+    await userEvent.setup().keyboard(' ');
+    expect(spy(p)).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(BUTTONS)('%s acts once on a click with no pointer press before it', (id, spy) => {
+    const p = renderSheet();
+    act(() => screen.getByTestId(id).click());
+    expect(spy(p)).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(BUTTONS)('%s acts once for a pointer press: down, up, then its click', (id, spy) => {
+    const p = renderSheet();
+    const button = screen.getByTestId(id);
+    const touch = { pointerId: 1, pointerType: 'touch' };
+    expect(fireEvent.pointerDown(button, touch)).toBe(false); // prevented: #mobile-kbd keeps focus
+    expect(spy(p)).toHaveBeenCalledTimes(1);
+    fireEvent.pointerUp(button, touch);
+    fireEvent.click(button, { detail: 1 });
+    expect(spy(p)).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The sheet sits over the drawer, and dismissing it on pointerdown uncovers what
+// was under the finger. The browser hit-tests the rest of the tap after the
+// release, so the press's mouse events and its click land on THAT, which took
+// them as a tap of its own.
+describe('a sheet press’s own click, landing on what the press uncovered', () => {
+  afterEach(() => void fireEvent.keyDown(document));
+
+  const touch = { pointerId: 1, pointerType: 'touch' };
+  const renderOverRow = () => {
+    const under = { click: vi.fn(), mouseDown: vi.fn(), mouseUp: vi.fn() };
+    const Host = () => {
+      const [open, setOpen] = useState(true);
+      return (
+        <>
+          <button
+            data-testid="under-sheet"
+            onClick={under.click}
+            onMouseDown={under.mouseDown}
+            onMouseUp={under.mouseUp}
+          >
+            a drawer row
+          </button>
+          {open && (
+            <TabSheet
+              tab={TAB}
+              onRename={vi.fn()}
+              onRecolor={vi.fn()}
+              onCloseTab={vi.fn()}
+              onDismiss={() => setOpen(false)}
+            />
+          )}
+        </>
+      );
+    };
+    render(<Host />);
+    return under;
+  };
+
+  it.each(['sheet-scrim', 'sheet-done', 'sheet-close-tab'])(
+    '%s dismisses, and the rest of its tap reaches nothing under it',
+    (id) => {
+      const under = renderOverRow();
+      fireEvent.pointerDown(screen.getByTestId(id), touch);
+      expect(screen.queryByTestId('tab-sheet')).toBeNull();
+      const row = screen.getByTestId('under-sheet');
+      fireEvent.pointerUp(row, touch);
+      fireEvent.mouseDown(row, { detail: 1 });
+      fireEvent.mouseUp(row, { detail: 1 });
+      fireEvent.click(row, { detail: 1 });
+      expect(under.mouseDown).not.toHaveBeenCalled();
+      expect(under.mouseUp).not.toHaveBeenCalled();
+      expect(under.click).not.toHaveBeenCalled();
+    },
+  );
+
+  it('a later, separate tap on what was under it reaches it', () => {
+    const under = renderOverRow();
+    fireEvent.pointerDown(screen.getByTestId('sheet-scrim'), touch);
+    const row = screen.getByTestId('under-sheet');
+    fireEvent.pointerUp(row, touch);
+    fireEvent.pointerDown(row, { pointerId: 2, pointerType: 'touch' });
+    fireEvent.pointerUp(row, { pointerId: 2, pointerType: 'touch' });
+    fireEvent.click(row, { detail: 1 });
+    expect(under.click).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The group rows are `pressMove` controls: they act on the pointer going UP and
+// take every click that REACHES them, so the click a real press ends with must be
+// the one that does not act. It stays away only because the press marked its
+// gesture, so each pointer route below would run twice without the mark.
+describe('TabSheet group rows by every route', () => {
+  afterEach(() => void fireEvent.keyDown(document));
+
+  type Props = ReturnType<typeof renderSheet>;
+  const ROWS = [
+    ['sheet-new-group', TAB, (p: Props) => p.onNewGroup],
+    ['sheet-add-to-gaaaaa', TAB, (p: Props) => p.onAddToGroup],
+    ['sheet-remove-from-group', { ...TAB, groupId: 'gaaaaa' }, (p: Props) => p.onRemoveFromGroup],
+  ] as const;
+
+  const touch = { pointerId: 1, pointerType: 'touch', clientX: 40, clientY: 40 };
+  const mouse = { pointerId: 1, pointerType: 'mouse', clientX: 40, clientY: 40 };
+  const ROUTES: [string, (el: HTMLElement) => void | Promise<void>][] = [
+    [
+      'Enter',
+      async (el) => {
+        el.focus();
+        await userEvent.setup().keyboard('{Enter}');
+      },
+    ],
+    [
+      'Space',
+      async (el) => {
+        el.focus();
+        await userEvent.setup().keyboard(' ');
+      },
+    ],
+    ['a click with no pointer press', (el) => void act(() => el.click())],
+    [
+      'a touch press with the mouse events a browser adds',
+      (el) => {
+        fireEvent.pointerDown(el, touch);
+        fireEvent.pointerUp(el, touch);
+        fireEvent.mouseDown(el, { detail: 1 });
+        fireEvent.mouseUp(el, { detail: 1 });
+        fireEvent.click(el, { detail: 1 });
+      },
+    ],
+    [
+      'a mouse press',
+      (el) => {
+        fireEvent.pointerDown(el, mouse);
+        fireEvent.pointerUp(el, mouse);
+        fireEvent.click(el, { detail: 1 });
+      },
+    ],
+  ];
+
+  describe.each(ROWS)('%s', (id, tab, spy) => {
+    it.each(ROUTES)('acts once on %s, and dismisses once', async (_, route) => {
+      const p = renderSheet(tab);
+      await route(screen.getByTestId(id));
+      expect(spy(p)).toHaveBeenCalledTimes(1);
+      expect(p.onDismiss).toHaveBeenCalledTimes(1);
+    });
+
+    // A mouse cannot pan, so a drag released on the row still ends in a click on it.
+    it('acts on nothing for a mouse drag released on it, nor for the click that ends it', () => {
+      const p = renderSheet(tab);
+      const row = screen.getByTestId(id);
+      fireEvent.pointerDown(row, mouse);
+      fireEvent.pointerMove(row, { ...mouse, clientX: 100 });
+      fireEvent.pointerUp(row, { ...mouse, clientX: 100 });
+      fireEvent.click(row, { detail: 1 });
+      expect(spy(p)).not.toHaveBeenCalled();
+      expect(p.onDismiss).not.toHaveBeenCalled();
+    });
+  });
+});
+
+// Choosing a group row dismisses the sheet, and the dismissal uncovers the drawer
+// row that was under the finger. The rest of the tap lands on THAT.
+describe('a group row press’s own click, landing on what the dismissal uncovered', () => {
+  afterEach(() => void fireEvent.keyDown(document));
+
+  const touch = { pointerId: 1, pointerType: 'touch', clientX: 40, clientY: 40 };
+  const renderOverRow = () => {
+    const under = { click: vi.fn(), mouseDown: vi.fn(), mouseUp: vi.fn() };
+    const Host = () => {
+      const [open, setOpen] = useState(true);
+      return (
+        <>
+          <button
+            data-testid="under-sheet"
+            onClick={under.click}
+            onMouseDown={under.mouseDown}
+            onMouseUp={under.mouseUp}
+          >
+            a drawer row
+          </button>
+          {open && (
+            <TabSheet
+              tab={TAB}
+              onRename={vi.fn()}
+              onRecolor={vi.fn()}
+              groups={GROUPS}
+              onNewGroup={vi.fn()}
+              onAddToGroup={vi.fn()}
+              onCloseTab={vi.fn()}
+              onDismiss={() => setOpen(false)}
+            />
+          )}
+        </>
+      );
+    };
+    render(<Host />);
+    return under;
+  };
+
+  it.each(['sheet-new-group', 'sheet-add-to-gaaaaa'])(
+    '%s dismisses on release, and the rest of its tap reaches nothing under it',
+    (id) => {
+      const under = renderOverRow();
+      fireEvent.pointerDown(screen.getByTestId(id), touch);
+      fireEvent.pointerUp(screen.getByTestId(id), touch);
+      expect(screen.queryByTestId('tab-sheet')).toBeNull();
+      const row = screen.getByTestId('under-sheet');
+      fireEvent.mouseDown(row, { detail: 1 });
+      fireEvent.mouseUp(row, { detail: 1 });
+      fireEvent.click(row, { detail: 1 });
+      expect(under.mouseDown).not.toHaveBeenCalled();
+      expect(under.mouseUp).not.toHaveBeenCalled();
+      expect(under.click).not.toHaveBeenCalled();
+
+      // A later, separate tap is the user's own.
+      fireEvent.pointerDown(row, { pointerId: 2, pointerType: 'touch' });
+      fireEvent.pointerUp(row, { pointerId: 2, pointerType: 'touch' });
+      fireEvent.click(row, { detail: 1 });
+      expect(under.click).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  // The scrim acts as the finger lands, so a long hold puts the release, and the
+  // click behind it, far past any window measured from the press.
+  it('the scrim still swallows the click of a press held for five seconds', () => {
+    vi.useFakeTimers();
+    try {
+      const under = renderOverRow();
+      fireEvent.pointerDown(screen.getByTestId('sheet-scrim'), touch);
+      expect(screen.queryByTestId('tab-sheet')).toBeNull();
+      act(() => void vi.advanceTimersByTime(5_000));
+      const row = screen.getByTestId('under-sheet');
+      fireEvent.pointerUp(row, touch);
+      fireEvent.mouseDown(row, { detail: 1 });
+      fireEvent.mouseUp(row, { detail: 1 });
+      fireEvent.click(row, { detail: 1 });
+      expect(under.mouseDown).not.toHaveBeenCalled();
+      expect(under.mouseUp).not.toHaveBeenCalled();
+      expect(under.click).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -1,9 +1,8 @@
 // ── Kit: IconButton ───────────────────────────────────────────────────────────
 //
-// A square button holding one glyph. Sized off `--mbtn-h` — the extra-keys key
-// height, this project's touch-target reference — falling back to 30px outside
-// the surfaces that define it, so a desktop control and a thumb-driven one are
-// the same size by construction.
+// A square button holding one glyph, `--ctl-h` on each side (28px desktop, 36px
+// under the mobile class), so a desktop control and a thumb-driven one are the
+// same size by construction.
 //
 // `label` is required: an icon-only control with no accessible name is invisible
 // to a screen reader, and it doubles as the tooltip text at the call site.

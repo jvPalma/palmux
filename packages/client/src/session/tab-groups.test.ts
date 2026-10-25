@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { TabGroup, TabMeta } from '@palmux/shared';
 import type { StripItem } from './tab-groups';
-import { buildStrip, decideGroupDrop, nearestOutside, parseCollapsed } from './tab-groups';
+import {
+  buildStrip,
+  decideGroupDrop,
+  nearestOutside,
+  outsideForeignGroup,
+  parseCollapsed,
+} from './tab-groups';
 
 const t = (id: string, groupId?: string): TabMeta => ({
   id,
@@ -154,5 +160,40 @@ describe('decideGroupDrop', () => {
   it('a two-member group: dragging one out to a clearly-outside slot leaves', () => {
     const tabs = [t('0', 'gA'), t('1', 'gA'), t('2')];
     expect(decideGroupDrop(['1', '2', '0'], gidFn(tabs), '0')).toEqual({ leave: 'gA' });
+  });
+
+  it('a boundary drop never joins, even between two members of another group', () => {
+    const tabs = [t('0', 'gA'), t('x'), t('1', 'gA')];
+    expect(decideGroupDrop(['0', 'x', '1'], gidFn(tabs), 'x', undefined, true)).toEqual({});
+  });
+
+  it('a boundary drop still leaves when it detaches a member from its own group', () => {
+    const tabs = [t('0', 'gA'), t('1', 'gA'), t('2')];
+    expect(decideGroupDrop(['1', '2', '0'], gidFn(tabs), '0', undefined, true)).toEqual({
+      leave: 'gA',
+    });
+  });
+});
+
+describe('outsideForeignGroup', () => {
+  // rest = [a, g1, g2, g3, b]: insertion index k sits before rest[k].
+  const tabs = [t('a'), t('g1', 'gA'), t('g2', 'gA'), t('g3', 'gA'), t('b')];
+  const rest = tabs.map((x) => x.id);
+
+  it("moves a point between two of a foreign group's members to its nearer edge", () => {
+    expect(outsideForeignGroup(rest, 2, gidFn(tabs), undefined)).toBe(1); // g1|g2 → before g1
+    expect(outsideForeignGroup(rest, 3, gidFn(tabs), undefined)).toBe(4); // g2|g3 → after g3
+    // g1|g2 of a two-member group is a tie, and a tie goes before the group.
+    const two = [t('a'), t('g1', 'gA'), t('g2', 'gA'), t('b')];
+    const twoIds = two.map((x) => x.id);
+    expect(outsideForeignGroup(twoIds, 2, gidFn(two), 'gB')).toBe(1);
+  });
+
+  it('leaves a point inside the OWN group, at an edge, or outside any group alone', () => {
+    expect(outsideForeignGroup(rest, 2, gidFn(tabs), 'gA')).toBe(2);
+    expect(outsideForeignGroup(rest, 1, gidFn(tabs), undefined)).toBe(1); // a|g1
+    expect(outsideForeignGroup(rest, 4, gidFn(tabs), undefined)).toBe(4); // g3|b
+    expect(outsideForeignGroup(rest, 0, gidFn(tabs), undefined)).toBe(0);
+    expect(outsideForeignGroup(rest, 5, gidFn(tabs), undefined)).toBe(5);
   });
 });

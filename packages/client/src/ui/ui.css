@@ -48,9 +48,9 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: var(--sp-2);
   border: 1px solid var(--t-surface);
-  border-radius: 7px;
+  border-radius: var(--r-2);
   background: var(--t-mantle);
   color: var(--t-text);
   font: inherit;
@@ -58,6 +58,9 @@
   line-height: 1.1;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
+  /* This list is the RELEASE half of the press: a transition runs with the
+     duration of the state it lands in, so the :active rule below snaps the
+     pressed colour in and this one eases it back out. */
   transition:
     background var(--mo-micro) ease,
     border-color var(--mo-micro) ease,
@@ -65,13 +68,13 @@
 }
 
 .ui-btn-md {
-  min-height: var(--mbtn-h, 30px);
+  min-height: var(--ctl-h);
   padding: 0 12px;
   font-size: 12px;
 }
 
 .ui-btn-sm {
-  min-height: calc(var(--mbtn-h, 30px) - 6px);
+  min-height: calc(var(--ctl-h) - var(--sp-1));
   padding: 0 8px;
   font-size: 11px;
 }
@@ -81,7 +84,8 @@
 .ui-input:focus-visible,
 .ui-switch:focus-visible,
 .ui-seg-item:focus-visible,
-.ui-collapsible-trigger:focus-visible {
+.ui-collapsible-trigger:focus-visible,
+.ui-select-trigger:focus-visible {
   outline: 2px solid var(--t-accent);
   outline-offset: 2px;
 }
@@ -104,6 +108,11 @@
   border-color: color-mix(in srgb, var(--t-accent) 86%, var(--t-text));
 }
 
+.ui-btn-primary:not(:disabled):active {
+  background: color-mix(in srgb, var(--t-accent) 72%, var(--t-text));
+  border-color: color-mix(in srgb, var(--t-accent) 72%, var(--t-text));
+}
+
 .ui-btn-ghost {
   background: transparent;
   border-color: var(--t-surface);
@@ -112,6 +121,11 @@
 
 .ui-btn-ghost:not(:disabled):hover {
   background: var(--t-surface);
+  color: var(--t-text);
+}
+
+.ui-btn-ghost:not(:disabled):active {
+  background: color-mix(in srgb, var(--t-surface) 78%, var(--t-text));
   color: var(--t-text);
 }
 
@@ -125,8 +139,19 @@
   background: var(--ui-danger-tint);
 }
 
+.ui-btn-danger:not(:disabled):active {
+  background: color-mix(in srgb, var(--t-accent-alt) 32%, transparent);
+}
+
+/* Press. The variant :active rules above carry the pressed COLOUR, and it is the
+   only press cue on every motion setting. There is deliberately no transform: a
+   scale shrinks the hit target under a finger that is still down, and the
+   move-tolerant presses (panes/press.ts) cancel on pointerleave, so a press near
+   an edge left the box and cancelled itself. A background change is also what
+   the owner chose for the extra-keys bar. Zero duration lands the colour on the
+   frame the finger does. */
 .ui-btn:not(:disabled):active {
-  transform: translateY(1px);
+  transition-duration: var(--mo-0);
 }
 
 /* ── IconButton ───────────────────────────────────────────────────────────── */
@@ -135,11 +160,11 @@
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  width: var(--mbtn-h, 30px);
-  height: var(--mbtn-h, 30px);
+  width: var(--ctl-h);
+  height: var(--ctl-h);
   padding: 0;
   border: 1px solid var(--t-surface);
-  border-radius: 7px;
+  border-radius: var(--r-2);
   background: transparent;
   color: var(--t-subtext);
   font: inherit;
@@ -154,8 +179,8 @@
 }
 
 .ui-icon-btn-sm {
-  width: calc(var(--mbtn-h, 30px) - 6px);
-  height: calc(var(--mbtn-h, 30px) - 6px);
+  width: calc(var(--ctl-h) - var(--sp-1));
+  height: calc(var(--ctl-h) - var(--sp-1));
   font-size: 11px;
 }
 
@@ -185,14 +210,33 @@
   color: var(--ui-danger);
 }
 
+/* Press: same contract as .ui-btn — colour only, no transform. All hover rules
+   sit above, so an :active rule of equal specificity wins while the pointer is
+   still over the button. */
+.ui-icon-btn:not(:disabled):active {
+  background: color-mix(in srgb, var(--t-surface) 78%, var(--t-text));
+  color: var(--t-text);
+  transition-duration: var(--mo-0);
+}
+
+.ui-icon-btn-primary:not(:disabled):active {
+  background: color-mix(in srgb, var(--t-accent) 72%, var(--t-text));
+  color: var(--t-accent-ink);
+}
+
+.ui-icon-btn-danger:not(:disabled):active {
+  background: color-mix(in srgb, var(--t-accent-alt) 32%, transparent);
+  color: var(--ui-danger);
+}
+
 /* ── Input ────────────────────────────────────────────────────────────────────
    Recessed: --t-base sits below the panel it lives on. */
 .ui-input {
-  min-height: var(--mbtn-h, 30px);
+  min-height: var(--ctl-h);
   min-width: 0;
-  padding: 3px 8px;
+  padding: var(--sp-1) var(--sp-2);
   border: 1px solid var(--t-surface);
-  border-radius: 7px;
+  border-radius: var(--r-2);
   background: var(--t-base);
   color: var(--t-text);
   font: inherit;
@@ -204,9 +248,13 @@
   color: var(--t-subtext);
 }
 
+/* No `outline` here. This rule used to end in `outline: none`, which has the same
+   specificity as the `:focus-visible` ring above and comes after it, so it erased
+   the keyboard ring and left only the border change. An editable field takes the
+   ring on any focus (the browser matches :focus-visible for a caret), so the
+   border is a second cue, not a replacement. */
 .ui-input:focus {
   border-color: var(--t-accent);
-  outline: none;
 }
 
 .ui-input:disabled {
@@ -246,7 +294,7 @@
 .ui-switch-thumb {
   display: block;
   width: 18px;
-  height: 18px;
+  height: 18px; /* scale-ok: the 24px switch track less a 3px inset per side */
   border-radius: 50%;
   background: var(--t-base);
   transform: translateX(3px);
@@ -269,14 +317,19 @@
   align-items: stretch;
   gap: 2px;
   padding: 2px;
+  /* The OUTER box is the control height: the wrapper's 2px of padding and 1px of
+     border on each side are why an item is 6px short of it (below). A floor, not a
+     `height`, so a consumer that sizes its items up (the drawer's view switcher)
+     grows the wrapper with them instead of overflowing it. */
+  min-height: var(--ctl-h);
   border: 1px solid var(--t-surface);
-  border-radius: 8px;
+  border-radius: var(--r-2);
   background: var(--t-base);
 }
 
 .ui-seg-item {
-  min-height: calc(var(--mbtn-h, 30px) - 6px);
-  padding: 0 10px;
+  min-height: calc(var(--ctl-h) - 6px);
+  padding: 0 var(--sp-3);
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -314,18 +367,25 @@
 .ui-collapsible-trigger {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-2);
   width: 100%;
-  min-height: var(--mbtn-h, 30px);
+  min-height: var(--ctl-h);
   padding: 0 2px;
   border: 0;
   background: transparent;
-  color: var(--t-text);
+  /* The section title: a small secondary-colour label, the level below a panel
+     title. Every Collapsible is a section, so this one rule is the heading style
+     of Settings, the New-tab chooser, the Explorer and Dictation — a consumer that
+     restates size, weight, tracking or casing outranks it and splits the family
+     (ui.test.tsx resolves the cascade in the consumers to keep that from coming
+     back). Casing and tracking are spelled out rather than left to the button's
+     defaults, so a parent that is uppercase cannot leak in. */
+  color: var(--t-subtext);
   font: inherit;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font-size: var(--fs-1);
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
   text-align: left;
   cursor: pointer;
   transition: color var(--mo-micro) ease;
@@ -335,10 +395,12 @@
   color: var(--t-accent);
 }
 
+/* The box is the icon's 12px, not narrower: the open rule below rotates the span
+   about its CENTRE, and a box narrower than its glyph swings it off-axis. */
 .ui-collapsible-chevron {
   display: inline-block;
   flex: 0 0 auto;
-  width: 10px;
+  width: 12px;
   color: var(--t-subtext);
   transition: transform var(--mo-micro) ease;
 }
@@ -425,7 +487,7 @@
   transform: translate(-50%, -50%);
   padding: 16px;
   border: 1px solid var(--t-surface);
-  border-radius: 12px;
+  border-radius: var(--r-3);
   background: var(--t-mantle);
   color: var(--t-text);
   font-size: 13px;
@@ -438,8 +500,8 @@
 }
 
 .ui-dialog-title {
-  margin: 0 0 6px;
-  font-size: 14px;
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-4);
   font-weight: 700;
 }
 
@@ -516,14 +578,12 @@
   .ui-collapsible-inner,
   .ui-tooltip,
   .ui-dialog-overlay,
-  .ui-dialog-content {
+  .ui-dialog-content,
+  .ui-select-trigger,
+  .ui-select-content {
     transition-duration: 0.001ms !important;
     transition-delay: 0.001ms !important;
     animation-duration: 0.001ms !important;
-  }
-
-  .ui-btn:not(:disabled):active {
-    transform: none;
   }
 }
 
@@ -539,7 +599,7 @@
   margin: 8px;
   padding: 12px;
   border: 1px solid var(--t-surface);
-  border-radius: 8px;
+  border-radius: var(--r-3);
   background: var(--t-base);
 }
 
@@ -559,26 +619,29 @@
 }
 
 /* ── ContextMenu ───────────────────────────────────────────────────────────────
-   Right-click on a pointer, long-press on touch. The surface tier for the
-   entrance, and `--radix-context-menu-content-transform-origin` so it grows out
-   of the corner the pointer opened it from rather than the middle of nowhere. */
+   Right-click on a pointer, long-press on touch. The micro tier for the
+   entrance — a menu answers a click, it is not a surface arriving — and
+   `--radix-context-menu-content-transform-origin` so it grows out of the corner
+   the pointer opened it from rather than the middle of nowhere. */
 
 .ui-menu {
   min-width: 180px;
   max-width: 260px;
   padding: 4px;
   border: 1px solid var(--t-surface);
-  border-radius: 8px;
+  border-radius: var(--r-3);
   background: var(--t-mantle);
   box-shadow: 0 8px 24px color-mix(in srgb, var(--t-base) 70%, transparent);
   z-index: 90;
-  animation: ui-menu-in var(--mo-surface) var(--mo-ease) both;
+  animation: ui-menu-in var(--mo-micro) var(--mo-ease) both;
   transform-origin: var(--radix-context-menu-content-transform-origin);
 }
 
+/* 0.97, the one scale for popovers and menus: `.tab-menu` enters from it too, so
+   every menu in the app opens the same way. */
 @keyframes ui-menu-in {
   from {
-    transform: scale(0.96);
+    transform: scale(0.97);
     opacity: 0;
   }
 }
@@ -587,8 +650,8 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 8px;
-  border-radius: 5px;
+  padding: var(--sp-2);
+  border-radius: var(--r-2);
   color: var(--t-text);
   font-size: 12px;
   line-height: 1.3;
@@ -634,6 +697,116 @@
 
 .ui-menu-sep {
   height: 1px;
-  margin: 4px 6px;
+  margin: var(--sp-1) var(--sp-2);
   background: var(--t-surface);
+}
+
+/* ── DropdownMenu ──────────────────────────────────────────────────────────────
+   The same box as the context menu — it is `.ui-menu` — with two differences. A
+   dropdown grows out of its trigger, and Radix publishes that corner under its
+   own variable, so `.ui-menu`'s context-menu origin would resolve to nothing
+   here and the menu would scale from its centre. Declared after `.ui-menu` at
+   equal specificity, so it wins only on the element carrying both. */
+.ui-dropdown {
+  transform-origin: var(--radix-dropdown-menu-content-transform-origin);
+}
+
+/* The trigger sits in a row of --ctl-h pills (the topbar) and takes their
+   radius, so the button does not read as a different family from what is beside
+   it. An icon button only: another kind of trigger keeps its own size. While the
+   menu is open the trigger holds the hover fill, since the pointer is now on
+   the menu and the button would otherwise let go of it. */
+.ui-icon-btn.ui-menu-trigger {
+  width: var(--ctl-h);
+  height: var(--ctl-h);
+  border-radius: var(--r-2);
+}
+.ui-icon-btn.ui-menu-trigger[data-state='open'] {
+  background: var(--t-surface);
+  color: var(--t-text);
+}
+
+/* ── Select ────────────────────────────────────────────────────────────────────
+   The trigger is a control-height box on the recessed level, like an Input, and
+   it fills the column it is put in. The popup is `.ui-menu` — the menu surface,
+   with its micro-tier entrance — so everything below only fits it to a list. */
+.ui-select-trigger {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  width: 100%;
+  min-width: 0;
+  height: var(--ctl-h);
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--t-surface);
+  border-radius: var(--r-2);
+  background: var(--t-base);
+  color: var(--t-text);
+  font: inherit;
+  font-size: var(--fs-2);
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: border-color var(--mo-micro) ease;
+}
+
+.ui-select-trigger:hover,
+.ui-select-trigger[data-state='open'] {
+  border-color: var(--t-accent);
+}
+
+/* One line, ellipsis, never a wrap: a long value (`Cobalt Next Minimal` in a 132px
+   column on a phone) ends in an ellipsis and the full text is the `title`. Radix
+   renders the value in a span of its own and drops our className, so the hook is
+   the data attribute the component puts on it. `min-width: 0` is what lets a flex
+   item shrink below its text. */
+.ui-select-trigger [data-ui-select-value] {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ui-select-chevron {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--t-subtext);
+}
+
+/* Declared after `.ui-menu` at equal specificity, so each of these wins only on
+   the element that carries both classes — the same arrangement as `.ui-dropdown`.
+   The origin is Radix's select variable (the context menu's would resolve to
+   nothing here and the popup would scale from its middle). The popup is at least
+   as wide as its trigger, and the menu's 260px ceiling goes: a full-width trigger
+   in the dock is wider than that. Above the Dialog (91), since a Select can sit
+   in one. */
+.ui-select-content {
+  z-index: 95;
+  width: var(--radix-select-trigger-width);
+  max-width: none;
+  max-height: min(60vh, var(--radix-select-content-available-height, 60vh));
+  transform-origin: var(--radix-select-content-transform-origin);
+}
+
+/* A row is a tap target on a phone, so it takes the control height there. */
+.ui-select-item {
+  min-height: var(--ctl-h);
+}
+
+.ui-select-check {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--t-accent);
+}
+
+/* Radix hides the viewport's scrollbar, so these are the only sign that a long
+   list (the fonts) goes on. */
+.ui-select-scroll {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--sp-4);
+  color: var(--t-subtext);
+  cursor: default;
 }

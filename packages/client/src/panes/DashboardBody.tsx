@@ -27,6 +27,7 @@ import { normalizeUrl } from './normalize-url';
 import { pressKbdMove, pressMove } from './press';
 import { fetchTmuxSessions, filterSessions, type TmuxListing } from './tmux-sessions';
 import { Button, Collapsible, IconButton, Input } from '../ui';
+import { Icon } from '../ui/icons';
 import './dashboard.css';
 
 export interface QuickLink {
@@ -228,28 +229,32 @@ export const DashboardBody = ({
             autoFocus={autoFocusPrimary}
             {...pressKbdMove(() => onCreate({ kind: 'terminal' }))}
           >
-            ❯ Terminal
+            <Icon name="terminal" size={14} />
+            Terminal
           </Button>
           <Button
             className="dash-tile-recessed"
             data-testid="dash-new-editor"
             {...pressKbdMove(() => onCreate({ kind: 'editor' }))}
           >
-            ✎ Editor
+            <Icon name="pencil" size={14} />
+            Editor
           </Button>
           <Button
             className="dash-tile-recessed"
             data-testid="dash-open-url"
             {...pressKbdMove(() => setUrlOpen((v) => !v))}
           >
-            🌐 URL…
+            <Icon name="globe" size={14} />
+            URL…
           </Button>
           <Button
             className="dash-tile-recessed"
             data-testid="dash-open-markdown"
             {...pressKbdMove(() => setMdOpen((v) => !v))}
           >
-            📖 Markdown…
+            <Icon name="book" size={14} />
+            Markdown…
           </Button>
         </div>
 
@@ -333,7 +338,7 @@ export const DashboardBody = ({
                 {...pressKbdMove(() => openTmux(null))}
               >
                 <span className="dash-srow-icon" aria-hidden="true">
-                  ＋
+                  <Icon name="plus" size={14} />
                 </span>
                 <span className="dash-srow-label">New tmux session</span>
               </Button>
@@ -388,7 +393,7 @@ export const DashboardBody = ({
                 )}
               >
                 <span className="dash-srow-icon dash-srow-icon-live" aria-hidden="true">
-                  ◉
+                  <Icon name="record" size={14} />
                 </span>
                 <span className="dash-srow-label">
                   {p.port}
@@ -418,7 +423,7 @@ export const DashboardBody = ({
                 {...pressKbdMove(() => onCreate({ kind: 'web', url: app.url, name: app.name }))}
               >
                 <span className="dash-srow-icon" aria-hidden="true">
-                  {app.icon ?? '🔗'}
+                  {app.icon ?? <Icon name="link" size={14} />}
                 </span>
                 <span className="dash-srow-label">{app.name}</span>
               </Button>
@@ -443,7 +448,7 @@ export const DashboardBody = ({
                 {...pressKbdMove(() => onCreate({ kind: 'web', url: link.url, name: link.name }))}
               >
                 <span className="dash-srow-icon" aria-hidden="true">
-                  🔗
+                  <Icon name="link" size={14} />
                 </span>
                 <span className="dash-srow-label">{link.name}</span>
               </Button>
@@ -453,7 +458,7 @@ export const DashboardBody = ({
                 data-testid={`dash-link-remove-${link.name}`}
                 {...pressMove(() => removeLink(i))}
               >
-                ✕
+                <Icon name="close" size={14} />
               </IconButton>
             </div>
           ))}

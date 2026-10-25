@@ -18,16 +18,20 @@
 
 import type { ReactNode } from 'react';
 import { ErrorBoundary } from '../ui';
+import { Icon } from '../ui/icons';
 import './dock.css';
 
 /** The surfaces the dock can host. Persisted per device, so it is a stable set. */
 export type DockView = 'settings' | 'newtab' | 'files' | 'dictation';
 
-// Inline SVG, not emoji. The rail is the app's most permanent chrome, and the
-// emoji set renders as whatever monochrome fallback the platform happens to have
-// — measured here as four glyphs at three different weights, with the microphone
-// nearly invisible against the rail. SVG inherits currentColor, so the active and
-// hover states come free from the button's own colour.
+// SVG, not emoji. The rail is the app's most permanent chrome, and the emoji set
+// renders as whatever monochrome fallback the platform happens to have — measured
+// here as four glyphs at three different weights, with the microphone nearly
+// invisible against the rail. The glyphs come from the shared registry
+// (`ui/icons.tsx`), which inherits currentColor, so the active and hover states
+// come free from the button's own colour.
+const RAIL_ICON_PX = 15;
+
 /** Icon keys: the dock's four views plus `sessions`, which only the mobile
  *  drawer shows. One shared map so the two surfaces cannot drift — the drawer
  *  was rendering the `+` glyph for its Sessions tab because this map had no
@@ -35,115 +39,29 @@ export type DockView = 'settings' | 'newtab' | 'files' | 'dictation';
 export type IconName = DockView | 'sessions' | 'upload' | 'download';
 
 export const ICONS: Record<IconName, ReactNode> = {
-  sessions: (
-    <svg
-      viewBox="0 0 16 16"
-      width="15"
-      height="15"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      aria-hidden="true"
-    >
-      <path d="M2.6 4.2h10.8M2.6 8h10.8M2.6 11.8h10.8" strokeLinecap="round" />
-    </svg>
-  ),
-  settings: (
-    <svg
-      viewBox="0 0 16 16"
-      width="15"
-      height="15"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      aria-hidden="true"
-    >
-      <circle cx="8" cy="8" r="2.4" />
-      <path
-        d="M8 1.4v1.7M8 12.9v1.7M1.4 8h1.7M12.9 8h1.7M3.3 3.3l1.2 1.2M11.5 11.5l1.2 1.2M12.7 3.3l-1.2 1.2M4.5 11.5l-1.2 1.2"
-        strokeLinecap="round"
-      />
-    </svg>
-  ),
-  newtab: (
-    <svg
-      viewBox="0 0 16 16"
-      width="15"
-      height="15"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      aria-hidden="true"
-    >
-      <path d="M8 3.2v9.6M3.2 8h9.6" strokeLinecap="round" />
-    </svg>
-  ),
-  files: (
-    <svg
-      viewBox="0 0 16 16"
-      width="15"
-      height="15"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      aria-hidden="true"
-    >
-      <path
-        d="M1.9 12.6V3.9c0-.4.3-.7.7-.7h3.2l1.4 1.7h6c.4 0 .7.3.7.7v7c0 .4-.3.7-.7.7H2.6a.7.7 0 0 1-.7-.7Z"
-        strokeLinejoin="round"
-      />
-    </svg>
-  ),
-  dictation: (
-    <svg
-      viewBox="0 0 16 16"
-      width="15"
-      height="15"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      aria-hidden="true"
-    >
-      <rect x="6" y="1.7" width="4" height="7.2" rx="2" />
-      <path d="M3.6 7.4a4.4 4.4 0 0 0 8.8 0M8 11.8v2.5" strokeLinecap="round" />
-    </svg>
-  ),
-  upload: (
-    <svg
-      viewBox="0 0 16 16"
-      width="15"
-      height="15"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      aria-hidden="true"
-    >
-      <path d="M8 10.6V2.4M4.9 5.5 8 2.4l3.1 3.1" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M2.6 11v1.9c0 .4.3.7.7.7h9.4c.4 0 .7-.3.7-.7V11" strokeLinecap="round" />
-    </svg>
-  ),
-  download: (
-    <svg
-      viewBox="0 0 16 16"
-      width="15"
-      height="15"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      aria-hidden="true"
-    >
-      <path d="M8 2.4v8.2M4.9 7.5 8 10.6l3.1-3.1" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M2.6 11v1.9c0 .4.3.7.7.7h9.4c.4 0 .7-.3.7-.7V11" strokeLinecap="round" />
-    </svg>
-  ),
+  sessions: <Icon name="sessions" size={RAIL_ICON_PX} />,
+  settings: <Icon name="settings" size={RAIL_ICON_PX} />,
+  newtab: <Icon name="plus" size={RAIL_ICON_PX} />,
+  files: <Icon name="folder" size={RAIL_ICON_PX} />,
+  dictation: <Icon name="mic" size={RAIL_ICON_PX} />,
+  upload: <Icon name="upload" size={RAIL_ICON_PX} />,
+  download: <Icon name="download" size={RAIL_ICON_PX} />,
 };
 
+// Rail order is frequency of use: what you open mid-session first, Settings last
+// and pinned to the bottom edge (`.dock-rail-pinned`), where the thumb-and-eye
+// habit of "preferences live at the bottom" already points.
 export const DOCK_VIEWS: { id: DockView; label: string }[] = [
-  { id: 'settings', label: 'Settings' },
   { id: 'newtab', label: 'New tab' },
   { id: 'files', label: 'Explorer' },
   { id: 'dictation', label: 'Dictation' },
+  { id: 'settings', label: 'Settings' },
 ];
+
+/** The one view that leaves the flow and sits at the rail's bottom edge. */
+const PINNED_VIEW: DockView = 'settings';
+const FLOW_VIEWS = DOCK_VIEWS.filter((v) => v.id !== PINNED_VIEW);
+const PINNED_VIEWS = DOCK_VIEWS.filter((v) => v.id === PINNED_VIEW);
 
 /**
  * How long to hold the PTY resize after a dock toggle. Slightly longer than the
@@ -216,6 +134,20 @@ export function DockPanel({
   // terminal zero pixels in that state, which is what `sidebarRail: 'hidden'` is for.
   if (!view && !rail) return null;
 
+  const railButton = (v: { id: DockView; label: string }) => (
+    <button
+      key={v.id}
+      className={`dock-rail-btn${v.id === view ? ' on' : ''}${v.id === PINNED_VIEW ? ' dock-rail-pinned' : ''}`}
+      title={v.label}
+      aria-label={v.label}
+      aria-pressed={v.id === view}
+      data-testid={`dock-rail-${v.id}`}
+      onClick={() => onView(v.id === view ? null : v.id)}
+    >
+      {ICONS[v.id]}
+    </button>
+  );
+
   return (
     <>
       {view && (
@@ -232,7 +164,7 @@ export function DockPanel({
                 data-testid="dock-close"
                 onClick={() => onView(null)}
               >
-                ✕
+                <Icon name="close" size={14} />
               </button>
             </div>
             <div className="dock-body" data-testid="dock-body">
@@ -247,19 +179,7 @@ export function DockPanel({
       )}
       {rail && (
         <nav className="dock-rail" data-testid="dock-rail" aria-label="Panels">
-          {DOCK_VIEWS.map((v) => (
-            <button
-              key={v.id}
-              className={v.id === view ? 'dock-rail-btn on' : 'dock-rail-btn'}
-              title={v.label}
-              aria-label={v.label}
-              aria-pressed={v.id === view}
-              data-testid={`dock-rail-${v.id}`}
-              onClick={() => onView(v.id === view ? null : v.id)}
-            >
-              {ICONS[v.id]}
-            </button>
-          ))}
+          {FLOW_VIEWS.map(railButton)}
           {actions && actions.length > 0 && (
             <>
               <span className="dock-rail-sep" aria-hidden="true" />
@@ -277,6 +197,7 @@ export function DockPanel({
               ))}
             </>
           )}
+          {PINNED_VIEWS.map(railButton)}
         </nav>
       )}
     </>

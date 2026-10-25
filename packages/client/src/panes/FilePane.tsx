@@ -16,6 +16,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { isImageFile, type TabMeta } from '@palmux/shared';
 import { IconButton, Segmented } from '../ui';
+import { Icon } from '../ui/icons';
 import { EditorPane } from './EditorPane';
 import { MarkdownPane } from './MarkdownPane';
 import './files.css';
@@ -104,7 +105,19 @@ export const FilePane = ({
             data-testid="file-pane-save-state"
             title={saveError ?? undefined}
           >
-            {saveError ? `⚠ ${saveError}` : dirty ? '● unsaved' : '✓ saved'}
+            {saveError ? (
+              <>
+                <Icon name="warning" size={12} /> {saveError}
+              </>
+            ) : dirty ? (
+              <>
+                <Icon name="dot" size={12} /> unsaved
+              </>
+            ) : (
+              <>
+                <Icon name="check" size={12} /> saved
+              </>
+            )}
           </span>
         )}
         {!image && (
@@ -127,7 +140,7 @@ export const FilePane = ({
             data-testid="file-overlay-close"
             onClick={onClose}
           >
-            ✕
+            <Icon name="close" size={14} />
           </IconButton>
         )}
       </div>
@@ -140,7 +153,7 @@ export const FilePane = ({
               // against an old server is a REAL deployment state (the route 404s
               // while the pane renders). Name it instead of an empty box.
               <div className="fp-image-error" data-testid="file-pane-image-error" role="alert">
-                ⚠ Could not load this image — the server may need a restart.
+                <Icon name="warning" /> Could not load this image — the server may need a restart.
               </div>
             ) : (
               <img

@@ -205,3 +205,75 @@ describe('a paste the browser does not call a paste', () => {
     expect(ev.defaultPrevented).toBe(false); // the textarea still gets a chance
   });
 });
+
+describe('Samsung Keyboard re-including committed digits', () => {
+  // Captured over CDP from a Galaxy S26 Ultra (Samsung Keyboard, 2026-10-24).
+  // Digits and punctuation commit at once via insertText; when a letter or a
+  // second digit follows, the keyboard reopens a composition that re-includes
+  // the trailing DIGIT RUN it believes is in the field — and it opens that
+  // composition with an EMPTY update first. Each step below is one real event.
+  type Step = ['text', string] | ['start'] | ['update', string] | ['end', string];
+  const play = (ta: HTMLTextAreaElement, steps: Step[]) => {
+    for (const [kind, data] of steps) {
+      if (kind === 'text') {
+        const ev = new InputEvent('beforeinput', {
+          inputType: 'insertText',
+          bubbles: true,
+          cancelable: true,
+        });
+        Object.defineProperty(ev, 'data', { value: data });
+        fireEvent(ta, ev);
+        continue;
+      }
+      const type = {
+        start: 'compositionstart',
+        update: 'compositionupdate',
+        end: 'compositionend',
+      }[kind];
+      const ev = new Event(type, { bubbles: true });
+      Object.defineProperty(ev, 'data', { value: data ?? '' });
+      ta.dispatchEvent(ev);
+    }
+  };
+  const typed = (steps: Step[]) => {
+    const { send, ta } = setup();
+    play(ta, steps);
+    return send.mock.calls.map((c) => c[0]).join('');
+  };
+
+  it('"12" — the empty opening update must not forget the committed "1"', () => {
+    // Was "112".
+    expect(
+      typed([['text', '1'], ['start'], ['update', ''], ['start'], ['update', '12'], ['end', '12']]),
+    ).toBe('12');
+  });
+
+  it('"12:00" — only the trailing digit run is re-included, not the ":"', () => {
+    // Was "12:000".
+    expect(
+      typed([
+        ['text', '1'],
+        ['text', '2'],
+        ['text', ':'],
+        ['text', '0'],
+        ['start'],
+        ['start'],
+        ['update', '00'],
+        ['end', '00'],
+      ]),
+    ).toBe('12:00');
+  });
+
+  it('"[1m" — a bracket before the digit does not defeat the match', () => {
+    // Was "[11m".
+    expect(
+      typed([['text', '['], ['text', '1'], ['start'], ['start'], ['update', '1m'], ['end', '1m']]),
+    ).toBe('[1m');
+  });
+
+  it('a fresh word after a space is sent whole', () => {
+    expect(typed([['text', '5'], ['text', ' '], ['start'], ['update', 'ab'], ['end', 'ab']])).toBe(
+      '5 ab',
+    );
+  });
+});

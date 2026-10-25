@@ -11,48 +11,39 @@
 // tokens.
 
 import type { ReactNode } from 'react';
+import { IconFrame, ICON_NAMES, namedIcon } from '../ui/icons';
 
-// Shared SVG wrapper — inherits color via currentColor; sized by CSS (`.ek-key svg`).
-const Icon = ({ children, w = 2 }: { children: ReactNode; w?: number }): ReactNode => (
-  <svg
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth={w}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    aria-hidden="true"
-    focusable="false"
-  >
-    {children}
-  </svg>
-);
+// The SVG frame is the app-wide one (`ui/icons.tsx`) — inherits color via
+// currentColor, sized by CSS here (`.ek-key svg`). One stroke weight for every
+// face: the symbols used to be drawn at 2.6 to read "at a glance", and on a real
+// phone that made `-` `~` `/` the heaviest marks on the bar, louder than the
+// labels beside them.
 
 // A line-plus-chevron arrow; `d` is the shaft, `head` the arrowhead path.
 const ARROWS: Record<string, ReactNode> = {
   ARROWLEFT: (
-    <Icon>
+    <IconFrame>
       <path d="M20 12 H6" />
       <path d="M11 7 L6 12 L11 17" />
-    </Icon>
+    </IconFrame>
   ),
   ARROWRIGHT: (
-    <Icon>
+    <IconFrame>
       <path d="M4 12 H18" />
       <path d="M13 7 L18 12 L13 17" />
-    </Icon>
+    </IconFrame>
   ),
   ARROWUP: (
-    <Icon>
+    <IconFrame>
       <path d="M12 20 V6" />
       <path d="M7 11 L12 6 L17 11" />
-    </Icon>
+    </IconFrame>
   ),
   ARROWDOWN: (
-    <Icon>
+    <IconFrame>
       <path d="M12 4 V18" />
       <path d="M7 13 L12 18 L17 13" />
-    </Icon>
+    </IconFrame>
   ),
 };
 
@@ -71,27 +62,26 @@ const ARROW_ALIASES: Record<string, string> = {
 const FACES: Record<string, ReactNode> = {
   // Tab: an arrow into a bar (⇥).
   TAB: (
-    <Icon>
-      <path d="M3 12 H15" />
-      <path d="M11 8 L15 12 L11 16" />
-      <path d="M19 6 V18" />
-    </Icon>
+    <IconFrame>
+      <path d="M4 12 H15" />
+      <path d="M11.5 8.5 L15 12 L11.5 15.5" />
+      <path d="M19 7 V17" />
+    </IconFrame>
   ),
-  // Low-contrast symbols, drawn bold so they're legible at a glance.
   '-': (
-    <Icon w={2.6}>
-      <path d="M5 12 H19" />
-    </Icon>
+    <IconFrame>
+      <path d="M7 12 H17" />
+    </IconFrame>
   ),
   '/': (
-    <Icon w={2.6}>
-      <path d="M17 5 L7 19" />
-    </Icon>
+    <IconFrame>
+      <path d="M15 5 L9 19" />
+    </IconFrame>
   ),
   '~': (
-    <Icon w={2.6}>
-      <path d="M4 14 C6.5 9.5 9 9.5 12 12 C15 14.5 17.5 14.5 20 10" />
-    </Icon>
+    <IconFrame>
+      <path d="M5 13.5 C7 10 9.5 10 12 12 C14.5 14 17 14 19 10.5" />
+    </IconFrame>
   ),
 };
 
@@ -106,3 +96,13 @@ export function keyFace(id: string): ReactNode | null {
   if (arrow) return ARROWS[arrow];
   return FACES[up] ?? FACES[id] ?? null;
 }
+
+// Named icons a config can ask for with `"icon": "<name>"` — for macro and
+// action keys, whose text label would be a chord nobody can read. The registry is
+// the shared one in `ui/icons.tsx`, so every name there works here too, and each
+// also works as a corner hint (a popup's `icon`, an action's glyph).
+
+/** The names `"icon"` accepts in extra-keys.json. */
+export const KEY_ICON_NAMES = ICON_NAMES;
+
+export { namedIcon };

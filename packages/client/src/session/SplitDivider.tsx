@@ -6,6 +6,7 @@
 
 import { useCallback, useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react';
 import { clampRatio, type Orientation } from './useSplit';
+import { Icon } from '../ui/icons';
 
 /**
  * Two taps within this window, neither of which moved, swap the panes. Not the
@@ -179,7 +180,7 @@ export const SplitDivider = ({
             onRotate();
           }}
         >
-          {orientation === 'row' ? '⬍' : '⬌'}
+          <Icon name={orientation === 'row' ? 'rotate-row' : 'rotate-col'} size={12} />
         </button>
       )}
     </div>

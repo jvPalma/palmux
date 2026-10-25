@@ -11,6 +11,7 @@ import type { TabKind, TabMeta, WebAppLink } from '@palmux/shared';
 import { TerminalPane, type MobileGestures } from '../terminal/TerminalPane';
 import { PaneHost } from '../panes/PaneHost';
 import { ErrorBoundary } from '../ui/ErrorBoundary';
+import { Icon } from '../ui/icons';
 import { SplitDivider } from './SplitDivider';
 import { SplitDropZones } from './SplitDropZones';
 import { SlotDropZones } from './SlotDropZones';
@@ -262,7 +263,7 @@ export const SplitView = ({
             data-testid={`slot-eject-${s.slot}`}
             onClick={() => onEject(s.slot === 'a' ? 'b' : 'a')}
           >
-            ⏏
+            <Icon name="eject" size={12} />
           </button>
         ))}
 

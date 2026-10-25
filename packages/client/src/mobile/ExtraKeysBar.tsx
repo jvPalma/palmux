@@ -27,6 +27,7 @@ import {
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
 } from 'react';
 import { encodeExtraKey, encodeMacro, type KeyMods } from './key-encoder';
 import {
@@ -36,7 +37,7 @@ import {
   keyLabel,
   toExtraKey,
 } from './extra-keys';
-import { keyFace } from './key-icons';
+import { keyFace, namedIcon } from './key-icons';
 
 // Hold a key this long to fire its long-press popup/action, or LOCK a modifier.
 const LONG_PRESS_MS = 350;
@@ -121,10 +122,16 @@ export interface ExtraKeysBarProps {
   onRaiseKeyboard?: () => void;
 }
 
-/** Corner glyph hinting a key's long-press action, or '' if none. */
-const ACTION_HINTS: Record<string, string> = { keyboard: '⌨', dictate: '🔉' };
-const actionHint = (action: string | undefined): string =>
-  (action ? ACTION_HINTS[action] : '') ?? '';
+/** Corner icon hinting a key's long-press action, or null if none. */
+const ACTION_ICONS: Record<string, string> = { keyboard: 'keyboard', dictate: 'mic' };
+const actionHint = (action: string | undefined): ReactNode | null =>
+  namedIcon(action ? ACTION_ICONS[action] : undefined);
+
+/** A popup's corner hint: its named icon, else its label. */
+const popupHint = (popup: ExtraKeySpec): ReactNode => {
+  const p = toExtraKey(popup);
+  return namedIcon(p.icon) ?? keyLabel(popup);
+};
 
 /** A plain key that fires bytes (repeatable on hold): not a modifier, no popup/action. */
 const isRepeatable = (spec: ExtraKeySpec): boolean => {
@@ -146,6 +153,7 @@ interface Gesture {
   repeatTimer: number;
   kbdWasUp: boolean; // IME was up when the press began
   viewportH: number; // visualViewport height at press (shrinks while the IME is up)
+  keyEl: HTMLElement; // the pressed key, for the `.pressed` feedback class
 }
 
 /** The soft keyboard is up iff the hidden textarea holds focus. */
@@ -264,8 +272,10 @@ export const ExtraKeysBar = forwardRef<ExtraKeysBarHandle, ExtraKeysBarProps>(
         repeatTimer: 0,
         kbdWasUp: kbdFocused(),
         viewportH: viewportHeight(),
+        keyEl: e.currentTarget as HTMLElement,
       };
       gestures.current.set(e.pointerId, g);
+      g.keyEl.classList.add('pressed');
       // Capture on the BAR (a non-focusable div), never the <button>: capturing
       // to a focusable element dismisses the mobile virtual keyboard even with
       // preventDefault. The bar-level move/up handlers still see the gesture.
@@ -318,7 +328,10 @@ export const ExtraKeysBar = forwardRef<ExtraKeysBarHandle, ExtraKeysBarProps>(
       // Past the key threshold: no keystroke on release, but the hold timer
       // lives on — a thumb resting for 350ms drifts, and killing the lock over
       // a few px of wobble is what made long-press-to-lock unreliable.
-      if (!g.moved && travel > MOVE_CANCEL_PX) g.moved = true;
+      if (!g.moved && travel > MOVE_CANCEL_PX) {
+        g.moved = true;
+        g.keyEl.classList.remove('pressed'); // a slide fires no key
+      }
       if (travel > HOLD_CANCEL_PX) clearTimers(g); // a real swipe: no hold, no repeat
     };
 
@@ -327,6 +340,7 @@ export const ExtraKeysBar = forwardRef<ExtraKeysBarHandle, ExtraKeysBarProps>(
       if (!g) return;
       clearTimers(g);
       gestures.current.delete(e.pointerId);
+      g.keyEl.classList.remove('pressed');
 
       const spec = g.spec;
       const key = toExtraKey(spec);
@@ -381,6 +395,7 @@ export const ExtraKeysBar = forwardRef<ExtraKeysBarHandle, ExtraKeysBarProps>(
       if (!g) return;
       clearTimers(g);
       gestures.current.delete(e.pointerId); // OS gesture / interruption: emit nothing
+      g.keyEl.classList.remove('pressed');
     };
 
     return (
@@ -406,22 +421,34 @@ export const ExtraKeysBar = forwardRef<ExtraKeysBarHandle, ExtraKeysBarProps>(
               const modName = modOf(spec);
               const level: ModLevel = modName ? mods[modName] : 'off';
               const id = (key.key ?? key.macro ?? '').trim();
-              const face = keyFace(id);
+              const face = namedIcon(key.icon) ?? keyFace(id);
+              // A WORD label (ESC, CTRL, win+) is set like a keycap legend; a
+              // single character keeps the terminal's monospace.
+              const word = !face && [...keyLabel(spec)].length > 1;
               return (
                 <button
                   key={ci}
                   type="button"
                   className={`ek-key${mod ? ' ek-mod' : ''}${face ? ' ek-icon' : ''}${
-                    level === 'armed' ? ' armed' : level === 'locked' ? ' locked' : ''
-                  }`}
+                    word ? ' ek-word' : ''
+                  }${level === 'armed' ? ' armed' : level === 'locked' ? ' locked' : ''}`}
                   data-testid={id ? `extra-key-${id}` : undefined}
+                  // Named by its LABEL whatever the face draws. A face is
+                  // aria-hidden, so an icon key was otherwise named by its corner
+                  // hint or by nothing — and any registered icon name is valid in
+                  // extra-keys.json, so a config can turn any key into one.
+                  aria-label={keyLabel(spec)}
                   onPointerDown={(e) => startPress(e, spec)}
                 >
                   {face ?? keyLabel(spec)}
                   {key.popup !== undefined ? (
-                    <span className="ek-popup-hint">{keyLabel(key.popup)}</span>
+                    <span className="ek-popup-hint" aria-hidden="true">
+                      {popupHint(key.popup)}
+                    </span>
                   ) : actionHint(key.action) ? (
-                    <span className="ek-popup-hint">{actionHint(key.action)}</span>
+                    <span className="ek-popup-hint" aria-hidden="true">
+                      {actionHint(key.action)}
+                    </span>
                   ) : null}
                 </button>
               );

@@ -20,11 +20,14 @@ export interface PaneApi {
   paste(text: string): boolean;
   /** Upload an image file and inject its path (the mobile clipboard/paste path). */
   pasteImage(file: File): void;
-  /** Open this pane's any-file picker (upload targets THIS session). */
-  openPicker(): void;
+  /** Open this pane's any-file picker (upload targets THIS session). Returns
+   *  whether a picker was launched; `onReturn` fires once when it comes back
+   *  (a pick, a cancel, or the app regaining focus without either). */
+  openPicker(onReturn?: () => void): boolean;
   /** Open this pane's image-only picker — on Android that is the gallery
-   *  directly, with no "photo / video / file?" chooser in the way. */
-  openImagePicker(): void;
+   *  directly, with no "photo / video / file?" chooser in the way. Same launch
+   *  result and return signal as `openPicker`. */
+  openImagePicker(onReturn?: () => void): boolean;
   /** Move DOM keyboard focus into / out of this pane's terminal (desktop). */
   focus(): void;
   blur(): void;

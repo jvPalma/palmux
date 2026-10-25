@@ -19,26 +19,28 @@
  */
 
 .dash-body.dash-dock {
-  gap: 7px;
-  padding: 10px 10px calc(10px + env(safe-area-inset-bottom, 0px));
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-2) calc(var(--sp-2) + env(safe-area-inset-bottom, 0px));
 }
 
 /* ── Section card ─────────────────────────────────────────────────────────── */
 .dash-dock .dash-section {
   gap: 0;
   border: 1px solid var(--t-surface);
-  border-radius: 8px;
+  border-radius: var(--r-3);
   background: var(--t-base);
   overflow: hidden;
 }
 
 /* Header: a background tint on hover, not a colour change —
-   the label is deliberately quiet at rest and stays quiet. */
+   the label is deliberately quiet at rest and stays quiet.
+   LAYOUT ONLY. The type (size, weight, tracking, casing, colour) is the kit's
+   section title in ui.css and is not restated here: this rule used to carry its
+   own 10px / 0.12em caption, and a consumer rule that out-specifies the kit
+   splits the heading style in two (ui.test.tsx resolves the cascade in this
+   chooser to keep that from coming back). */
 .dash-dock .ui-collapsible-trigger {
-  padding: 7px 9px;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.12em;
+  padding: var(--sp-1) var(--sp-2);
   transition:
     background var(--mo-micro) ease,
     color var(--mo-micro) ease;
@@ -67,13 +69,12 @@
 .dash-sec-count {
   flex: 0 0 auto;
   margin-left: auto;
-  padding: 2px 6px;
-  border-radius: 999px;
+  padding: 2px var(--sp-1);
+  border-radius: var(--r-pill);
   background: var(--t-surface);
   color: var(--tab-c-ansi8, var(--t-subtext));
-  font-size: 9.5px;
+  font-size: var(--fs-1);
   font-weight: 500;
-  letter-spacing: 0;
 }
 
 /* Body: the horizontal padding is always there, the
@@ -82,19 +83,19 @@
 .dash-dock .ui-collapsible-inner {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 0 7px;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-2);
 }
 
 .dash-dock .ui-collapsible-content[data-state='open'] .ui-collapsible-inner {
-  padding: 2px 7px 8px;
+  padding: 2px var(--sp-2) var(--sp-2);
 }
 
 /* ── Create: a 2×2 grid of tiles, primary filled ───────────────────────────── */
 .dash-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 6px;
+  gap: var(--sp-2);
 }
 
 /* A grid item's default `min-width: auto` is its min-content width, so a long
@@ -114,7 +115,7 @@
 .dash-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--sp-2);
 }
 
 .dash-row .ui-input {
@@ -139,18 +140,18 @@
 
 /* The filter sits above a flush list of rows. */
 .dash-dock .dash-list > .ui-input {
-  margin-bottom: 6px;
+  margin-bottom: var(--sp-2);
 }
 
 .dash-dock .dash-srow {
-  gap: 10px;
+  gap: var(--sp-2);
   justify-content: flex-start;
-  padding: 0 7px;
+  padding: 0 var(--sp-2);
   border-color: transparent;
-  border-radius: 6px;
+  border-radius: var(--r-2);
   background: transparent;
   color: var(--t-text);
-  font-size: 11.5px;
+  font-size: var(--fs-2);
   font-weight: 500;
   text-align: left;
 }
@@ -161,15 +162,27 @@
   color: var(--t-text);
 }
 
-/* The one accent row: it creates rather than picks. */
+/* The press. The hover rule above outranks the kit's ghost :active (four
+   classes to three), so without this a held row kept its hover fill — and the
+   fill is the kit's ONLY press cue, so the row showed no press at all. Equal
+   specificity and later, so it wins while the pointer is still over the row;
+   the fill is the kit's own ghost press, so a held row reads like every other
+   held ghost control. */
+.dash-dock .dash-srow:not(:disabled):active {
+  background: color-mix(in srgb, var(--t-surface) 78%, var(--t-text));
+}
+
+/* The one accent row: it creates rather than picks. `:active` too, or the kit's
+   ghost press would turn it to plain text for as long as it is held. */
 .dash-dock .dash-srow-new,
-.dash-dock .dash-srow-new:not(:disabled):hover {
+.dash-dock .dash-srow-new:not(:disabled):hover,
+.dash-dock .dash-srow-new:not(:disabled):active {
   color: var(--t-accent);
 }
 
 .dash-srow-icon {
   flex: 0 0 auto;
-  font-size: 10px;
+  font-size: var(--fs-1);
 }
 
 .dash-srow-icon-live {
@@ -185,21 +198,21 @@
 }
 
 .dash-srow-sub {
-  margin-left: 6px;
+  margin-left: var(--sp-2);
   color: var(--tab-c-ansi8, var(--t-subtext));
 }
 
 .dash-srow-state {
   flex: 0 0 auto;
   color: var(--tab-c-ansi8, var(--t-subtext));
-  font-size: 9.5px;
+  font-size: var(--fs-1);
 }
 
 /* Filled = a client is on that session, so opening it here detaches them. */
 .dash-srow-dot {
   flex: 0 0 auto;
-  width: 7px;
-  height: 7px;
+  width: 8px;
+  height: 8px;
   border: 1px solid var(--tab-c-ansi8, var(--t-subtext));
   border-radius: 50%;
 }
@@ -216,7 +229,7 @@
 }
 
 .dash-dock .dash-note {
-  padding: 5px 7px;
+  padding: var(--sp-1) var(--sp-2);
   color: var(--t-subtext);
-  font-size: 11.5px;
+  font-size: var(--fs-2);
 }

@@ -44,8 +44,12 @@ interface UseFileUploadParams {
 export interface UseFileUploadResult {
   /** True while a file is dragged over the terminal (drop indicator). */
   dragActive: boolean;
-  /** Open the ANY-file picker (topbar ⬆ / drawer ⬆ Upload). */
-  openPicker: () => void;
+  /**
+   * Open the ANY-file picker (topbar ⬆ / drawer ⬆ Upload). Returns whether one
+   * was launched, so a caller can tell a picker that is now up from a click that
+   * went nowhere. `onReturn` fires ONCE, when the picker is over: see `armReturn`.
+   */
+  openPicker: (onReturn?: () => void) => boolean;
   /**
    * Open the IMAGE picker. `accept="image/*"` is not cosmetic: Chrome on Android
    * builds its chooser from the accept list, and an EMPTY one accepts image and
@@ -53,12 +57,21 @@ export interface UseFileUploadResult {
    * file" every time. An image-only accept passes Chromium's
    * `isSupportedPhotoPickerTypes` and goes straight to the system photo picker
    * instead — the gallery, no questions. The cost is that this entry point can
-   * only take images; anything else still goes through `openPicker`.
+   * only take images; anything else still goes through `openPicker`. Same launch
+   * result and `onReturn` as `openPicker`.
    */
-  openImagePicker: () => void;
+  openImagePicker: (onReturn?: () => void) => boolean;
   /** Upload one file and inject its path (extra entry points, e.g. Ctrl+Shift+V). */
   uploadFile: (file: File) => Promise<boolean>;
 }
+
+/**
+ * After the app regains focus with the picker still silent, how long a late
+ * `change` gets to arrive before the return is treated as a cancel. A pick can
+ * land a beat after the window's `focus`, and releasing first would report a
+ * cancel for a file that is about to be uploaded.
+ */
+const PICKER_RETURN_GRACE_MS = 300;
 
 const formatSize = (bytes: number): string => {
   const mb = bytes / (1024 * 1024);
@@ -71,6 +84,8 @@ export function useFileUpload(params: UseFileUploadParams): UseFileUploadResult 
   paramsRef.current = params;
   const inputRef = useRef<HTMLInputElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
+  // Ends the picker currently awaiting its return (calling its `onReturn`).
+  const settlePickerRef = useRef<(() => void) | null>(null);
 
   /**
    * Upload one file and type its path. `prefix` separates it from a path
@@ -243,8 +258,66 @@ export function useFileUpload(params: UseFileUploadParams): UseFileUploadResult 
     };
   }, [uploadAll]);
 
-  const openPicker = useCallback(() => inputRef.current?.click(), []);
-  const openImagePicker = useCallback(() => imageInputRef.current?.click(), []);
+  /**
+   * Tell the caller when the native picker is over, because the page gets no
+   * other word of it: the OS dialog covers the app, and what it does to the soft
+   * keyboard is invisible from here. Three signals, first one wins, and `onReturn`
+   * runs exactly once:
+   * - `change`: a pick. - `cancel`: Chrome fires it on a file input that was dismissed.
+   * - the window regaining focus while the page is VISIBLE, which is the fallback
+   *   for a browser that fires neither. A late `change` gets `PICKER_RETURN_GRACE_MS`
+   *   first, then it counts as a cancel.
+   * There is deliberately NO timeout. Choosing a file or taking a photo takes as long
+   * as it takes, and a caller holding its layout still for the picker must not be let
+   * go by a clock. A `focus` while hidden is not a return: the picker is still up.
+   */
+  const armReturn = useCallback((input: HTMLInputElement, onReturn: () => void) => {
+    let returning = false;
+    let timer = 0;
+    const settle = () => {
+      clearTimeout(timer);
+      input.removeEventListener('change', settle);
+      input.removeEventListener('cancel', settle);
+      window.removeEventListener('focus', onFocus);
+      if (settlePickerRef.current === settle) settlePickerRef.current = null;
+      onReturn();
+    };
+    function onFocus() {
+      if (returning || document.visibilityState !== 'visible') return;
+      returning = true;
+      // One tick first, then the grace: the focus event itself is not the pick.
+      timer = window.setTimeout(() => {
+        timer = window.setTimeout(settle, PICKER_RETURN_GRACE_MS);
+      }, 0);
+    }
+    input.addEventListener('change', settle);
+    input.addEventListener('cancel', settle);
+    window.addEventListener('focus', onFocus);
+    settlePickerRef.current = settle;
+  }, []);
+
+  const launch = useCallback(
+    (input: HTMLInputElement | null, onReturn?: () => void): boolean => {
+      if (!input) return false;
+      // A new launch means the user got past the previous dialog, so its return
+      // is already due: settle it rather than leave a listener nobody will hear.
+      settlePickerRef.current?.();
+      if (onReturn) armReturn(input, onReturn);
+      input.click();
+      return true;
+    },
+    [armReturn],
+  );
+  const openPicker = useCallback(
+    (onReturn?: () => void) => launch(inputRef.current, onReturn),
+    [launch],
+  );
+  const openImagePicker = useCallback(
+    (onReturn?: () => void) => launch(imageInputRef.current, onReturn),
+    [launch],
+  );
+  // A pane that goes away mid-picker must not strand a caller waiting on it.
+  useEffect(() => () => settlePickerRef.current?.(), []);
 
   return { dragActive, openPicker, openImagePicker, uploadFile: upload };
 }

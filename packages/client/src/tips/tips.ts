@@ -20,7 +20,37 @@ export const TIPS: Tip[] = [
     category: 'Mobile',
     title: 'Sessions drawer',
     description:
-      'The extra-keys bar is always there on mobile, whatever the tab is — it is how you reach everything else. Swipe RIGHT→LEFT across it to pull the drawer in from the right edge. Its header switches between four views — Sessions, Settings, Files and Dictation — all as drawer items, never a modal stacked over the terminal. From the session list, + New tab opens the chooser in place of the list (‹ New tab goes back); a tmux session, a URL or a note all start from there. Tap outside to get back to the terminal.',
+      'The extra-keys bar is always there on mobile, whatever the tab is — it is how you reach everything else. Swipe RIGHT→LEFT across it to pull the drawer in from the right edge. It covers the screen except a dimmed strip on the left: tap the strip, or the ✕ button at the top, to get back to the terminal. The drawer is laid out for your thumb. Upload, Download, Dictate and Images sit at the bottom, a three-icon switcher (Sessions, Explorer, Dictation) just above them, your tabs above that, and Settings — the control you need least — at the very top. All of it opens as drawer views, never a modal stacked over the terminal. From the session list, + New tab opens the chooser in place of the list (‹ New tab goes back); a tmux session, a URL or a note all start from there.',
+  },
+  {
+    category: 'Mobile',
+    title: 'Reorder and regroup in the drawer',
+    description:
+      'Long-press a session row for half a second — you feel a short buzz — then drag without letting go. Drop it between two rows to reorder. Drop it on the middle of a group header to add it to that group; the top or bottom edge of a header drops it beside the group instead. Drop it on "Drop here to ungroup" below the last row to take it out of its group. Drag a group header the same way to move the whole group. The list scrolls by itself when your finger nears its top or bottom edge. A plain swipe only scrolls: nothing moves unless you hold first. The order syncs to every device.',
+  },
+  {
+    category: 'Mobile',
+    title: 'Long-press a row for its menu',
+    description:
+      'Long-press a drawer row and let go without moving to open its menu: rename, colour, group, or close. It opens over the drawer, so you land back in the list when you are done. Closing a terminal from here still asks first. Move your finger after the hold and it becomes a drag instead.',
+  },
+  {
+    category: 'Mobile',
+    title: 'Swipe a row left to close it',
+    description:
+      'Swipe a drawer row to the left to reveal its Close button, then tap it. Rows carry no always-visible ✕. A terminal still asks before its shell is killed, and an editor with unsaved text asks too. Swipe right, tap anywhere else or scroll to put the row back. With a keyboard, press Left arrow on a focused row to reveal Close and Right arrow to hide it.',
+  },
+  {
+    category: 'Mobile',
+    title: 'Settings at the top of the drawer',
+    description:
+      'Settings is the gear button at the top of the drawer, next to the close button. It sits as far from your thumb as the drawer allows, because you reach for it least. Tap it to open the settings list; ‹ Settings goes back. The Explorer and Dictation views are the icons in the switcher above the footer.',
+  },
+  {
+    category: 'Mobile',
+    title: 'The drawer and the soft keyboard',
+    description:
+      'Opening the drawer never dismisses the keyboard, and the terminal keeps its size while the drawer is open, even if Android hides the keyboard meanwhile. Close the drawer and the keyboard comes back if it was up when you opened it, with at most one resize. Upload and Images keep the terminal still until the file picker returns, however long you take in it.',
   },
   {
     category: 'Mobile',
@@ -116,7 +146,7 @@ export const TIPS: Tip[] = [
     category: 'Side panel',
     title: 'Files open as tabs',
     description:
-      'Clicking a file in the Explorer opens it as a TAB, next to your terminals — open several, switch freely, and the terminal you were in is one click away. Clicking a file that is already open just focuses its tab. A file tab is saved like any other, so it comes back after a restart; its ✕ closes it, and an unsaved buffer asks first.',
+      'Clicking a file in the Explorer opens it as a TAB, next to your terminals — open several, switch freely, and the terminal you were in is one click away. Clicking a file that is already open just focuses its tab. A file tab is saved like any other, so it comes back after a restart; its ✕ (or a left swipe on its drawer row) closes it, and an unsaved buffer asks first.',
   },
   {
     category: 'Side panel',
@@ -146,7 +176,7 @@ export const TIPS: Tip[] = [
     category: 'Tabs',
     title: 'Rename & color',
     description:
-      "Double-click a tab to rename it (empty = automatic title). Right-click for the menu: rename, a color from the theme's own 16 ANSI colors (8 normal + 8 bright — the same palette your shell shows), or close. The active tab fills solid with its color; inactive tabs show a faint tint. On mobile, long-press a drawer row for the same sheet. Names and colors sync to every device.",
+      "Double-click a tab to rename it (empty = automatic title). Right-click for the menu: rename, a color from the theme's own 16 ANSI colors (8 normal + 8 bright — the same palette your shell shows), or close. The active tab fills solid with its color; inactive tabs show a faint tint. On mobile, long-press a drawer row and let go without moving for the same sheet. Names and colors sync to every device.",
   },
   {
     category: 'Tabs',
@@ -226,7 +256,7 @@ export const TIPS: Tip[] = [
     category: 'Terminal',
     title: 'Workspaces',
     description:
-      'Each terminal tab is a separate shell. Press + → New terminal for another; shells survive closed browser tabs, and reopening palmux puts you back on the tab that window was last on. Close a tab (✕) to kill its shell for good.',
+      'Each terminal tab is a separate shell. Press + → New terminal for another; shells survive closed browser tabs, and reopening palmux puts you back on the tab that window was last on. Close a tab (✕ on the strip, a left swipe on a drawer row on mobile) to kill its shell for good.',
   },
   {
     category: 'Terminal',

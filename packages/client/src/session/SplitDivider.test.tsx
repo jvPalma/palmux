@@ -8,6 +8,15 @@ import type { MutableRefObject } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { SplitDivider } from './SplitDivider';
+import { Icon } from '../ui/icons';
+
+/** The drawn shapes of a registered icon, to compare against what a control
+ *  rendered. Rendered into a detached node so `screen` never sees it. */
+const iconPaths = (name: string): string | undefined => {
+  const host = document.createElement('div');
+  render(<Icon name={name} />, { container: host });
+  return host.querySelector('svg')?.innerHTML;
+};
 
 // Mutable on purpose: each test installs a box with a real bounding rect.
 const containerRef: MutableRefObject<HTMLElement | null> = { current: null };
@@ -142,7 +151,7 @@ describe('SplitDivider double-tap to swap', () => {
 
 // ── Rotate handle ─────────────────────────────────────────────────────────────
 //
-// The ⬍ toggle used to sit in the desktop topbar. That bar is gone, and the
+// The rotate toggle used to sit in the desktop topbar. That bar is gone, and the
 // control is contextual to a split, so it moved onto the divider next to the
 // double-tap. Everything here is about the two gestures not eating each other.
 describe('SplitDivider rotate handle', () => {
@@ -159,6 +168,31 @@ describe('SplitDivider rotate handle', () => {
     setup(vi.fn(), onRotate);
     fireEvent.click(screen.getByTestId('split-orient'));
     expect(onRotate).toHaveBeenCalledTimes(1);
+  });
+
+  // The handle is an icon with no text, so its label is its accessible name, and
+  // the shape is the direction the split will move to: the vertical double
+  // arrow while the panes sit side by side, the horizontal one once stacked.
+  it('is a named icon whose shape follows the orientation', () => {
+    const mark = (orientation: 'row' | 'column') => {
+      cleanup();
+      render(
+        <SplitDivider
+          orientation={orientation}
+          ratio={0.5}
+          containerRef={containerRef}
+          onRatio={vi.fn()}
+          onSettle={vi.fn()}
+          onRotate={vi.fn()}
+        />,
+      );
+      const handle = screen.getByTestId('split-orient');
+      expect(handle).toHaveAttribute('aria-label', 'Rotate the split');
+      expect(handle.textContent).toBe('');
+      return handle.querySelector('svg')?.innerHTML;
+    };
+    expect(mark('row')).toBe(iconPaths('rotate-row'));
+    expect(mark('column')).toBe(iconPaths('rotate-col'));
   });
 
   // The handle sits ON the drag surface. Without stopPropagation, pressing it

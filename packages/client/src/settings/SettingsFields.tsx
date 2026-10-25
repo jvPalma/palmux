@@ -7,31 +7,58 @@
 // the desktop modal — retired once the dock reached parity; settings are now
 // layout on both, never an overlay.)
 //
-// Every setting is an `.srow` —
-// label at full text weight, an optional SECOND LINE under it carrying the
-// current value or the consequence, control right-aligned, the whole row
-// hover-tinted and rounded, and no rule line between rows. Controls come from
-// the kit (block 01B's language): Switch for a toggle, Segmented for a two- or
-// three-option choice, Input for a number or a URL, Button for an action. The
-// two SELECTS stay native — Theme has eleven-plus profiles and Font has every
-// family the server found, and a segmented control with a scroll bar is not a
-// segmented control. See settings-view.css.
+// Settings are grouped into titled sections, and each section's rows sit in ONE
+// card (`.set-card`) separated by hairlines. Every setting is an `.srow`: its
+// label (with an optional SECOND LINE under it carrying the current value or the
+// consequence) in a flexible column, and its control in a column of one fixed
+// width shared by every row. Controls come from the kit: Switch for a toggle,
+// Segmented for a two- or three-option choice, Select for a longer list, Input
+// for a number or a URL, Button for an action. No native <select> is left — a
+// native one cannot take the kit's trigger, chevron or popup, and a phone draws it
+// as a full-screen picker. See settings-view.css.
+//
+// Theme is not a Select. It has twenty-odd profiles and a name cannot show
+// whether a theme's red survives its own background, so the Theme row is a button
+// that opens a BROWSER in place of the form (the `themes` sub-view, ThemeBrowser):
+// a back stack of depth one, owned here unless a host lifts it. The drawer does,
+// so its own back header can pop the sub-view before it leaves Settings.
+//
+// The switch replaces the control that holds focus, so focus is moved across it
+// rather than left to fall on the body. One rule: going in, focus lands on the
+// first control the sub-view DRAWS. That is `‹ Settings` in the dock; the drawer
+// hides that control (its header does the job), so there it is the first theme,
+// one Shift+Tab below the header. Coming out, focus returns to the Theme row
+// that opened it. Focus is never taken from a text field outside the panel
+// (see `carriesFocus`).
+//
+// The controls of that round trip (the Theme row, its label, every theme entry,
+// `‹ Settings`) act on the POINTER (`pressMove`), not on a click. A real press
+// focuses a button natively before its click runs, so in the drawer the switch
+// found focus inside the panel, carried it into the list, and #mobile-kbd lost
+// it: the soft keyboard went down. `pressMove` keeps #mobile-kbd, leaves a touch
+// free to scroll the panel, and still answers Enter, Space and assistive tech
+// through the click.
 //
 // Every row still reads and writes through the single `onChange` prop, so a host
 // needs to know nothing about which control a setting happens to use.
 
-import { useEffect, useState } from 'react';
-import type { ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { ReactNode, Ref } from 'react';
 import type { ClientSettings, CursorStyle, MobileModePref, SidebarRailPref } from './settings';
 import { FONT_PRESETS } from './settings';
 import { allProfiles } from './themes';
-import { ThemePicker } from './ThemePicker';
+import { ThemeBrowser } from './ThemeBrowser';
 import { reloadApp } from './app-reload';
 import type { PwaInstallState } from './pwa-install';
 import { onPwaInstallChange, promptPwaInstall, pwaInstallState } from './pwa-install';
-import { Button, Collapsible, Input, Segmented, Switch } from '../ui';
+import { Button, Collapsible, Input, Segmented, Select, Switch } from '../ui';
 import type { SegmentedOption } from '../ui';
+import { Icon } from '../ui/icons';
+import { pressMove } from '../panes/press';
 import './settings-view.css';
+
+/** What the panel shows in place of its form. `null` is the form itself. */
+export type SettingsSubView = 'themes' | null;
 
 export interface SettingsFieldsProps {
   settings: ClientSettings;
@@ -52,13 +79,28 @@ export interface SettingsFieldsProps {
   importingTheme?: boolean | undefined;
   /** Server build the client last saw, shown next to the reload control. */
   appVersion?: string | undefined;
+  /** Reload the app, resolving `true` once it is proceeding and `false` when the
+   *  host declined (a confirm the user cancelled). Hosts that know about work a
+   *  reload would destroy pass this; without it the row reloads unconditionally. */
+  onReloadApp?: (() => Promise<boolean>) | undefined;
+  /** Open the raw config.json editor (omit to hide the row). Desktop dock only:
+   *  the editor lives in the dock and the drawer has no room for it. */
+  onEditConfig?: (() => void) | undefined;
+  /** The Edit config.json row, for the host to hand focus back to as the editor
+   *  closes: this form is a NEW one then, so nothing here remembers the row. */
+  editConfigRef?: Ref<HTMLButtonElement> | undefined;
+  /** Which sub-view is showing. Omit it and the panel keeps its own, starting on
+   *  the form — a host that passes nothing gets exactly that. A host that has its
+   *  own back control lifts the state so that control can pop the sub-view first. */
+  subView?: SettingsSubView | undefined;
+  onSubViewChange?: ((next: SettingsSubView) => void) | undefined;
 }
 
 /**
  * A settings group. A kit Collapsible, so the same component serves the dock,
  * the mobile drawer and the new-tab view — and so a fifteen-row form can be
- * folded down to the four groups you are not using. Its trigger is the
- * `.dock-grp` caption (dim, uppercase, wide tracking).
+ * folded down to the four groups you are not using. Its trigger is the kit's
+ * section title (a small secondary-colour label); the rows sit in one card.
  *
  * The open state is per DEVICE (localStorage, keyed by title): which sections you
  * keep folded on a phone has nothing to do with a desktop, and it must never
@@ -73,7 +115,7 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
       className="settings-section"
       data-testid={`settings-section-${title.toLowerCase()}`}
     >
-      {children}
+      <div className="set-card">{children}</div>
     </Collapsible>
   );
 }
@@ -82,17 +124,27 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
  * One settings row. `htmlFor` is what pairs the label with the control, so a row
  * whose control has no id of its own (a Segmented is a group, not a field) gets
  * a plain span instead — an empty `for=` is worse than no label element at all.
+ *
+ * `onLabelPress` is for a control that acts on the pointer itself (`pressMove`).
+ * Left to the browser, a press on the label would move focus and then forward a
+ * click to the control, so the label acts on the pointer too; that cancels the
+ * forwarded click, and the `for=` association (the control's name) stays.
  */
 function Row({
   label,
   sub,
+  note,
   htmlFor,
+  onLabelPress,
   stacked = false,
   children,
 }: {
   label: ReactNode;
   sub?: ReactNode;
+  /** A hint too long for the label column: a line of its own under the row. */
+  note?: ReactNode;
   htmlFor?: string | undefined;
+  onLabelPress?: (() => void) | undefined;
   stacked?: boolean | undefined;
   children: ReactNode;
 }) {
@@ -105,13 +157,18 @@ function Row({
   return (
     <div className={stacked ? 'srow srow-stacked' : 'srow'}>
       {htmlFor ? (
-        <label className="srow-label" htmlFor={htmlFor}>
+        <label
+          className="srow-label"
+          htmlFor={htmlFor}
+          {...(onLabelPress ? pressMove(onLabelPress) : {})}
+        >
           {text}
         </label>
       ) : (
         <span className="srow-label">{text}</span>
       )}
       <div className="srow-control">{children}</div>
+      {note ? <div className="srow-note">{note}</div> : null}
     </div>
   );
 }
@@ -135,6 +192,39 @@ function ToggleRow({
     <Row label={label} sub={sub} htmlFor={id}>
       <Switch id={id} checked={checked} onCheckedChange={onChange} data-testid={id} />
     </Row>
+  );
+}
+
+/**
+ * A row that opens somewhere else: the whole row is the button and a chevron sits
+ * at the right edge of the control column, where a switch would. Not a Row: a
+ * `<label>` and a `<div>` cannot be the one control, and a button inside a row
+ * would make the label a dead zone around it.
+ */
+function LinkRow({
+  label,
+  onOpen,
+  buttonRef,
+  'data-testid': testId,
+}: {
+  label: string;
+  onOpen: () => void;
+  buttonRef?: Ref<HTMLButtonElement> | undefined;
+  'data-testid': string;
+}) {
+  return (
+    <button
+      ref={buttonRef}
+      type="button"
+      className="srow srow-link"
+      onClick={onOpen}
+      data-testid={testId}
+    >
+      <span className="srow-label">{label}</span>
+      <span className="srow-control">
+        <Icon name="chevron-right" size={12} />
+      </span>
+    </button>
   );
 }
 
@@ -197,29 +287,50 @@ function ThemeImportRow({
   );
 }
 
+/** The reload a host gets when it supplies none: unconditional, as it always was. */
+const reloadUnguarded = (): Promise<boolean> => {
+  void reloadApp();
+  return Promise.resolve(true);
+};
+
 /**
  * Reload onto the current build. Worth a row of its own: an installed PWA has
  * no reload button at all, and a plain refresh can replay a cached index.html
  * that still names the previous bundle. The sub-line is the build the client
  * last saw, which is the only way to tell a stale device from a broken fix.
  */
-function ReloadRow({ version }: { version: string | undefined }) {
+function ReloadRow({
+  version,
+  onReload = reloadUnguarded,
+}: {
+  version: string | undefined;
+  onReload?: (() => Promise<boolean>) | undefined;
+}) {
   const [busy, setBusy] = useState(false);
+  // Busy only once the reload is CONFIRMED. Setting it first left a cancelled
+  // reload stuck on a disabled "Reloading…" with nothing reloading; a throw
+  // resets it for the same reason, so the user can simply try again.
+  const reload = () => {
+    void onReload().then(setBusy, () => setBusy(false));
+  };
+  // The build string is the one hint that is a VALUE, not a sentence: it does not
+  // wrap, it ends in an ellipsis and carries the whole of it as a tooltip.
+  const build = version ? `build ${version}` : null;
   return (
     <Row
       label="Reload app"
-      sub={version ? `build ${version}` : 'clears caches and service worker'}
+      sub={
+        build ? (
+          <span className="srow-value" title={build}>
+            {build}
+          </span>
+        ) : (
+          'clears caches and service worker'
+        )
+      }
       htmlFor="set-reload"
     >
-      <Button
-        id="set-reload"
-        data-testid="reload-app"
-        disabled={busy}
-        onClick={() => {
-          setBusy(true);
-          void reloadApp();
-        }}
-      >
+      <Button id="set-reload" data-testid="reload-app" disabled={busy} onClick={reload}>
         {busy ? 'Reloading…' : 'Reload'}
       </Button>
     </Row>
@@ -256,6 +367,38 @@ function InstallRow() {
 
 const NO_FONTS: string[] = [];
 
+/**
+ * Whether a sub-view switch should move focus. It should when focus fell on the
+ * body, because the control that held it went out with the old content, and
+ * when it sits on a host control outside the panel that drove the switch (the
+ * drawer's header, by key). It must not when focus is in a text field outside
+ * the panel: in the drawer that is #mobile-kbd, whose focus IS the soft
+ * keyboard, and a pointer press on the header (`pressClick`) or on the round
+ * trip's own controls (`pressMove`) is built to leave it there. A control inside
+ * the panel means the new content already has it.
+ */
+const carriesFocus = (root: HTMLElement): boolean => {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement) || active === document.body) return true;
+  if (root.contains(active)) return false;
+  return !(active.isContentEditable || active.matches('input, textarea'));
+};
+
+/**
+ * The first enabled button `root` actually draws. The check is needed because a
+ * host can hide one of the sub-view's own controls with its stylesheet (the
+ * drawer hides `‹ Settings`), and focus() on an element that is not drawn does
+ * nothing, which would leave focus on the body. Buttons only: the sub-view holds
+ * nothing else.
+ */
+const firstDrawnButton = (root: HTMLElement): HTMLElement | undefined =>
+  [...root.querySelectorAll<HTMLElement>('button:not(:disabled)')].find((el) => {
+    for (let node: HTMLElement | null = el; node && node !== root; node = node.parentElement) {
+      if (getComputedStyle(node).display === 'none') return false;
+    }
+    return true;
+  });
+
 /** Built-in presets + discovered system fonts, deduped by CSS value. */
 function fontOptionsFor(settings: ClientSettings, fontFamilies: string[]): Map<string, string> {
   const options = new Map<string, string>(); // value -> label
@@ -265,7 +408,10 @@ function fontOptionsFor(settings: ClientSettings, fontFamilies: string[]): Map<s
     if (!options.has(value)) options.set(value, fam);
   }
   // The current value is always present so a custom stack still shows selected.
-  if (!options.has(settings.fontFamily)) options.set(settings.fontFamily, settings.fontFamily);
+  // Not when it is empty: the kit Select cannot hold an option whose value is ''.
+  if (settings.fontFamily && !options.has(settings.fontFamily)) {
+    options.set(settings.fontFamily, settings.fontFamily);
+  }
   return options;
 }
 
@@ -279,40 +425,104 @@ export function SettingsFields({
   onImportTheme,
   importingTheme,
   appVersion,
+  onReloadApp,
+  onEditConfig,
+  editConfigRef,
+  subView: subViewProp,
+  onSubViewChange,
 }: SettingsFieldsProps) {
-  const fontOptions = fontOptionsFor(settings, fontFamilies);
+  // `null` is a real value (the form), so "controlled" is `!== undefined`.
+  const [ownSubView, setOwnSubView] = useState<SettingsSubView>(null);
+  const subView = subViewProp === undefined ? ownSubView : subViewProp;
+  const setSubView = (next: SettingsSubView): void => {
+    setOwnSubView(next);
+    onSubViewChange?.(next);
+  };
+
+  // Keyed on the sub-view that is SHOWN, whoever changed it: the drawer's header
+  // pops it through the controlled prop, with no call into this component. A
+  // layout effect, so focus has moved before the new content paints. The first
+  // render is not a switch and takes no focus.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const themeRowRef = useRef<HTMLButtonElement>(null);
+  const shownSubView = useRef(subView);
+  useLayoutEffect(() => {
+    if (shownSubView.current === subView) return;
+    shownSubView.current = subView;
+    const root = rootRef.current;
+    if (!root || !carriesFocus(root)) return;
+    (subView === 'themes' ? firstDrawnButton(root) : themeRowRef.current)?.focus();
+  }, [subView]);
+
+  const profiles = allProfiles();
+
+  if (subView === 'themes') {
+    return (
+      <div className="settings-form settings-view" data-testid="settings-themes" ref={rootRef}>
+        <div className="set-subhead">
+          <Button
+            variant="ghost"
+            className="set-back"
+            data-testid="settings-themes-back"
+            {...pressMove(() => setSubView(null))}
+          >
+            <Icon name="chevron-left" size={14} />
+            Settings
+          </Button>
+          <h2 className="set-subtitle">Theme</h2>
+        </div>
+        {/* Applies and persists on every pick, and the list stays: that is how a
+            theme is judged — by trying two. */}
+        <ThemeBrowser
+          profiles={profiles}
+          value={settings.themeId}
+          onChange={(themeId) => onChange({ themeId })}
+        />
+      </div>
+    );
+  }
+
+  const fontOptions = [...fontOptionsFor(settings, fontFamilies)].map(([value, label]) => ({
+    value,
+    label,
+  }));
+  const themeName = profiles.find((p) => p.id === settings.themeId)?.name ?? settings.themeId;
+  const openThemes = (): void => setSubView('themes');
 
   return (
-    <div className="settings-form settings-view">
+    <div className="settings-form settings-view" ref={rootRef}>
       <Section title="Appearance">
-        <Row label="Theme" htmlFor="set-theme">
-          {/* Not a <select>: an option list of NAMES cannot show you whether a
-              theme's red survives its own background. Each option paints itself
-              in its own palette — see ThemePicker. */}
-          <ThemePicker
+        <Row label="Theme" htmlFor="set-theme" onLabelPress={openThemes}>
+          {/* Not a Select: an option list of NAMES cannot show you whether a
+              theme's red survives its own background. The button opens a browser
+              where each theme paints itself in its own palette. The name rides in
+              the aria-label because a <label for> would otherwise be the whole
+              accessible name and hide the current value. */}
+          <Button
+            ref={themeRowRef}
             id="set-theme"
-            profiles={allProfiles()}
-            value={settings.themeId}
-            onChange={(themeId) => onChange({ themeId })}
-          />
+            className="srow-theme"
+            data-testid="set-theme"
+            title={themeName}
+            aria-label={`Theme: ${themeName}`}
+            {...pressMove(openThemes)}
+          >
+            <span className="srow-theme-name">{themeName}</span>
+            <Icon name="chevron-right" size={12} />
+          </Button>
         </Row>
 
         {onImportTheme && <ThemeImportRow onImport={onImportTheme} busy={importingTheme} />}
 
         <Row label="Font" htmlFor="set-font">
-          <select
+          <Select
             id="set-font"
-            className="srow-select"
             data-testid="set-font"
+            aria-label="Font"
             value={settings.fontFamily}
-            onChange={(e) => onChange({ fontFamily: e.target.value })}
-          >
-            {[...fontOptions.entries()].map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
-          </select>
+            options={fontOptions}
+            onChange={(fontFamily) => onChange({ fontFamily })}
+          />
         </Row>
 
         <Row label="Font size" sub="terminal zoom, this device" htmlFor="set-size">
@@ -446,14 +656,17 @@ export function SettingsFields({
         <Row
           label="Sidebar rail"
           // Naming what disappears, not just "panels": the rail is the only
-          // POINTER route to Settings, Files, Dictation, the new-tab chooser AND
-          // the Upload/Download actions, since the desktop action cluster is
-          // gone. Every one of them has a keybinding and sits in the command
+          // POINTER route to Files, Dictation, the new-tab chooser AND the
+          // Upload/Download actions, since the desktop action cluster is gone.
+          // Settings is the exception — the topbar's app menu keeps it one click
+          // away. Every one of them has a keybinding and sits in the command
           // palette, which is what makes hiding the rail recoverable at all.
-          sub={
+          // A sentence this long is a NOTE, under the row: in the label column
+          // it was a 180px strip of one-word lines.
+          note={
             settings.sidebarRail === 'always'
-              ? 'this device only · hiding it leaves keybindings and the command palette as the only route to settings, files, dictation, upload and download'
-              : 'this device only · settings, upload and download are reachable from the command palette'
+              ? 'this device only · hiding it leaves keybindings and the command palette as the only route to files, dictation, upload and download; settings stays in the app menu'
+              : 'this device only · settings is in the app menu; upload and download are reachable from the command palette'
           }
         >
           <Segmented
@@ -475,7 +688,7 @@ export function SettingsFields({
             </Button>
           </Row>
         )}
-        <ReloadRow version={appVersion} />
+        <ReloadRow version={appVersion} onReload={onReloadApp} />
         <InstallRow />
         <ToggleRow
           id="set-latency"
@@ -484,6 +697,14 @@ export function SettingsFields({
           checked={settings.latencyOverlay}
           onChange={(latencyOverlay) => onChange({ latencyOverlay })}
         />
+        {onEditConfig && (
+          <LinkRow
+            label="Edit config.json"
+            onOpen={onEditConfig}
+            buttonRef={editConfigRef}
+            data-testid="edit-config"
+          />
+        )}
       </Section>
     </div>
   );

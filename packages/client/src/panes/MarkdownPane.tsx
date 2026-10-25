@@ -17,6 +17,7 @@ import {
 } from 'react';
 import type { TabMeta } from '@palmux/shared';
 import { renderMarkdown } from './markdown-render';
+import { Icon } from '../ui/icons';
 import { loadSettings, onSettingsChange } from '../settings/settings';
 
 interface Listing {
@@ -175,10 +176,12 @@ export const MarkdownPane = ({ tab, onChangePath, onMenu }: MarkdownPaneProps) =
             aria-label="Menu"
             onPointerDown={(e) => (e.preventDefault(), onMenu())}
           >
-            ☰
+            <Icon name="menu" />
           </button>
         )}
-        <span className="pane-title">📖 {path ? baseName(path) : 'markdown'}</span>
+        <span className="pane-title">
+          <Icon name="book" /> {path ? baseName(path) : 'markdown'}
+        </span>
         <span className="md-path" title={path ?? ''}>
           {browsing ? (browseDir ?? 'roots') : (path ?? '')}
         </span>
@@ -192,7 +195,7 @@ export const MarkdownPane = ({ tab, onChangePath, onMenu }: MarkdownPaneProps) =
             setBrowsing(true);
           }}
         >
-          📂
+          <Icon name="folder-open" />
         </button>
         {path !== undefined && !browsing && (
           <button
@@ -201,7 +204,7 @@ export const MarkdownPane = ({ tab, onChangePath, onMenu }: MarkdownPaneProps) =
             data-testid="md-refresh"
             onClick={() => setNonce((n) => n + 1)}
           >
-            ⟳
+            <Icon name="reload" />
           </button>
         )}
         {path !== undefined && browsing && (
@@ -211,7 +214,7 @@ export const MarkdownPane = ({ tab, onChangePath, onMenu }: MarkdownPaneProps) =
             data-testid="md-back"
             onClick={() => setBrowsing(false)}
           >
-            ↩
+            <Icon name="back" />
           </button>
         )}
       </div>
@@ -246,14 +249,14 @@ export const MarkdownPane = ({ tab, onChangePath, onMenu }: MarkdownPaneProps) =
               {listing?.dirs.map((d) => (
                 <li key={d}>
                   <button className="md-entry dir" onClick={() => setBrowseDir(d)}>
-                    📁 {listing.dir === null ? d : baseName(d)}
+                    <Icon name="folder" size={14} /> {listing.dir === null ? d : baseName(d)}
                   </button>
                 </li>
               ))}
               {listing?.files.map((f) => (
                 <li key={f}>
                   <button className="md-entry file" onClick={() => openFile(f)}>
-                    📄 {baseName(f)}
+                    <Icon name="file" size={14} /> {baseName(f)}
                   </button>
                 </li>
               ))}

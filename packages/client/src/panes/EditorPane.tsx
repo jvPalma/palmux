@@ -19,6 +19,7 @@ import { useEffect, useRef, useState } from 'react';
 import type * as Monaco from 'monaco-editor';
 import { loadSettings, onSettingsChange } from '../settings/settings';
 import { languageOf } from './editor-language';
+import { Icon } from '../ui/icons';
 import { editorLayoutOptions, observeEditorWidth } from './editor-layout';
 import { focusEditor, registerEditor, unregisterEditor } from './editor-registry';
 
@@ -272,13 +273,23 @@ export const EditorPane = ({
               onMenu();
             }}
           >
-            ☰
+            <Icon name="menu" />
           </button>
         )}
         <span className="pane-title">notes</span>
         <span className="spacer" />
         <span className="pane-save-state" data-testid="editor-save-state">
-          {state === 'error' ? 'failed to load' : dirty ? '● unsaved' : '✓ saved'}
+          {state === 'error' ? (
+            'failed to load'
+          ) : dirty ? (
+            <>
+              <Icon name="dot" /> unsaved
+            </>
+          ) : (
+            <>
+              <Icon name="check" /> saved
+            </>
+          )}
         </span>
       </div>
       {state === 'loading' && <div className="pane-loading">loading editor…</div>}

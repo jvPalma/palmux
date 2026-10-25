@@ -19,6 +19,7 @@ import { useRef, useState } from 'react';
 import type { TabMeta } from '@palmux/shared';
 import { isEmbeddableUrl, isSameOriginUrl, normalizeUrl } from './normalize-url';
 import { isProxiedUrl, proxiedFrameUrl } from './webproxy-url';
+import { Icon } from '../ui/icons';
 
 interface WebPaneProps {
   tab: TabMeta;
@@ -84,7 +85,7 @@ export const WebPane = ({ tab, onChangeUrl, onMenu }: WebPaneProps) => {
               onMenu();
             }}
           >
-            ☰
+            <Icon name="menu" />
           </button>
         )}
         {/* Availability is unknowable cross-origin (no `history.length` for a
@@ -96,7 +97,7 @@ export const WebPane = ({ tab, onChangeUrl, onMenu }: WebPaneProps) => {
           data-testid="pane-back"
           onClick={() => history.back()}
         >
-          ←
+          <Icon name="arrow-left" />
         </button>
         <button
           className="pane-btn"
@@ -105,7 +106,7 @@ export const WebPane = ({ tab, onChangeUrl, onMenu }: WebPaneProps) => {
           data-testid="pane-forward"
           onClick={() => history.forward()}
         >
-          →
+          <Icon name="arrow-right" />
         </button>
         <input
           ref={inputRef}
@@ -132,7 +133,7 @@ export const WebPane = ({ tab, onChangeUrl, onMenu }: WebPaneProps) => {
           data-testid="pane-reload"
           onClick={() => setReloadNonce((n) => n + 1)}
         >
-          ⟳
+          <Icon name="reload" />
         </button>
         <button
           className="pane-btn"
@@ -141,7 +142,7 @@ export const WebPane = ({ tab, onChangeUrl, onMenu }: WebPaneProps) => {
           data-testid="pane-external"
           onClick={() => window.open(url, '_blank', 'noopener')}
         >
-          ⧉
+          <Icon name="external" />
         </button>
       </div>
       {/* Remount ONLY when the sandbox class flips or on an explicit reload.

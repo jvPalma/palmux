@@ -15,6 +15,7 @@
 
 import { useEffect, useState, type CSSProperties } from 'react';
 import type { DictationState } from './useDictation';
+import { Icon } from '../ui/icons';
 
 /** ms → "m:ss", floored at 0:00. */
 export function formatCountdown(msLeft: number): string {
@@ -73,12 +74,16 @@ export const DictationPill = ({ state, deadline, onStop, anchorRect }: Dictation
     >
       {state === 'recording' ? (
         <>
-          <span className="dictation-title">🔴 Recording</span>
+          <span className="dictation-title">
+            <Icon name="record" /> Recording
+          </span>
           <span className="dictation-sub">{formatCountdown(msLeft)} left — tap to stop</span>
         </>
       ) : (
         <>
-          <span className="dictation-title">⏳ Transcribing…</span>
+          <span className="dictation-title">
+            <Icon name="hourglass" /> Transcribing…
+          </span>
           <span className="dictation-sub">inserts at the cursor when done</span>
         </>
       )}

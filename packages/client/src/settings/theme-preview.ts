@@ -1,6 +1,6 @@
 // ── Theme swatch content ──────────────────────────────────────────────────────
 //
-// The lines drawn inside each option of the theme picker.
+// The lines drawn inside each entry of the theme browser.
 //
 // A row of sixteen colour chips tells you a palette is "colourful" and nothing
 // about whether you can READ it. A fake shell session does: the same tokens a
@@ -54,11 +54,12 @@ export const PREVIEW_LINES: PreviewToken[][] = [
 /**
  * Longest line the swatch may hold.
  *
- * MEASURED, not estimated: the popup is 300px, the swatch is 10.5px monospace
- * with 18px of padding, and a character comes out at ~7px — so 32 columns, not
- * the 40 an em-width guess gave. The first version overflowed by 36px and the
- * last two tokens of line two were replaced by an ellipsis, which in a COLOUR
- * sample silently hides the slots it exists to show.
+ * MEASURED on the former 300px popup at 10.5px monospace with 18px of padding
+ * (~7px per character → 32 columns), not the 40 an em-width guess gave. The
+ * first version overflowed by 36px and the last two tokens of line two were
+ * replaced by an ellipsis, which in a COLOUR sample silently hides the slots it
+ * exists to show. The browser is never wider than the 300px dock, so the cap
+ * still bounds a line; it has not been re-measured at the entry's --fs-1 type.
  */
 export const MAX_PREVIEW_CHARS = 32;
 

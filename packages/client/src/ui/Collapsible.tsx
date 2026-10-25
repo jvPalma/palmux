@@ -27,6 +27,7 @@
 import * as RadixCollapsible from '@radix-ui/react-collapsible';
 import { useCallback, useState } from 'react';
 import type { ReactNode } from 'react';
+import { Icon } from './icons';
 
 export interface CollapsibleProps {
   /** Section heading, rendered inside the trigger. */
@@ -89,8 +90,9 @@ export function Collapsible({
         className="ui-collapsible-trigger"
         data-testid={`${testId}-trigger`}
       >
+        {/* The span keeps its class so the rotate rule in ui.css still applies. */}
         <span className="ui-collapsible-chevron" aria-hidden="true">
-          ›
+          <Icon name="chevron-right" size={12} />
         </span>
         {title}
       </RadixCollapsible.Trigger>

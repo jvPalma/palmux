@@ -1,39 +1,48 @@
 /* ── Settings view ────────────────────────────────────────────────────────────
  *
- * Two blocks:
- * (~/.agent/diagrams/palmux-ui-kit-proposals.html):
+ * The layout of the one field list both settings hosts render (the desktop dock
+ * and the mobile drawer). Three pieces:
  *
- *   01B Surfaces with depth — the control language. Depth is three
- *       background levels and a 1px live border, never a shadow: recessed
- *       (--t-base) for anything you type or pick into, default (--t-mantle) for
- *       things you press, raised (--t-surface) for the border and the hover
- *       tint. That language is already implemented by the kit (ui.css), so this
- *       file spends no rules on it — it uses Button/Input/Switch/Segmented and
- *       only styles the one control the kit has no primitive for, `select`.
+ *   SECTIONS  A kit Collapsible per group. Its title is the kit's own small
+ *             secondary-colour label — this file restates NONE of its type, only
+ *             its layout, because a consumer rule that out-specifies the kit is
+ *             how the section title ended up as three different headings.
  *
- *   03A Dock with icon rail — the `.srow` settings row. A row is a
- *       hover-tinted, rounded block: label at full text weight, an optional
- *       SECOND LINE under it in --t-subtext carrying the current value or the
- *       consequence, and the control right-aligned. NO rule line between rows —
- *       the rule-per-row treatment is what made a fifteen-row form read as a
- *       spreadsheet.
+ *   CARDS     A section's rows sit in one `.set-card`: --t-base on the mantle
+ *             panel, a 1px --t-surface border, --r-3, and a hairline between rows.
+ *             Depth is the kit's three levels, never a shadow.
  *
- * The row class is `.srow`; its label/sub-label classes are renamed
- * `.srow-label`/`.srow-sub` because index.css is a global sheet and two-letter
- * class names in it are a collision waiting to happen.
+ *   ROWS      `.srow` is a two-column grid: label (+ optional hint) in a flexible
+ *             column, control in a column of ONE width (`--set-control`, which a
+ *             host may set — the drawer does) shared by every row, so every
+ *             control in the panel has the same left and right edge. Text-like
+ *             controls (Select, Input, Segmented, Button) fill that column;
+ *             Switches and chevrons sit at its right edge.
  *
- * COLOUR: only the eight real tokens. `--t-crust` does not exist here and
- * maps to --t-base; its `--c-ov` maps to --t-subtext. No literals.
+ * HEIGHT. Every control is `--ctl-h` (28px on desktop, 36px under the mobile
+ * class), and the kit draws it that tall itself. This file only makes the box
+ * EXACT where the kit sets a floor (Button, Input, the Segmented's wrapper), and
+ * restates nothing the kit already says (ui/scale.test.ts fails a rule that
+ * does). A Switch keeps its look but takes a hit area as tall as the other
+ * controls.
  *
- * MOTION: --mo-micro only (hover tint, focus border) with the reduced-motion
- * escape at the bottom. Nothing here animates layout.
+ * FOCUS. Rings come from the kit and appear for keyboard focus only
+ * (`:focus-visible`); nothing in this file resets an outline. An editable input
+ * is the exception that proves the rule: Chromium matches `:focus-visible` on a
+ * focused text field whatever focused it, because the caret needs an indicator,
+ * and fighting that would mean tracking input modality by hand.
+ *
+ * COLOUR: only the eight real tokens. No literals.
+ *
+ * MOTION: --mo-micro only (the link row's tint) with the reduced-motion escape
+ * at the bottom. Nothing here animates layout.
  *
  * SPECIFICITY: every rule is prefixed `.settings-view`, and the root rule is the
  * compound `.settings-view.settings-form`, so it beats index.css's
  * `.settings-form` block whatever order the bundler emits the two files in. The
  * root keeps BOTH classes on purpose: `.drawer-settings-body .settings-form` in
- * index.css is what gives the mobile drawer its gutter, and this file may not
- * edit that sheet.
+ * index.css is what gives the mobile drawer its gutter and its column width, and
+ * this file may not edit that sheet.
  */
 
 .settings-view.settings-form {
@@ -43,66 +52,62 @@
 }
 
 /* ── Section (kit Collapsible) ────────────────────────────────────────────────
-   The trigger is a quiet section rule: 10px, uppercase, wide tracking, dim.
-   BOTH the resting and the hover colour are restated here: ui.css paints the
-   trigger --t-text and hovers it --t-accent, and once the resting rule is
-   outweighed from this file the kit's hover (a plain `.ui-collapsible-trigger:hover`)
-   no longer outweighs it — so leaving the hover out would kill it outright. */
+   Layout only. The trigger's size, weight, colour, tracking and casing are the
+   kit's, and so is its height: the kit's --ctl-h floor, so a section header is
+   as easy to hit as any row beneath it. */
 .settings-view .settings-section + .settings-section {
-  margin-top: 12px;
+  margin-top: var(--sp-3);
 }
 
 .settings-view .settings-section > .ui-collapsible-trigger {
-  min-height: 22px;
-  padding: 0 7px;
-  color: var(--t-subtext);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-}
-
-.settings-view .settings-section > .ui-collapsible-trigger:hover {
-  color: var(--t-text);
+  padding: 0 var(--sp-1);
 }
 
 .settings-view .settings-section > .ui-collapsible-content .ui-collapsible-inner {
   display: flex;
   flex-direction: column;
-  padding-top: 2px;
+}
+
+/* ── Card ─────────────────────────────────────────────────────────────────────
+   The gap under the title is the card's MARGIN, not padding on the section's
+   inner box: the inner box is what the 0fr → 1fr collapse squeezes, and padding
+   there leaves a residue that no row height can collapse into. `overflow` clips
+   a row's hover tint to the radius. */
+.settings-view .set-card {
+  margin-top: var(--sp-1);
+  border: 1px solid var(--t-surface);
+  border-radius: var(--r-3);
+  background: var(--t-base);
+  overflow: hidden;
 }
 
 /* ── Row ──────────────────────────────────────────────────────────────────────
-   `flex-wrap` is the narrow-host answer: the dock is 280px and the mobile drawer
-   narrower still, so a three-option Segmented that cannot fit beside its label
-   drops to its own line and stays right-aligned, instead of squeezing the label
-   into a two-line stack of single words. */
+   The 44px floor is a row, not a control: 28px of control and 2 × 8px of padding
+   is exactly 44, so a row with no hint and a row with one both meet it and the
+   control stays centred in either. On a phone the 36px control makes the row 52.
+
+   The hairline between rows is a border, and a border is height: the second row
+   onward would be 45px beside a first row of 44, and a Switch row (24px, no
+   control to hold it up) would stay at 44 beside them. It takes a pixel of its
+   own padding back instead. */
 .settings-view .srow {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--set-control);
   align-items: center;
-  gap: 6px 10px;
-  min-height: var(--mbtn-h, 30px);
-  padding: 5px 7px;
-  border-radius: 7px;
-  transition: background-color var(--mo-micro) ease;
+  column-gap: var(--sp-3);
+  min-height: 44px;
+  padding: var(--sp-2) var(--sp-3);
 }
 
-.settings-view .srow:hover {
-  background-color: color-mix(in srgb, var(--t-surface) 55%, transparent);
+.settings-view .srow + .srow {
+  padding-top: calc(var(--sp-2) - 1px);
+  border-top: 1px solid var(--t-surface);
 }
 
-/* A SMALL flex-basis, not `auto`: with `auto` the label's flex base size is its
-   MAX-CONTENT width, and in a two-line row the widest text is the sub-line — so
-   "Mobile mode / Auto follows a touch screen" claimed ~155px and the 128px
-   Segmented was pushed onto a line of its own. The basis only decides where the
-   line breaks (grow:1 still hands the label every leftover pixel), so keeping it
-   under the narrowest host's slack is what stops a row wrapping for no reason,
-   while a control that genuinely cannot fit still drops below. */
 .settings-view .srow-label {
-  flex: 1 1 40px;
   min-width: 0;
   color: var(--t-text);
-  font-size: 11.5px;
+  font-size: var(--fs-2);
   line-height: 1.3;
 }
 
@@ -110,92 +115,217 @@
   display: block;
   margin-top: 2px;
   color: var(--t-subtext);
-  font-size: 10px;
+  font-size: var(--fs-1);
   line-height: 1.35;
+}
+
+/* A note is a hint too long for the label column — a sentence, not a phrase. In
+   the column it would be a strip of one-word lines (the sidebar-rail warning was
+   180px tall), so it takes a line of its own, under the label and the control,
+   across the whole row. */
+.settings-view .srow-note {
+  grid-column: 1 / -1;
+  margin-top: var(--sp-1);
+  color: var(--t-subtext);
+  font-size: var(--fs-1);
+  line-height: 1.35;
+}
+
+/* A hint that is a VALUE (the build string), not a sentence: one line, ellipsis. */
+.settings-view .srow-value {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .settings-view .srow-control {
   display: flex;
-  flex: 0 1 auto;
   align-items: center;
-  gap: 6px;
+  justify-content: flex-end;
   min-width: 0;
-  max-width: 100%;
-  margin-left: auto;
 }
 
-/* A row whose value needs the full width (a URL, an install command). */
+/* The text-like controls fill the column; a Switch is not one of them and stays
+   at the right edge. `min-width: 0` lets a flex item shrink below its content so
+   the truncation inside each control has something to truncate against. */
+.settings-view .srow-control > .ui-input,
+.settings-view .srow-control > .ui-btn,
+.settings-view .srow-control > .ui-seg,
+.settings-view .srow-control > .ui-select-trigger {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+}
+
+/* A row whose value needs the full width (a URL, an install command): one
+   column, so it spans where the label and the control would have been. The field
+   takes what the button leaves. */
 .settings-view .srow-stacked {
-  flex-direction: column;
-  align-items: stretch;
-}
-
-/* The row's main axis is now vertical, so the label's `flex-basis` would be a
-   HEIGHT — 40px of empty space above the field. Reset it. */
-.settings-view .srow-stacked .srow-label {
-  flex: 0 0 auto;
+  grid-template-columns: minmax(0, 1fr);
+  row-gap: var(--sp-1);
 }
 
 .settings-view .srow-stacked .srow-control {
-  margin-left: 0;
+  justify-content: stretch;
+  gap: var(--sp-2);
 }
 
-.settings-view .srow-stacked .ui-input {
-  flex: 1 1 auto;
+.settings-view .srow-stacked .srow-control > .ui-input {
+  flex: 1 1 0;
+  width: auto;
 }
 
-/* ── Select ───────────────────────────────────────────────────────────────────
-   The kit has no Select primitive (a themed listbox is a different piece of
-   work), so a native one is styled to the kit's Input: recessed --t-base, 1px
-   --t-surface border, 7px radius, accent border on focus. Padding-right leaves
-   room for the caret, which the platform draws inside the padding box.
-
-   The cap is a LENGTH, not the old `--set-control` (which the drawer sets to
-   55%): a percentage max-width resolves against a shrink-to-fit flex parent, so
-   the Font select — whose intrinsic width is the longest family name — ended up
-   240px wide and wrapped, while Theme stayed on its label line. Two identical
-   rows behaving differently reads as a bug. `--set-control` is now unread. */
-.settings-view .srow-select {
-  /* Both selects take the SAME width rather than their intrinsic one, so the
-     control column has one right edge; `flex-shrink` still lets them give way on
-     a narrower host. */
-  flex: 0 1 auto;
-  width: 180px;
-  max-width: 100%;
-  min-height: var(--mbtn-h, 30px);
-  min-width: 0;
-  padding: 3px 22px 3px 8px;
-  border: 1px solid var(--t-surface);
-  border-radius: 7px;
-  background: var(--t-base);
-  color: var(--t-text);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-  transition: border-color var(--mo-micro) ease;
+.settings-view .srow-stacked .srow-control > .ui-btn {
+  flex: 0 0 auto;
+  width: auto;
 }
 
-.settings-view .srow-select:focus {
-  border-color: var(--t-accent);
-  outline: none;
+/* ── Control height ───────────────────────────────────────────────────────────
+   The kit already draws these --ctl-h tall with the --r-2 corner. What differs is
+   the kind of box: on a Button and an Input the kit's --ctl-h is a `min-height`
+   floor, and a row wants an exact one. The Select trigger is exact in the kit
+   already, so it is not restated here. */
+.settings-view .ui-btn,
+.settings-view .ui-input {
+  height: var(--ctl-h);
 }
 
-.settings-view .srow-select:focus-visible {
-  outline: 2px solid var(--t-accent);
-  outline-offset: 2px;
-}
-
-/* A number field needs no more room than its digits, and right-aligning them
-   keeps the ones column still while the value grows. */
+/* A number field's digits right-align, so the ones column holds still as the
+   value grows. */
 .settings-view .srow-num {
-  width: 84px;
   text-align: right;
 }
 
+/* Segmented: the kit makes the OUTER box a --ctl-h floor and sizes the items 6px
+   short of it (its wrapper adds 2px of padding and a 1px border on each side);
+   here the box is exact, as the other controls are. An item may shrink below its
+   label and ends in an ellipsis rather than overflowing the column — but only as
+   a last resort: at 11px the three cursor labels need ~101px of text, so the 2px
+   of padding (not the kit's --sp-3) is what lets them fit the 140px column
+   whole. Measured. */
+.settings-view .ui-seg {
+  height: var(--ctl-h);
+}
+
+.settings-view .ui-seg-item {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 2px;
+  border-radius: var(--r-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Switch: the same 42×24 pill, with a hit area as tall as every other control.
+   The pseudo-element is absolutely positioned, so the row's layout does not
+   change; a click on it is a click on the switch. */
+.settings-view .ui-switch::before {
+  content: '';
+  position: absolute;
+  top: calc(50% - var(--ctl-h) / 2);
+  right: 0;
+  left: 0;
+  height: var(--ctl-h);
+}
+
+/* ── Theme button ─────────────────────────────────────────────────────────────
+   Shows the current theme and opens the browser. The name truncates on one line
+   (the full text is the button's `title`) and the chevron stays at the edge. */
+.settings-view .srow-theme {
+  justify-content: space-between;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-2);
+  color: var(--t-text);
+  font-weight: 400;
+}
+
+.settings-view .srow-theme-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Link row ─────────────────────────────────────────────────────────────────
+   The whole row is the button: a row that opens somewhere else (Edit config.json)
+   ends in a chevron at the control column's right edge, where a switch would. */
+.settings-view .srow-link {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--t-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color var(--mo-micro) ease;
+}
+
+.settings-view .srow-link .srow-control {
+  color: var(--t-subtext);
+}
+
+.settings-view .srow-link:hover {
+  background-color: color-mix(in srgb, var(--t-surface) 55%, transparent);
+}
+
+.settings-view .srow-link:active {
+  background-color: color-mix(in srgb, var(--t-surface) 78%, var(--t-text));
+  transition-duration: var(--mo-0);
+}
+
+/* Negative offset: the card clips its rows, so an outset ring would lose its
+   outside half at the card's edge. */
+.settings-view .srow-link:focus-visible {
+  outline: 2px solid var(--t-accent);
+  outline-offset: -2px;
+}
+
+/* ── Sub-view header (the theme browser) ──────────────────────────────────────
+   A back control and the sub-view's title, above the list that replaced the form. */
+.settings-view .set-subhead {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+
+.settings-view .set-back {
+  flex: 0 0 auto;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-2) 0 var(--sp-1);
+}
+
+/* In the mobile drawer the host's own header is the back control: it reads
+   `‹ Settings` and pops this sub-view before it leaves Settings (SessionDrawer
+   lifts the state for exactly that). A second `‹ Settings` stacked right under it
+   would be the same control twice, so here the title stands alone. `display: none`
+   also takes it out of the tab order and the accessibility tree. That is safe only
+   because the header answers Enter, Space and assistive-tech clicks as well as
+   the pointer (`pressClick` in panes/press.ts). SettingsFields moves focus to the
+   first control the sub-view draws, so here focus lands on the first theme. */
+.drawer-settings-body .settings-view .set-back {
+  display: none;
+}
+
+.settings-view .set-subtitle {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--t-text);
+  font-size: var(--fs-3);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .settings-view .srow,
-  .settings-view .srow-select,
-  .settings-view .settings-section > .ui-collapsible-trigger {
+  .settings-view .srow-link {
     transition-duration: 0.001ms !important;
   }
 }

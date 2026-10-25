@@ -22,6 +22,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, IconButton } from '../ui';
+import { Icon } from '../ui/icons';
 import { useDictation } from './useDictation';
 import './dictation-view.css';
 
@@ -41,31 +42,6 @@ export interface DictationViewProps {
   /** Paste into the focused terminal; the caller owns failure feedback. */
   onInsert: (text: string) => void;
 }
-
-// Emoji rather than SVG here — but the rail next door already
-// learned that the platform emoji fallback renders the microphone nearly
-// invisible against a dark panel. Same glyph, same decision: inline SVG,
-// currentColor, so the button's own state colours it.
-const MicIcon = () => (
-  <svg
-    viewBox="0 0 16 16"
-    width="14"
-    height="14"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="1.5"
-    aria-hidden="true"
-  >
-    <rect x="6" y="1.7" width="4" height="7.2" rx="2" />
-    <path d="M3.6 7.4a4.4 4.4 0 0 0 8.8 0M8 11.8v2.5" strokeLinecap="round" />
-  </svg>
-);
-
-const StopIcon = () => (
-  <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true">
-    <rect x="4" y="4" width="8" height="8" rx="1.5" />
-  </svg>
-);
 
 const timeLabel = (ms: number): string =>
   ms
@@ -164,7 +140,7 @@ export function DictationView({ onCopy, onInsert }: DictationViewProps) {
         disabled={working}
         onClick={dictation.toggle}
       >
-        {recording ? <StopIcon /> : <MicIcon />}
+        <Icon name={recording ? 'stop' : 'mic'} size={14} />
         {recording ? 'Stop' : working ? 'Transcribing…' : 'Record'}
       </Button>
 
@@ -251,7 +227,7 @@ export function DictationView({ onCopy, onInsert }: DictationViewProps) {
                   data-testid={`dv-play-${entry.name}`}
                   onClick={() => togglePlay(entry.name)}
                 >
-                  {playing === entry.name ? '❚❚' : '▶'}
+                  <Icon name={playing === entry.name ? 'pause' : 'play'} size={14} />
                 </IconButton>
               )}
               {entry.text ? (
@@ -262,7 +238,7 @@ export function DictationView({ onCopy, onInsert }: DictationViewProps) {
                     data-testid={`dv-copy-${entry.name}`}
                     onClick={() => onCopy(entry.text)}
                   >
-                    ⧉
+                    <Icon name="copy" size={14} />
                   </IconButton>
                   <IconButton
                     label="Insert into terminal"
@@ -270,7 +246,7 @@ export function DictationView({ onCopy, onInsert }: DictationViewProps) {
                     data-testid={`dv-insert-${entry.name}`}
                     onClick={() => onInsert(entry.text)}
                   >
-                    ↵
+                    <Icon name="newline" size={14} />
                   </IconButton>
                 </>
               ) : (

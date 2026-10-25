@@ -6,16 +6,20 @@
 // wire, theme-matched hex here).
 
 import type { TabKind, TabMeta } from '@palmux/shared';
+import type { IconId } from '../ui/icons';
 
-const KIND_ICONS: { [K in TabKind]: string } = {
-  terminal: '❯',
-  web: '🌐',
-  dashboard: '▦',
-  editor: '✎',
-  markdown: '📖',
+// Icon NAMES, not glyphs: the strip, the drawer and the sheet each render
+// `<Icon name={kindIcon(kind)} />`, so a tab's kind draws in one stroke weight
+// everywhere instead of in whatever face the platform has for ❯ or 🌐.
+const KIND_ICONS: { [K in TabKind]: IconId } = {
+  terminal: 'terminal',
+  web: 'globe',
+  dashboard: 'dashboard',
+  editor: 'pencil',
+  markdown: 'book',
 };
 
-export function kindIcon(kind: TabKind): string {
+export function kindIcon(kind: TabKind): IconId {
   return KIND_ICONS[kind];
 }
 

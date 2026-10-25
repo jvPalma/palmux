@@ -158,3 +158,15 @@ describe('mergeExtraKeys', () => {
     expect(merged.layout).toBe(DEFAULT_LAYOUT);
   });
 });
+
+describe('the icon field', () => {
+  it('keeps an icon-only key as an object, so the icon survives', () => {
+    expect(normalizeLayout([[{ macro: 'ALT ENTER', icon: 'newline' }]])).toEqual([
+      [{ macro: 'ALT ENTER', icon: 'newline' }],
+    ]);
+  });
+
+  it('drops a non-string icon', () => {
+    expect(normalizeLayout([[{ key: 'a', icon: 3 }]])).toEqual([['a']]);
+  });
+});

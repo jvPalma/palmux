@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -110,21 +112,68 @@ describe('rail actions', () => {
     expect(container.querySelector('.dock-rail-sep')).toBeNull();
   });
 
-  it('renders them after the four views, behind a separator', () => {
+  // Frequency of use, top to bottom: what you open mid-session, then the actions
+  // behind their separator, then Settings alone at the bottom edge.
+  it('renders New tab, Explorer, Dictation, a separator, Upload, Download, Settings', () => {
     const { container } = render(
       <DockPanel view={null} rail onView={noop} actions={[...actions(noop)]} />,
     );
     const rail = screen.getByTestId('dock-rail');
-    const ids = [...rail.querySelectorAll('button')].map((b) => b.getAttribute('data-testid'));
-    expect(ids).toEqual([
-      'dock-rail-settings',
+    const order = [...rail.children].map(
+      (el) => el.getAttribute('data-testid') ?? (el.className.includes('sep') ? 'sep' : '?'),
+    );
+    expect(order).toEqual([
       'dock-rail-newtab',
       'dock-rail-files',
       'dock-rail-dictation',
+      'sep',
       'dock-rail-upload',
       'dock-rail-download',
+      'dock-rail-settings',
     ]);
     expect(container.querySelector('.dock-rail-sep')).not.toBeNull();
+  });
+
+  it('pins Settings, and only Settings, to the bottom of the rail', () => {
+    render(<DockPanel view={null} rail onView={noop} actions={[...actions(noop)]} />);
+    const rail = screen.getByTestId('dock-rail');
+    expect(rail.lastElementChild).toBe(screen.getByTestId('dock-rail-settings'));
+    expect([...rail.querySelectorAll('.dock-rail-pinned')]).toEqual([
+      screen.getByTestId('dock-rail-settings'),
+    ]);
+  });
+
+  it('still ends on Settings with no actions, and draws no separator', () => {
+    const { container } = render(<DockPanel view={null} rail onView={noop} />);
+    const rail = screen.getByTestId('dock-rail');
+    expect(rail.lastElementChild).toBe(screen.getByTestId('dock-rail-settings'));
+    expect(container.querySelector('.dock-rail-sep')).toBeNull();
+  });
+
+  it('Settings is still a pressed-state view, not an action', async () => {
+    const onView = vi.fn();
+    render(<DockPanel view="settings" rail onView={onView} actions={[...actions(noop)]} />);
+    const settings = screen.getByTestId('dock-rail-settings');
+    expect(settings).toHaveAttribute('aria-pressed', 'true');
+    await userEvent.click(settings);
+    expect(onView).toHaveBeenLastCalledWith(null);
+  });
+
+  // jsdom does not cascade, so the pin is read from the stylesheet: free space
+  // above Settings comes from `margin-top: auto` on the element itself.
+  it('takes its bottom edge from margin-top: auto on its own element', () => {
+    const css = readFileSync(join(__dirname, 'dock.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const body = /\.dock-rail-pinned\s*\{([^{}]*)\}/.exec(css)?.[1] ?? '';
+    expect(body).toMatch(/margin-top:\s*auto/);
+  });
+
+  // `margin-top: auto` absorbs free space only inside a flex column, so the pin
+  // is worth nothing unless the rail itself is one.
+  it('keeps the rail a flex column, the container the auto margin needs', () => {
+    const css = readFileSync(join(__dirname, 'dock.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const body = /(?:^|\})\s*\.dock-rail\s*\{([^{}]*)\}/.exec(css)?.[1] ?? '';
+    expect(body).toMatch(/display:\s*flex/);
+    expect(body).toMatch(/flex-direction:\s*column/);
   });
 
   it('runs the action and never opens a view', async () => {

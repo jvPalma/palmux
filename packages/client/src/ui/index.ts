@@ -19,6 +19,9 @@ export type { SwitchProps } from './Switch';
 export { Segmented } from './Segmented';
 export type { SegmentedOption, SegmentedProps } from './Segmented';
 
+export { Select } from './Select';
+export type { SelectOption, SelectProps } from './Select';
+
 export { Tooltip, TooltipProvider } from './Tooltip';
 export type { TooltipProps, TooltipProviderProps } from './Tooltip';
 
@@ -27,6 +30,9 @@ export type { CollapsibleProps } from './Collapsible';
 
 export { Dialog } from './Dialog';
 export type { DialogProps } from './Dialog';
+
+export { DropdownMenu } from './DropdownMenu';
+export type { DropdownMenuItemSpec, DropdownMenuProps } from './DropdownMenu';
 
 export { ErrorBoundary } from './ErrorBoundary';
 export type { ErrorBoundaryProps } from './ErrorBoundary';

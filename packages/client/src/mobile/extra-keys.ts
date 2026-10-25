@@ -3,8 +3,8 @@
 // Mirrors Termux's `extra-keys` configuration so a layout authored for Termux
 // can be pasted in and Just Work. The schema is the same array-of-arrays of
 // keys, where a key is either a bare name string or an object with
-// {key, display, macro, popup}. We adopt Termux's *schema*, stored in
-// palmux's own server-synced config.
+// {key, display, macro, popup} — plus palmux's own `action` and `icon`. We
+// adopt Termux's *schema*, stored in palmux's own server-synced config.
 //
 // What each token emits is defined by key-encoder.ts (encodeExtraKey/encodeMacro),
 // shared with the physical keyboard so a toolbar key and its hardware twin send
@@ -18,6 +18,13 @@ export interface ExtraKey {
   key?: string;
   /** Visible label override; purely cosmetic, decoupled from what is sent. */
   display?: string;
+  /**
+   * A built-in SVG icon drawn instead of the label (`KEY_ICON_NAMES` in
+   * key-icons.tsx). Beats `display`, which stays as the fallback for a name
+   * this client does not know — an emoji renders at whatever weight the OS
+   * font gives it, which is why a config wants a named icon at all.
+   */
+  icon?: string;
   /** Space-separated key sequence sent as one chord. Mutually exclusive with key. */
   macro?: string;
   /** Alternate key surfaced on long-press. Bare name or a nested key object. */
@@ -92,6 +99,7 @@ function normalizeKey(raw: unknown): ExtraKey | null {
   const out: ExtraKey = {};
   if (typeof raw['key'] === 'string') out.key = raw['key'];
   if (typeof raw['display'] === 'string') out.display = raw['display'];
+  if (typeof raw['icon'] === 'string') out.icon = raw['icon'];
   if (typeof raw['macro'] === 'string') out.macro = raw['macro'];
   if (typeof raw['action'] === 'string') out.action = raw['action'];
   if (typeof raw['popup'] === 'string') {
@@ -118,7 +126,7 @@ export function normalizeLayout(raw: unknown): ExtraKeysLayout {
     const keys: ExtraKeySpec[] = [];
     for (const cell of row) {
       const k = normalizeKey(cell);
-      if (k) keys.push(k.display || k.macro || k.popup || k.action ? k : k.key!);
+      if (k) keys.push(k.display || k.icon || k.macro || k.popup || k.action ? k : k.key!);
     }
     if (keys.length) layout.push(keys);
   }

@@ -7,6 +7,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TabMeta } from '@palmux/shared';
 import { MarkdownPane } from './MarkdownPane';
+import { Icon } from '../ui/icons';
 
 vi.mock('./markdown-render', () => ({
   renderMarkdown: (text: string) => Promise.resolve(`<p data-src>${text}</p>`),
@@ -27,6 +28,14 @@ beforeEach(() => {
   vi.stubGlobal('fetch', fetchMock);
 });
 afterEach(() => vi.unstubAllGlobals());
+
+/** The drawn shapes of a registered icon, to compare against what a control
+ *  rendered. Rendered into a detached node so `screen` never sees it. */
+const iconPaths = (name: string): string | undefined => {
+  const host = document.createElement('div');
+  render(<Icon name={name} />, { container: host });
+  return host.querySelector('svg')?.innerHTML;
+};
 
 const mdTab = (url?: string): TabMeta => ({ id: '0', kind: 'markdown', ...(url ? { url } : {}) });
 
@@ -84,12 +93,18 @@ describe('browser view', () => {
     fetchMock.mockResolvedValueOnce(
       jsonRes({ dir: '/docs', root: '/docs', dirs: [], files: ['/docs/readme.md'] }),
     );
-    fireEvent.click(screen.getByText('📁 /docs'));
-    await waitFor(() => screen.getByText('📄 readme.md'));
+    // A row is an icon plus its name: the folder and the file draw different
+    // shapes, and the name is the button's own text.
+    const dirRow = screen.getByText('/docs');
+    expect(dirRow.querySelector('svg')?.innerHTML).toBe(iconPaths('folder'));
+    fireEvent.click(dirRow);
+    await waitFor(() => screen.getByText('readme.md'));
     expect(fetchMock).toHaveBeenLastCalledWith(`/md-list?dir=${encodeURIComponent('/docs')}`);
 
     fetchMock.mockResolvedValueOnce(textRes('# readme'));
-    fireEvent.click(screen.getByText('📄 readme.md'));
+    const fileRow = screen.getByText('readme.md');
+    expect(fileRow.querySelector('svg')?.innerHTML).toBe(iconPaths('file'));
+    fireEvent.click(fileRow);
     expect(onChangePath).toHaveBeenCalledWith('/docs/readme.md');
   });
 
@@ -101,13 +116,64 @@ describe('browser view', () => {
     );
   });
 
-  it('📂 from a document switches to the browser view', async () => {
+  it('the browse button from a document switches to the browser view', async () => {
+    fetchMock.mockResolvedValueOnce(textRes('doc'));
+    render(<MarkdownPane tab={mdTab('/docs/a.md')} onChangePath={vi.fn()} />);
+    await waitFor(() => screen.getByTestId('md-body'));
+    fetchMock.mockResolvedValueOnce(jsonRes({ dir: null, root: null, dirs: ['/docs'], files: [] }));
+    // Icon-only: the icon is aria-hidden, so the title is its accessible name.
+    const browse = screen.getByTestId('md-browse');
+    expect(browse.textContent).toBe('');
+    expect(browse.querySelector('svg')?.innerHTML).toBe(iconPaths('folder-open'));
+    expect(browse).toHaveAttribute('title', 'Browse configured folders');
+    fireEvent.click(browse);
+    await waitFor(() => screen.getByTestId('md-browser'));
+  });
+});
+
+// The header was ☰ 📖 📂 ⟳ ↩ characters. Each is an icon now, and each icon-only
+// control keeps its title as its accessible name (the icon is aria-hidden).
+describe('header icons', () => {
+  const paneHeader = () => screen.getByTestId('markdown-pane').querySelector('.pane-header');
+
+  it('names the document header controls and draws the book beside the file name', async () => {
+    fetchMock.mockResolvedValueOnce(textRes('doc'));
+    const onMenu = vi.fn();
+    render(<MarkdownPane tab={mdTab('/docs/a.md')} onChangePath={vi.fn()} onMenu={onMenu} />);
+    await waitFor(() => screen.getByTestId('md-body'));
+
+    const menu = screen.getByRole('button', { name: 'Menu' });
+    expect(menu.textContent).toBe('');
+    expect(menu.querySelector('svg')?.innerHTML).toBe(iconPaths('menu'));
+    fireEvent.pointerDown(menu);
+    expect(onMenu).toHaveBeenCalledTimes(1);
+
+    const title = paneHeader()?.querySelector('.pane-title');
+    expect(title).toHaveTextContent(/^a\.md$/);
+    expect(title?.querySelector('svg')?.innerHTML).toBe(iconPaths('book'));
+
+    const refresh = screen.getByTestId('md-refresh');
+    expect(refresh).toHaveAttribute('title', 'Re-read the file');
+    expect(refresh.textContent).toBe('');
+    expect(refresh.querySelector('svg')?.innerHTML).toBe(iconPaths('reload'));
+  });
+
+  it('swaps reload for the back arrow while browsing, and back returns to the document', async () => {
     fetchMock.mockResolvedValueOnce(textRes('doc'));
     render(<MarkdownPane tab={mdTab('/docs/a.md')} onChangePath={vi.fn()} />);
     await waitFor(() => screen.getByTestId('md-body'));
     fetchMock.mockResolvedValueOnce(jsonRes({ dir: null, root: null, dirs: ['/docs'], files: [] }));
     fireEvent.click(screen.getByTestId('md-browse'));
     await waitFor(() => screen.getByTestId('md-browser'));
+
+    expect(screen.queryByTestId('md-refresh')).toBeNull();
+    const back = screen.getByTestId('md-back');
+    expect(back).toHaveAttribute('title', 'Back to the document');
+    expect(back.textContent).toBe('');
+    expect(back.querySelector('svg')?.innerHTML).toBe(iconPaths('back'));
+    fetchMock.mockResolvedValueOnce(textRes('doc'));
+    fireEvent.click(back);
+    await waitFor(() => screen.getByTestId('md-body'));
   });
 });
 

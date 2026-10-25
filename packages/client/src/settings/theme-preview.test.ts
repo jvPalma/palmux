@@ -34,7 +34,7 @@ describe('PREVIEW_LINES', () => {
   });
 
   // An ellipsis in a COLOUR sample silently hides the last slots it exists to
-  // show, so the lines have to fit the 260px popup rather than merely survive it.
+  // show, so the lines have to fit the swatch rather than merely survive it.
   it('keeps each line inside the swatch without truncating', () => {
     for (const line of PREVIEW_LINES) {
       const chars = line.reduce((n, t) => n + t.text.length, 0);

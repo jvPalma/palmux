@@ -219,10 +219,22 @@ export function useSoftKeyboard(params: UseSoftKeyboardParams): SoftKeyboardCont
         committed = '';
         return;
       }
+      // Samsung Keyboard opens that re-including composition with an EMPTY
+      // update; consuming `committed` on it sent "1" then "12" → "112".
+      if (composed === '' && next === '') return;
       // If this composition re-includes chars already committed via insertText
       // (GBoard does this for digits/punctuation), treat them as already sent.
-      if (composed === '' && committed && next.startsWith(committed)) {
-        composed = committed;
+      // Only a SUFFIX comes back — Samsung re-includes the trailing digit run,
+      // not the ":" or "[" before it — so match the longest suffix of
+      // `committed` that opens `next` ("12:0" + "00" → "0" already sent).
+      if (composed === '' && committed) {
+        for (let n = Math.min(committed.length, next.length); n > 0; n--) {
+          const tail = committed.slice(-n);
+          if (next.startsWith(tail)) {
+            composed = tail;
+            break;
+          }
+        }
       }
       committed = '';
       let i = 0;

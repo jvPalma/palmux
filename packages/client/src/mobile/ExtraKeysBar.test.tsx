@@ -192,7 +192,7 @@ describe('ExtraKeysBar long-press actions', () => {
       />,
     );
     const key = screen.getByTestId('extra-key-ALT ENTER');
-    expect(key.textContent).toContain('🔉'); // long-press hint
+    expect(key.querySelector('.ek-popup-hint svg')).not.toBeNull(); // long-press hint (mic)
 
     tap(key);
     expect(send).toHaveBeenCalledWith('\x1b\r');
@@ -387,5 +387,113 @@ describe('an armed modifier survives one key’s whole event burst', () => {
       vi.advanceTimersByTime(50);
     });
     expect(ref.current!.takeMods().ctrl).toBe(true);
+  });
+});
+
+// Press feedback is driven by the gesture, not `:active`: the cap shows
+// "pressed" exactly while the press would still fire a key.
+describe('ExtraKeysBar press feedback', () => {
+  const setup = () => {
+    render(<ExtraKeysBar config={CONFIG} visible send={vi.fn()} onHeightChange={() => {}} />);
+    return screen.getByTestId('extra-key-b');
+  };
+
+  it('marks the key pressed from pointerdown until release', () => {
+    const b = setup();
+    fireEvent.pointerDown(b, { clientX: 0, clientY: 0 });
+    expect(b.classList).toContain('pressed');
+    fireEvent.pointerUp(b, { clientX: 0, clientY: 0 });
+    expect(b.classList).not.toContain('pressed');
+  });
+
+  it('drops the mark as soon as a slide cancels the key', () => {
+    const b = setup();
+    fireEvent.pointerDown(b, { clientX: 100, clientY: 0 });
+    fireEvent.pointerMove(b, { clientX: 140, clientY: 0 });
+    expect(b.classList).not.toContain('pressed');
+  });
+
+  it('drops the mark when the OS cancels the pointer', () => {
+    const b = setup();
+    fireEvent.pointerDown(b, { clientX: 0, clientY: 0 });
+    fireEvent.pointerCancel(b, { clientX: 0, clientY: 0 });
+    expect(b.classList).not.toContain('pressed');
+  });
+});
+
+describe('ExtraKeysBar faces', () => {
+  const renderLayout = (layout: ExtraKeysConfig['layout']) =>
+    render(
+      <ExtraKeysBar
+        config={{ enabled: true, layout }}
+        visible
+        send={vi.fn()}
+        onHeightChange={() => {}}
+      />,
+    );
+
+  it('draws a named icon instead of the display text', () => {
+    renderLayout([[{ macro: 'ALT ENTER', icon: 'newline', display: '↵' }]]);
+    const key = screen.getByTestId('extra-key-ALT ENTER');
+    expect(key.querySelector('svg')).not.toBeNull();
+    expect(key.textContent).not.toContain('↵');
+  });
+
+  it('falls back to display for an icon name it does not know', () => {
+    renderLayout([[{ macro: 'ALT ENTER', icon: 'nope', display: '↵' }]]);
+    expect(screen.getByTestId('extra-key-ALT ENTER').textContent).toBe('↵');
+  });
+
+  it('draws a popup icon and an action icon in the corner', () => {
+    renderLayout([
+      [
+        { macro: 'CTRL a TAB', icon: 'switch', popup: { macro: 'CTRL a P', icon: 'folder' } },
+        { key: 'ESC', action: 'keyboard' },
+      ],
+    ]);
+    for (const id of ['CTRL a TAB', 'ESC'])
+      expect(
+        screen.getByTestId(`extra-key-${id}`).querySelector('.ek-popup-hint svg'),
+      ).not.toBeNull();
+  });
+
+  // The face is aria-hidden, so a key drawn as an icon has to be named some
+  // other way — and the shared registry let a config ask for far more icons
+  // than the five the bar used to know. The corner hint is decoration: it must
+  // neither stand in for the name nor be appended to it.
+  it('names every key by its label, whatever its face or corner draws', () => {
+    renderLayout([
+      [
+        { key: 'ESC', display: 'Escape', icon: 'close' },
+        'UP',
+        { key: '-', popup: '|' },
+        { macro: 'CTRL a TAB', display: 'Switch', icon: 'switch', popup: { macro: 'CTRL a P' } },
+        { key: 'TAB', action: 'keyboard' },
+        'CTRL',
+      ],
+    ]);
+    const named: [string, string][] = [
+      ['Escape', 'ESC'],
+      ['UP', 'UP'],
+      ['-', '-'],
+      ['Switch', 'CTRL a TAB'],
+      ['TAB', 'TAB'],
+      ['CTRL', 'CTRL'],
+    ];
+    for (const [name, id] of named) {
+      expect(screen.getByRole('button', { name }), name).toBe(
+        screen.getByTestId(`extra-key-${id}`),
+      );
+    }
+    expect(screen.getByTestId('extra-key-ESC').querySelector('svg')).not.toBeNull();
+    for (const hint of document.querySelectorAll('.ek-popup-hint')) {
+      expect(hint.getAttribute('aria-hidden')).toBe('true');
+    }
+  });
+
+  it('sets word legends apart from single characters', () => {
+    renderLayout([['CTRL', '[']]);
+    expect(screen.getByTestId('extra-key-CTRL').classList).toContain('ek-word');
+    expect(screen.getByTestId('extra-key-[').classList).not.toContain('ek-word');
   });
 });

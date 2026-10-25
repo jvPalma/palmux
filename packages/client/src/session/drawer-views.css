@@ -1,27 +1,37 @@
-/* ── Mobile drawer: view switcher ─────────────────────────────────────────────
+/* ── Mobile drawer: top row and view switcher ─────────────────────────────────
  *
- * On mobile the drawer IS the container the desktop dock is, so it switches
- * between the same four surfaces with a kit Segmented pinned to its top edge.
- * This file owns that one row and nothing else: the bottom-anchored session
- * list, the 4-cell footer, the scrim and the open transition all stay exactly
- * where index.css puts them.
+ * The drawer is ordered for the thumb, bottom to top: the footer, the
+ * bottom-anchored session list, and at the very top ONE row — Settings (a gear),
+ * the view switcher, Close. The switcher is up there because the owner does not
+ * want it at the bottom. The row is the root level's alone: Settings and the
+ * new-tab chooser draw a back header in its place, so they carry no switcher.
+ * This file owns that row; the list, the footer, the scrim and the open
+ * transition are index.css's.
  *
- * Colour comes from the kit (`.ui-seg*` in ui/ui.css), which is already written
- * against the eight --t-* tokens; there is no colour declared here at all.
+ * Shape and most colour come from the kit (`.ui-seg*`, `.ui-icon-btn` in
+ * ui/ui.css). The two colour rules below exist because the drawer's mantle is a
+ * different ground from the kit's, and each names only --pill-* and --t-* tokens.
  */
 
-.drawer-views {
+/* Gear · switcher · Close. The two IconButtons are the drawer's own control
+   height; the switcher takes what they leave. */
+.drawer-top {
   flex: 0 0 auto;
-  padding-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding-bottom: var(--sp-2);
 }
 
 /* Compounded with `.ui-seg` so the override beats the kit rule whatever order
    the two stylesheets end up in. The kit root is inline-flex and content-sized;
-   here the four segments must span the drawer, or the icons land at four
-   different tap widths. */
+   here it takes the space between the two buttons, so the three segments share
+   it and land at equal tap widths. `min-width: 0` lets it shrink on a narrow
+   phone instead of pushing Close off the row. */
 .drawer-views-seg.ui-seg {
   display: flex;
-  width: 100%;
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 .drawer-views-seg .ui-seg-item {
@@ -30,14 +40,37 @@
   justify-content: center;
   flex: 1 1 0;
   min-width: 0;
-  /* The extra-keys key height, like every other control in the drawer. */
-  min-height: var(--mbtn-h);
   padding: 0;
 }
 
-/* The icon is the whole label: four words do not fit across a 300px drawer, and
-   these are the icons the desktop rail already teaches. The name stays in the
-   accessibility tree so each segment still has a readable name. */
+/* An unselected icon was the kit's --t-subtext on the drawer's mantle, which
+   read as disabled. It takes the strip's inactive text instead (the list's rows
+   wear the same), and full text under a finger. Scoped to the drawer: the kit's
+   Segmented in Settings and the file pane keeps its colours. */
+.drawer-top .drawer-views-seg .ui-seg-item {
+  color: var(--pill-text);
+}
+
+.drawer-top .drawer-views-seg .ui-seg-item:not(:disabled):not([data-state='on']):hover,
+.drawer-top .drawer-views-seg .ui-seg-item:not(:disabled):not([data-state='on']):active {
+  color: var(--t-text);
+}
+
+/* The selected segment restates its own colours in every state. The kit's
+   `.ui-seg-item:not(:disabled):hover` is more specific than its selected rule, so
+   hovering (or, on a touch screen, pressing) the selected segment put pale text on
+   the accent fill. These are specific enough to win in any stylesheet order. */
+.drawer-top .drawer-views-seg .ui-seg-item[data-state='on'],
+.drawer-top .drawer-views-seg .ui-seg-item[data-state='on']:not(:disabled):hover,
+.drawer-top .drawer-views-seg .ui-seg-item[data-state='on']:not(:disabled):active {
+  background: var(--t-accent);
+  color: var(--t-accent-ink);
+}
+
+/* The icon is the whole label: three words do not fit beside each other with a
+   thumb's width each, and these are the icons the desktop rail already teaches.
+   The name stays in the accessibility tree so each segment still has a readable
+   name. */
 .drawer-view-name {
   position: absolute;
   width: 1px;
@@ -50,11 +83,10 @@
 }
 
 /* A hosted view's body, in place of the session list. Same metrics as the
-   settings body it sits alongside — it scrolls under the footer, which overlays
-   the bottom of the drawer. */
+   settings body it sits alongside. */
 .drawer-view-body {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 4px 0;
+  padding: var(--sp-1) 0;
 }

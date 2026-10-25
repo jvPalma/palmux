@@ -37,6 +37,27 @@
   --t-accent-ink: #10101a; /* readable ink over --t-accent fills */
   color-scheme: dark;
 
+  /* Size scale. Not theme tokens — a theme never rewrites them, so they live
+     here beside the colours rather than in applyThemeTokens. ui/scale.test.ts
+     ratchets every stylesheet toward these steps; a value off the scale is a
+     violation, not a style choice. */
+  --fs-1: 11px;
+  --fs-2: 12px;
+  --fs-3: 13px;
+  --fs-4: 15px;
+  --fs-mono: 13px;
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --r-1: 4px;
+  --r-2: 6px;
+  --r-3: 10px;
+  --r-pill: 999px;
+  --ctl-h: 28px;
+
   /* Tab-accent palette: the 16 ANSI slots + their ink (readable text over a
      solid fill of the slot). Theme-aware — the WHOLE set is overridden per theme
      at runtime by applyThemeTokens; defaults = Catppuccin Mocha ansi16.
@@ -73,6 +94,15 @@
   --tab-c-ansi14-ink: #10101a;
   --tab-c-ansi15: #a6adc8;
   --tab-c-ansi15-ink: #10101a;
+}
+
+/* Touch target height. Keyed on an attribute App sets from the same resolved
+   mobile flag that drives `.app.mobile`, not on `@media (pointer: coarse)`:
+   mobileMode `auto` is decided by maxTouchPoints, so a media query would
+   disagree with the layer on a touchscreen laptop. On :root so Radix content
+   portalled outside `.app` inherits it. */
+:root[data-mobile='true'] {
+  --ctl-h: 36px;
 }
 
 * {
@@ -365,7 +395,7 @@ body {
   position: absolute;
   z-index: 26;
   width: 26px;
-  height: 22px;
+  height: var(--ctl-h);
   padding: 0;
   border: 1px solid var(--t-surface);
   border-radius: 4px;
@@ -423,7 +453,7 @@ body {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-2);
   padding: 4px 8px;
   background: var(--t-mantle);
   border-bottom: 1px solid var(--t-surface);
@@ -446,10 +476,10 @@ body {
   height: 36px;
   padding: 0 8px;
   border: 1px solid var(--t-surface);
-  border-radius: 8px;
+  border-radius: var(--r-2);
   background: transparent;
   color: var(--t-text);
-  font-size: 14px;
+  font-size: var(--fs-4);
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
@@ -460,9 +490,9 @@ body {
 .pane-url {
   flex: 1 1 auto;
   min-width: 0;
-  padding: 7px 10px;
+  padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--t-surface);
-  border-radius: 8px;
+  border-radius: var(--r-2);
   background: var(--t-base);
   color: var(--t-text);
   font:
@@ -754,7 +784,7 @@ body {
   padding: 12px 16px;
 }
 .md-crumbs {
-  margin-bottom: 10px;
+  margin-bottom: var(--sp-3);
   color: var(--t-subtext);
   font:
     12px/1.4 ui-monospace,
@@ -780,8 +810,8 @@ body {
   border: 0;
   background: transparent;
   color: var(--t-text);
-  font-size: 14px;
-  padding: 7px 8px;
+  font-size: var(--fs-3);
+  padding: var(--sp-2);
   border-radius: 6px;
   cursor: pointer;
 }
@@ -796,10 +826,10 @@ body {
   width: 100%;
   max-width: 520px;
   margin: 0 auto;
-  padding: 18px 16px calc(18px + env(safe-area-inset-bottom, 0px));
+  padding: var(--sp-5) var(--sp-4) calc(var(--sp-5) + env(safe-area-inset-bottom, 0px));
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: var(--sp-5);
 }
 
 .dash-section {
@@ -808,23 +838,26 @@ body {
   gap: 8px;
 }
 
+/* The section title (ui.css `.ui-collapsible-trigger`): a small secondary-colour
+   label, not an uppercase tracked caption. Nothing renders this class today; it
+   is kept in step so a reuse cannot bring the old heading style back. */
 .dash-label {
   color: var(--t-subtext);
-  font-size: 11px;
+  font-size: var(--fs-1);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  text-transform: none;
+  letter-spacing: 0;
 }
 
 .dash-tile {
   min-height: 48px;
-  padding: 12px 14px;
+  padding: var(--sp-3) var(--sp-4);
   text-align: left;
   border: 1px solid var(--t-surface);
   border-radius: 10px;
   background: var(--t-mantle);
   color: var(--t-text);
-  font-size: 14px;
+  font-size: var(--fs-3);
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
@@ -847,7 +880,7 @@ body {
 .dash-tmux {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--sp-2);
   max-height: 46vh;
   overflow-y: auto;
   padding: 2px;
@@ -855,7 +888,7 @@ body {
 .dash-tmux .dash-tile.tmux-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-3);
   min-height: 40px;
   padding: 8px 12px;
 }
@@ -917,7 +950,7 @@ body {
   border-radius: 10px;
   background: var(--t-base);
   color: var(--t-text);
-  font-size: 14px;
+  font-size: var(--fs-3);
 }
 
 /* ── Tab sheet (mobile long-press) ────────────────────────────────────────── */
@@ -939,7 +972,7 @@ body {
   gap: 12px;
   padding: 16px 16px calc(16px + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--t-surface);
-  border-radius: 14px 14px 0 0;
+  border-radius: var(--r-3) var(--r-3) 0 0;
   background: var(--t-mantle);
 }
 
@@ -984,7 +1017,7 @@ body {
 
 .sheet-actions {
   display: flex;
-  gap: 10px;
+  gap: var(--sp-3);
 }
 
 .sheet-btn {
@@ -1005,7 +1038,7 @@ body {
 
 .drawer-dot {
   width: 10px;
-  height: 10px;
+  height: 10px; /* scale-ok: round dot, equal to its 10px width */
   border-radius: 50%;
   flex: 0 0 auto;
 }
@@ -1034,6 +1067,22 @@ body {
 .term-host .xterm {
   height: 100%;
   padding: 2px;
+}
+
+/* xterm.css gives `.xterm-viewport` `background-color: #000`, and in xterm 6 that
+   element is an absolutely positioned layer over the WHOLE `.xterm` box, under
+   the scrollable element that paints the grid. The scrollable element takes the
+   theme background inline, but only over the grid itself, so everything the grid
+   does not cover — xterm's own 2px inset, and the sub-cell remainder
+   `height mod cellHeight` at the bottom — showed that #000, over the
+   `--t-term-bg` `.term-wrap` paints for exactly this. Measured at 1440x900 on a
+   Catppuccin theme: pure (0,0,0) in a 9px band at the bottom, a 2px column on
+   the left and a 2px row on top, where the terminal is (30,30,46). It is plain
+   CSS, so it shows in any desktop window with a remainder, not only headless.
+   Painting the viewport in the terminal's own background makes the remainder
+   read as the terminal's edge, which is what `.term-wrap` documents. */
+.term-host .xterm .xterm-viewport {
+  background-color: var(--t-term-bg, var(--t-base));
 }
 
 /* NO SCROLLBAR, on any device. xterm 6 dropped the native overflow scrollbar for
@@ -1090,9 +1139,11 @@ body {
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  /* Compact: tight gaps + minimal padding reclaim ~3 terminal rows of height. */
-  gap: 2px;
-  padding: 2px 2px calc(2px + env(safe-area-inset-bottom, 0px));
+  /* No gaps: the keys tile the bar edge to edge, so a finger landing between
+     two caps still hits one. The visible spacing is drawn INSIDE each key
+     (`.ek-key::before`), the way a phone keyboard spaces its caps. */
+  gap: 0;
+  padding: 0 0 env(safe-area-inset-bottom, 0px);
   background: var(--t-mantle);
   border-top: 1px solid var(--t-surface);
   touch-action: manipulation;
@@ -1109,21 +1160,25 @@ body {
 
 .ek-row {
   display: flex;
-  gap: 2px;
 }
 
 .ek-key {
+  /* The cap's fill; the armed/locked states swap it and `.pressed` mixes
+     against it, so press feedback reads on every state. */
+  --cap-bg: var(--t-surface);
   position: relative;
+  isolation: isolate; /* keeps the ::before cap under the label */
   display: flex;
   align-items: center;
   justify-content: center;
   flex: 1 1 0;
   min-width: 0;
-  min-height: 30px;
+  /* Same bar height as the old 30px keys + 2px gaps: the button is the HIT
+     area, the cap inside it is 6px shorter and 5px narrower. */
+  min-height: 33px;
   padding: 0 4px;
-  border: 1px solid var(--t-surface);
-  border-radius: 5px;
-  background: var(--t-surface);
+  border: 0;
+  background: transparent;
   color: var(--t-text);
   font:
     600 14px/1 ui-monospace,
@@ -1135,10 +1190,21 @@ body {
   touch-action: none;
 }
 
+.ek-key::before {
+  content: '';
+  position: absolute;
+  inset: 3px 2.5px;
+  z-index: -1;
+  border-radius: 6px;
+  background: var(--cap-bg);
+  /* Micro-feedback tier: the release fades out; the press itself is instant. */
+  transition: background-color 140ms ease;
+}
+
 /* Icon keys (arrows, tab, - ~ /) render a crisp SVG instead of a small label. */
 .ek-key svg {
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   display: block;
   pointer-events: none;
 }
@@ -1146,8 +1212,8 @@ body {
 /* Long-press popup hint (top-right corner, like Termux). */
 .ek-popup-hint {
   position: absolute;
-  top: 2px;
-  right: 4px;
+  top: 5px;
+  right: 6px;
   font-size: 9px;
   line-height: 1;
   font-weight: 600;
@@ -1155,23 +1221,39 @@ body {
   pointer-events: none;
 }
 
-.ek-key:active,
-.ek-key.pressed {
-  background: var(--t-accent);
-  color: var(--t-mantle);
+.ek-popup-hint svg {
+  width: 10px;
+  height: 10px;
+}
+
+/* Word legends (ESC, CTRL, SHIFT, ALT): set like a keycap — a smaller sans
+   face, opened up with tracking — instead of 14px bold monospace, which read
+   heavier than the icons beside it. */
+.ek-key.ek-word {
+  font:
+    600 11.5px/1 system-ui,
+    sans-serif;
+  letter-spacing: 0.03em;
+}
+
+/* Press feedback: a subtle shift of the cap toward the text colour. Set by
+   ExtraKeysBar from the GESTURE rather than `:active`, so it clears the moment
+   a slide cancels the key — the cap never says "pressed" for a key that will
+   not fire. */
+.ek-key.pressed::before {
+  background: color-mix(in srgb, var(--cap-bg) 80%, var(--t-text));
+  transition-duration: 0ms;
 }
 
 .ek-mod.armed {
-  background: var(--t-accent);
+  --cap-bg: var(--t-accent);
   color: var(--t-mantle);
-  box-shadow: 0 0 0 2px var(--t-accent);
 }
 
 /* Long-press-locked modifier: stays applied to every key until tapped off. */
 .ek-mod.locked {
-  background: var(--t-accent-alt);
+  --cap-bg: var(--t-accent-alt);
   color: var(--t-mantle);
-  box-shadow: 0 0 0 2px var(--t-accent-alt);
 }
 
 /* ── Native touch selection layer (mobile) ────────────────────────────────── */
@@ -1221,22 +1303,34 @@ body {
 }
 
 /* ── Session drawer (mobile; RIGHT edge — swipe RtL on the extra-keys bar to
-   open, scrim tap to close. Swipe LtR raises the keyboard instead) ────────── */
+   open; the scrim strip or the top close button closes it. Swipe LtR raises the
+   keyboard instead) ──────────────────────────────────────────────────────────
+
+   It covers the full height and all but a 44px strip on the left: the touch-target
+   floor, and a strip that hit-tests as the scrim with the keyboard up or down.
+   Every control in here takes the --ctl-h step (36px under the mobile class), the
+   same one the kit and Settings use. Motion is the surface tier in and the micro
+   tier out: a leaving surface is shorter than an arriving one. */
 .drawer-scrim {
   position: fixed;
   inset: 0;
   z-index: 64;
-  background: rgba(0, 0, 0, 0.45);
+  background: color-mix(in srgb, var(--t-base) 72%, transparent);
+  /* Closed it is transparent and inert, not removed: removing it would leave
+     nothing to fade out. */
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--mo-micro) ease;
 }
-.drawer-scrim.hidden {
-  display: none;
+.drawer-scrim.open {
+  opacity: 1;
+  pointer-events: auto;
+  transition: opacity var(--mo-surface) var(--mo-ease);
 }
 
 .drawer {
-  /* Every control in here is sized off the extra-keys bar's key: that bar is
-     the mobile touch-target reference, so the drawer can't feel looser than the
-     surface the thumb just came from. */
-  --mbtn-h: 30px;
+  /* The scrim strip the drawer leaves uncovered. */
+  --drawer-strip: 44px;
   position: fixed;
   /* Track the visible viewport like .app: when the soft keyboard is open the
      drawer shrinks to the space above it, so its footer (⬆ Upload, ⚙) stays
@@ -1245,36 +1339,48 @@ body {
   height: var(--app-height, 100dvh);
   right: 0;
   z-index: 65;
-  width: min(78vw, 300px);
+  width: calc(100% - var(--drawer-strip));
   display: flex;
   flex-direction: column;
   background: var(--t-mantle);
   border-left: 1px solid var(--t-surface);
-  padding: calc(6px + env(safe-area-inset-top, 0px)) 6px
-    calc(6px + env(safe-area-inset-bottom, 0px));
+  padding: calc(var(--sp-2) + env(safe-area-inset-top, 0px)) var(--sp-2)
+    calc(var(--sp-2) + env(safe-area-inset-bottom, 0px));
   /* Slides in from the RIGHT — the direction a right→left swipe pulls. */
   transform: translateX(102%);
-  transition: transform 0.18s ease;
+  transition: transform var(--mo-micro) ease;
 }
 .drawer.open {
   transform: translateX(0);
+  transition: transform var(--mo-surface) var(--mo-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drawer,
+  .drawer.open,
+  .drawer-scrim,
+  .drawer-scrim.open {
+    transition: none;
+  }
 }
 
 /* `.drawer-brand` survives ONLY as the back control's typography — the header
-   row that carried the palmux wordmark and a ⚙ is gone, because the segmented
-   header above it already reaches settings in one tap. */
+   row that carried the palmux wordmark and a ⚙ is gone. */
 .drawer-brand {
   font:
-    700 15px/1 ui-monospace,
+    700 var(--fs-4) / 1 ui-monospace,
     monospace;
   color: var(--t-accent);
-  padding: 4px 4px 6px;
+  padding: var(--sp-1) var(--sp-1) var(--sp-2);
   border-bottom: 1px solid var(--t-surface);
 }
 /* The settings view's header doubles as the back control. */
 .drawer-back {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
   width: 100%;
+  min-height: var(--ctl-h);
   border: 0;
   background: transparent;
   text-align: left;
@@ -1290,10 +1396,9 @@ body {
   margin-top: auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 4px 0;
+  padding: var(--sp-1) 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
 }
 .drawer-sessions[hidden] {
   display: none;
@@ -1306,17 +1411,17 @@ body {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 2px 6px 10px;
-  font-size: 12px;
+  padding: 2px var(--sp-2) var(--sp-3);
+  font-size: var(--fs-2);
 }
 
 /* DashboardBody was written for the dock, which is a panel with nothing around
-   it. In here it is the FOURTH nesting level (drawer 6px → this body 6px → its
-   own 10px → a section's border), and a tmux name had 38px of the drawer's 300
+   it. In here it is the FOURTH nesting level (drawer → this body → its own
+   padding → a section's border), and a tmux name had 38px of the drawer's 300
    eaten before its first glyph. The body's own padding goes, so the sections
    span the width this surface actually has. */
 .drawer-newtab-body .dash-body.dash-dock {
-  gap: 6px;
+  gap: var(--sp-2);
   padding: 0;
 }
 
@@ -1334,66 +1439,208 @@ body {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 4px 0;
+  padding: var(--sp-1) 0;
 }
 /* Row metrics, controls and section rhythm all come from `.settings-form`
    (shared with the desktop modal); the drawer only sets the gutter and how
    wide a control may grow on a narrow screen. */
 .drawer-settings-body .settings-form {
   --set-control: 55%;
-  /* Bottom gutter clears the drawer footer, which overlays the scroll area. */
-  padding: 2px 6px 18px;
-  font-size: 12px;
+  padding: 2px var(--sp-2) var(--sp-4);
+  font-size: var(--fs-2);
 }
 
-.drawer-row {
-  --tab-accent: var(--t-accent);
-  --tab-ink: var(--t-accent-ink);
-  display: flex;
-  gap: 2px;
-  align-items: stretch;
-}
-/* Grouped member rows sit indented under their header with a group-color spine. */
-.drawer-row.grouped {
-  margin-left: 12px;
-  border-left: 2px solid color-mix(in srgb, var(--group-accent, var(--t-accent)) 55%, transparent);
-  padding-left: 6px;
-}
-
-/* Tappable group header in the drawer: caret + dot + name + member count;
-   collapse state is shared with the desktop strip (same per-device set). Flat,
-   matching the strip chip — 8% tint idle, solid group fill when the active tab
-   is a member. */
-.drawer-group {
+/* ── Rows entering and leaving ───────────────────────────────────────────────
+ *
+ * Every row sits in a `.drawer-leaf` that animates its OWN occupied space, the
+ * kit Collapsible's `grid-template-rows: 1fr ↔ 0fr`, with opacity. Fading the
+ * row alone and unmounting it afterwards would make every row below jump by its
+ * height at the end; collapsing the space with the fade lets them glide up.
+ *
+ * `SessionDrawer`'s `useLeavingItems` keeps a removed row mounted for --mo-micro
+ * with `data-phase='leaving'`, and draws an inserted one as `entering` for two
+ * frames before it is `present`. These are transitions, never keyframes, so a
+ * change interrupted halfway (a tab closed and its group folded together)
+ * retargets from where it is.
+ *
+ * The tier an ENTRANCE runs on is `data-enter`. A transition takes its duration
+ * and delay from the style it ENDS on, so the rule sits on the present row too. A
+ * list's first fill is the staggered tier; a row inserted later is micro. */
+.drawer-leaf {
+  /* A group with no colour wears the app accent, as the strip's cluster does. A
+     coloured group's leaves, header and members alike, override both inline. */
   --group-accent: var(--t-accent);
   --group-ink: var(--t-accent-ink);
+  /* The colour of the frame lane below: the leaf's own group's, except on a bridge,
+     whose sides belong to the live group around it and are set inline. That group
+     need not be the row's: a header emptied by a regroup can leave from between two
+     rows of the group its tab joined, and its chip still fades in its own colour. */
+  --group-frame: var(--group-accent);
+  /* A flex item of the list, which scrolls. Left to shrink, a leaf could squash to
+     nothing (its track's minimum is the clipped row's 0) before the list ever
+     overflowed, and the rows would be a stack of slivers instead of a scroll. */
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-rows: 1fr;
+  /* The lane a group's frame is drawn in (see group-first below): 1px of border on
+     both sides, transparent unless the leaf is part of a group, so a member pill and
+     a plain pill share an edge and the frame is what sticks out. It is on the LEAF
+     because the leaf is the one box that is as tall as the slot at every moment. */
+  border-left: 1px solid transparent;
+  border-right: 1px solid transparent;
+  opacity: 1;
+  transition:
+    grid-template-rows var(--mo-micro) ease,
+    opacity var(--mo-micro) ease;
+}
+
+/* The clip that lets a track shrink to 0fr. Its side padding is --cluster-pad: that
+   is where the active ring, which is OUTSET, fits, because the clip cuts whatever
+   leaves its box. Nothing on the clip is vertical, because padding or a border there
+   would hold the leaf open at 0fr and the row below would jump when it unmounted;
+   the vertical room is the row's own margin, inside the clip (.drawer-row). The
+   keyboard ring is drawn inside the row (outline-offset: -2px). */
+.drawer-leaf-inner {
+  min-height: 0;
+  overflow: hidden;
+  padding-inline: var(--cluster-pad);
+}
+
+.drawer-leaf[data-phase='entering'],
+.drawer-leaf[data-phase='leaving'] {
+  grid-template-rows: 0fr;
+  opacity: 0;
+}
+
+.drawer-leaf[data-phase='leaving'] {
+  pointer-events: none;
+}
+
+/* The first fill: --mo-enter, a step per row, capped so a long list does not
+   keep its last row waiting. */
+.drawer-leaf[data-enter='stagger'] {
+  transition-duration: var(--mo-enter);
+  transition-timing-function: var(--mo-ease);
+  transition-delay: calc(min(var(--dr-i, 0), 10) * var(--mo-stagger));
+}
+
+/* A lifted row leaves its slot, and the clip would cut it to that slot's box. */
+.drawer-leaf[data-lifted] .drawer-leaf-inner {
+  overflow: visible;
+}
+
+/* A group is a FRAMED CLUSTER: one frame in the group colour around the chip and
+   its visible members. The rows are flat leaves, so the frame is assembled from
+   per-leaf segments, marked by the render: group-first on the header, group-mid on
+   a member, group-last on the last one (a folded group's header is both), and
+   group-bridge on a row that is leaving from the middle of a group (its own, or
+   one it is not in, see --group-frame).
+   Segments are drawn on the LEAF and NEVER on .drawer-row: a drag translates and
+   scales the row, so a segment on it would travel with the finger and leave a hole
+   in the frame, where the leaf keeps holding the slot still.
+   Not on .drawer-leaf-inner either, though it is as stationary: it is the grid
+   item, and while its track runs between 1fr and 0fr the leaf's own height is
+   fr x content and the item's is fr x that, so for the length of every enter and
+   leave the item is shorter than the slot (measured on a 40px row at half way:
+   leaf 20px, item 10px) and a border on it opens the frame between the rows
+   either side. */
+.drawer-leaf.group-first,
+.drawer-leaf.group-mid,
+.drawer-leaf.group-last,
+.drawer-leaf.group-bridge {
+  border-left-color: var(--group-frame);
+  border-right-color: var(--group-frame);
+}
+.drawer-leaf.group-first {
+  border-top: 1px solid var(--group-frame);
+  border-top-left-radius: var(--r-3);
+  border-top-right-radius: var(--r-3);
+}
+.drawer-leaf.group-last {
+  border-bottom: 1px solid var(--group-frame);
+  border-bottom-left-radius: var(--r-3);
+  border-bottom-right-radius: var(--r-3);
+}
+/* A row leaving from the middle of a group draws the two SIDES only: they shrink
+   with its slot to nothing, so the frame never opens between the rows around it. A
+   row leaving from the end draws no segment at all (the render moves group-last up
+   to the row above at once): a bottom edge on it would ride up with its shrinking
+   slot, fading, while the new last row draws its own. The leaf's fade would take a
+   bridge's sides with it, so in a bridge the fade is the ROW's, and the slot still
+   collapses as any leave does. */
+.drawer-leaf.group-bridge[data-phase='leaving'] {
+  opacity: 1;
+}
+.drawer-leaf.group-bridge .drawer-row {
+  transition: opacity var(--mo-micro) ease;
+}
+.drawer-leaf.group-bridge[data-phase='leaving'] .drawer-row {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drawer-leaf,
+  .drawer-leaf.group-bridge .drawer-row {
+    transition: none;
+  }
+}
+
+/* ── Rows ─────────────────────────────────────────────────────────────────────
+ *
+ * dot · title · number, and the kind icon for anything that is not a terminal. A row
+ * is a PILL, the desktop strip's own: the --pill-* tokens it shares with .ctab, a
+ * 1px border, no fill at rest. The tab's colour is the dot and nothing else: a row is
+ * never filled with it, so the active row is told apart by a raised fill and a ring,
+ * which colour cannot imitate. The spacing between rows is each row's own margin,
+ * half above and half below, inside the leaf's clip, so a row that leaves takes its
+ * gap with it instead of leaving 4px behind at the end, and its ring has the room it
+ * needs. */
+.drawer-row {
+  /* How far a swipe-left slides the row aside to show Close. */
+  --dr-reveal: 80px;
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  margin-block: calc(var(--sp-1) / 2);
+  border-radius: var(--r-2);
+}
+
+/* The group's header, the CHIP: the group's colour, filled, with its own ink over it
+   (the desktop .group-chip). Caret, label and count read that ink by declaring no
+   colour of their own. Colour never says "active" here either, so a member being the
+   current tab changes nothing about the chip. The type is the section-title one the
+   rest of the app's headings share. */
+.drawer-group {
   display: flex;
   align-items: center;
-  gap: 6px;
-  min-height: var(--mbtn-h);
-  padding: 0 6px;
+  gap: var(--sp-2);
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: var(--ctl-h);
+  padding: 0 var(--sp-2);
   border: 0;
-  border-radius: 5px;
-  background: color-mix(in srgb, var(--group-accent) 8%, transparent);
-  color: var(--t-text);
-  text-align: left;
-  font:
-    600 13px/1 system-ui,
-    sans-serif;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-}
-.drawer-group.member-active {
+  border-radius: var(--r-2);
   background: var(--group-accent);
   color: var(--group-ink);
+  font: inherit;
+  font-size: var(--fs-1);
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  text-align: left;
+  cursor: pointer;
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  /* The lift's shadow and a drop's ring, composed (see .drawer-session). */
+  box-shadow: var(--lift, 0 0 transparent), var(--ring, 0 0 transparent);
+  transition: background var(--mo-micro) ease;
 }
 .drawer-group-caret {
   flex: 0 0 auto;
-  font-size: 11px;
-  color: var(--t-subtext);
-}
-.drawer-group.member-active .drawer-group-caret {
-  color: var(--group-ink);
+  display: inline-flex;
 }
 .drawer-group-label {
   flex: 1 1 auto;
@@ -1404,75 +1651,98 @@ body {
 }
 .drawer-group-count {
   flex: 0 0 auto;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 9px;
-  font-size: 11px;
-  color: var(--group-ink);
-  background: var(--group-accent);
-}
-.drawer-group.member-active .drawer-group-count {
-  color: var(--group-accent);
-  background: var(--group-ink);
+  font-variant-numeric: tabular-nums;
 }
 
 .drawer-session {
+  /* Above the Close action that waits behind it, and opaque so it hides it. */
+  position: relative;
+  z-index: 1;
   flex: 1 1 auto;
   min-width: 0;
-  min-height: var(--mbtn-h);
+  min-height: var(--ctl-h);
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 6px;
-  border: 1px solid var(--t-surface);
-  border-radius: 5px;
-  background: color-mix(in srgb, var(--tab-accent) 8%, transparent);
-  color: var(--t-text);
+  gap: var(--sp-2);
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--pill-border);
+  border-radius: var(--r-2);
+  /* The drawer's own ground, so at rest the pill reads as having no fill. */
+  background: var(--t-mantle);
+  color: var(--pill-text);
+  font: inherit;
+  font-size: var(--fs-3);
+  font-weight: 500;
   text-align: left;
   cursor: pointer;
+  /* Two layers composed from custom properties, as the strip's pill does: the active
+     ring and a lifted row's shadow can show together without a rule per pair. */
+  box-shadow: var(--lift, 0 0 transparent), var(--ring, 0 0 transparent);
+  /* Vertical pans are the list's; a horizontal move is ours (the swipe), so the
+     browser must not claim it and cancel the pointer. */
+  touch-action: pan-y;
+  /* The long-press would otherwise select the title and raise the browser's menu. */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
   -webkit-tap-highlight-color: transparent;
+  transition:
+    transform var(--mo-micro) ease,
+    background var(--mo-micro) ease;
+}
+.drawer-session:active {
+  background: var(--t-surface);
+}
+/* The strip's active pill: a raised fill, a ring, full text and the heavier weight.
+   Never the tab colour, and no edge. */
+.drawer-row.active {
+  --ring: var(--pill-ring);
 }
 .drawer-row.active .drawer-session {
-  background: var(--tab-accent);
-  border-color: var(--tab-accent);
-  color: var(--tab-ink);
+  background: var(--pill-fill);
+  color: var(--t-text);
+  font-weight: 600;
+}
+.drawer-row.revealed .drawer-session {
+  transform: translateX(calc(-1 * var(--dr-reveal)));
 }
 
-/* Tab color chip, sized like the ✕ cell and holding the tab number (= the URL
-   path). On the ACTIVE row it INVERTS — accent-on-accent is invisible, and the
-   ink color is already the luminance-flipped partner of the accent, so the
-   inverted chip is guaranteed to read against the solid fill. */
-.drawer-num {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: var(--mbtn-h);
-  height: var(--mbtn-h);
-  border-radius: 50%;
-  background: var(--tab-accent);
-  color: var(--tab-ink, var(--t-mantle));
-  font:
-    700 12px/1 ui-monospace,
-    monospace;
+/* The press has been held long enough to mean something: a release now opens the
+   menu, a move now lifts the row. The chip keeps its colour and steps a shade toward
+   its ink, as the desktop chip does on hover. */
+.drawer-row.armed .drawer-session {
+  background: var(--t-surface);
 }
-.drawer-row.active .drawer-num {
-  background: var(--tab-ink, var(--t-mantle));
-  color: var(--tab-accent);
+.drawer-row.armed .drawer-group {
+  background: color-mix(in srgb, var(--group-accent) 85%, var(--group-ink));
+}
+/* Lifted by a drag. The row follows the finger on `transform` alone (written by the
+   gesture, with no transition), and the shadow is the only thing that says it is
+   above the list. It is a layer of the box-shadow, so an active row keeps its ring. */
+.drawer-row.lifted {
+  --lift: 0 4px 12px color-mix(in srgb, var(--t-base) 70%, transparent);
+  z-index: 3;
+}
+.drawer-row.lifted .drawer-session {
+  background: var(--t-surface);
+  transition: none;
+}
+.drawer-row.lifted .drawer-group {
+  transition: none;
+}
+
+.drawer-dot {
+  flex: 0 0 auto;
+}
+/* A coloured tab sets --tab-accent on its row; an uncoloured one gets a neutral. */
+.drawer-session .drawer-dot {
+  background: var(--tab-accent, var(--t-subtext));
 }
 
 .drawer-session-id {
-  font:
-    700 13px/1 ui-monospace,
-    monospace;
-  color: var(--t-accent);
-}
-.drawer-row.active .drawer-session-id {
-  color: var(--tab-ink);
+  flex: 0 0 auto;
+  display: inline-flex;
+  color: var(--t-subtext);
 }
 
 .drawer-session-title {
@@ -1481,37 +1751,159 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
-  color: var(--t-subtext);
-}
-.drawer-row.active .drawer-session-title {
-  color: var(--tab-ink);
 }
 
-.drawer-kill {
+/* The tab number: secondary text at the row's right end. */
+.drawer-num {
   flex: 0 0 auto;
-  width: var(--mbtn-h);
-  font-size: 13px;
-  border: 1px solid var(--t-surface);
-  border-radius: 5px;
-  background: transparent;
   color: var(--t-subtext);
+  font-size: var(--fs-1);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Behind the row until a swipe-left slides it aside. Hidden means `visibility`,
+   not opacity, so it is neither tabbable nor read out until it shows; it appears
+   with the slide and goes after it. */
+.drawer-row-close {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: var(--dr-reveal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-1);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-2);
+  background: var(--t-accent-alt);
+  color: var(--t-accent-ink);
+  font: inherit;
+  font-size: var(--fs-2);
+  font-weight: 600;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
+  visibility: hidden;
+  transition: visibility var(--mo-0) linear var(--mo-micro);
+}
+.drawer-row.revealed .drawer-row-close {
+  visibility: visible;
+  transition-delay: var(--mo-0);
 }
 
+/* Where the drop will land: a 2px accent line on the row's edge (inside its box, so
+   nothing shifts), or a ring around a group header for "join". The header is filled
+   with the group's colour, which can be the accent's own, so the ring is the accent
+   with a line of the chip's ink inside it. */
+.drawer-row.drop-before::before,
+.drawer-row.drop-after::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  height: 2px;
+  border-radius: 1px; /* scale-ok: half of the 2px drop line */
+  background: var(--t-accent);
+  pointer-events: none;
+}
+.drawer-row.drop-before::before {
+  top: 0;
+}
+.drawer-row.drop-after::after {
+  bottom: 0;
+}
+.drawer-row.drop-inside {
+  --ring: inset 0 0 0 2px var(--t-accent), inset 0 0 0 3px var(--group-ink);
+}
+/* On a header the line runs over the chip, for the same reason in the same colours:
+   the accent alone vanishes into a chip that wears it. So the line carries a band of
+   the chip's ink one line-width further in, which stands off the fill whatever it is.
+   It is still the line's own shape on one edge, never the ring a join draws. */
+.drawer-row-group.drop-before::before {
+  box-shadow: 0 2px 0 var(--group-ink);
+}
+.drawer-row-group.drop-after::after {
+  box-shadow: 0 -2px 0 var(--group-ink);
+}
+
+.drawer-session:focus-visible,
+.drawer-row-close:focus-visible,
+.drawer-back:focus-visible,
+.drawer-new:focus-visible,
+.drawer-action:focus-visible {
+  outline: 2px solid var(--t-accent);
+  outline-offset: -2px;
+}
+/* The chip is filled with its group's colour, which can be the accent itself, and an
+   inset ring is drawn over that fill: so its ring is the chip's ink. */
+.drawer-group:focus-visible {
+  outline: 2px solid var(--group-ink);
+  outline-offset: -2px;
+}
+
+/* One box, two jobs, so a drag costs the list no height: `+ New tab` at rest, the
+   top level's drop area while a row is lifted. A tab dropped here leaves its group
+   — the only place that exists when every tab is grouped. */
+.drawer-tail {
+  position: relative;
+  flex: 0 0 auto;
+  margin-top: var(--sp-1);
+}
 .drawer-new {
-  margin-top: 2px;
-  min-height: var(--mbtn-h);
-  padding: 0 6px;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  width: 100%;
+  min-height: var(--ctl-h);
+  padding: 0 var(--sp-2);
   border: 1px dashed var(--t-surface);
-  border-radius: 5px;
+  border-radius: var(--r-2);
   background: transparent;
   color: var(--t-subtext);
   text-align: left;
-  font-size: 12px;
+  font-size: var(--fs-2);
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
+}
+.drawer-root-drop {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--t-surface);
+  border-radius: var(--r-2);
+  background: var(--t-mantle);
+  color: var(--t-subtext);
+  font-size: var(--fs-2);
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    background var(--mo-micro) ease,
+    border-color var(--mo-micro) ease;
+}
+.drawer-sessions.dragging .drawer-root-drop {
+  visibility: visible;
+}
+.drawer-sessions.dragging .drawer-new {
+  visibility: hidden;
+}
+.drawer-root-drop.over {
+  border-style: solid;
+  border-color: var(--t-accent);
+  background: color-mix(in srgb, var(--t-accent) 18%, var(--t-mantle));
+  color: var(--t-text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drawer-session,
+  .drawer-group,
+  .drawer-row-close,
+  .drawer-root-drop {
+    transition: none;
+  }
 }
 
 /* Footer: four equal, gapless cells. One shared 1px border comes from the grid
@@ -1520,20 +1912,20 @@ body {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 1px;
-  margin-top: 6px;
+  margin-top: var(--sp-2);
   padding: 1px;
   background: var(--t-surface);
-  border-radius: 5px;
+  border-radius: var(--r-2);
 }
 
 .drawer-action {
-  min-height: calc(var(--mbtn-h) + 6px);
+  min-height: var(--ctl-h);
   border: 0;
   border-radius: 0;
   background: var(--t-mantle);
   color: var(--t-text);
   font:
-    600 12px/1 ui-monospace,
+    600 var(--fs-2) / 1 ui-monospace,
     monospace;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
@@ -1557,7 +1949,7 @@ body {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 6px;
+  gap: var(--sp-2);
   min-width: 220px;
   padding: 12px 16px;
   border: 1px solid var(--t-surface);
@@ -1565,7 +1957,7 @@ body {
   background: var(--t-mantle);
   color: var(--t-text);
   font:
-    600 14px/1 ui-monospace,
+    600 var(--fs-3) / 1 ui-monospace,
     monospace;
   text-align: left;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
@@ -1606,14 +1998,14 @@ body {
   width: min(94vw, 560px);
 }
 .dh-entry {
-  margin-bottom: 10px;
+  margin-bottom: var(--sp-3);
   border: 1px solid var(--t-surface);
 }
 .dh-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 8px;
+  padding: var(--sp-2);
   background: var(--t-surface);
 }
 .dh-time {
@@ -1622,7 +2014,7 @@ body {
   color: var(--t-subtext);
 }
 .dh-head button {
-  padding: 3px 10px;
+  padding: var(--sp-1) var(--sp-3);
   border: 0;
   border-radius: 0;
   background: var(--t-mantle);
@@ -1635,7 +2027,7 @@ body {
   color: var(--t-accent-ink, var(--t-mantle));
 }
 .dh-text {
-  max-height: 130px;
+  max-height: 130px; /* scale-ok: scroller cap, about eight lines of the mono transcript */
   overflow-y: auto;
   padding: 8px;
   font-family: ui-monospace, monospace;
@@ -1656,7 +2048,7 @@ body {
   display: block;
   width: 100%;
   height: 32px;
-  padding: 6px 8px 0;
+  padding: var(--sp-2) var(--sp-2) 0;
 }
 .dh-error {
   padding: 0 8px 8px;
@@ -1674,7 +2066,7 @@ body {
   transform: translateX(-50%);
   z-index: 60;
   padding: 8px 16px;
-  border-radius: 8px;
+  border-radius: var(--r-2);
   background: var(--t-surface);
   color: var(--t-text);
   font-size: 13px;
@@ -1693,7 +2085,7 @@ body {
 .toast:has(.toast-action) {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-3);
   padding-right: 8px;
   pointer-events: auto;
 }
@@ -1717,7 +2109,7 @@ body {
   align-items: baseline;
   gap: 8px;
   padding: 8px 16px;
-  border-radius: 8px;
+  border-radius: var(--r-2);
   background: var(--t-accent);
   color: var(--t-accent-ink, var(--t-base));
   font-size: 13px;
@@ -1732,20 +2124,18 @@ body {
 }
 
 /* ── Top bar / controls ───────────────────────────────────────────────────── */
-/* The topbar IS the tab row (Chrome layout): tabs sit flush on its bottom
-   edge; brand + icon buttons re-center themselves within the taller bar. */
+/* The topbar holds the app menu button, the tab pills and [+], centred on one
+   line. A 1px separator marks its lower edge: the old "no bottom border" rule
+   existed only so the Chrome active tab could merge into the content below it,
+   and a pill does not merge with anything. */
 .topbar {
   display: flex;
-  align-items: stretch;
-  gap: 8px;
-  padding: 6px 8px 0;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-2);
   background: var(--t-mantle);
-  /* NO bottom border. The active tab has to merge with the content below it, and
-     it cannot draw over one: `.session-tabs` sets `overflow-x: auto`, which makes
-     overflow-y compute to `auto` too, so the strip clips its children vertically
-     and no negative margin can reach past it. Chrome draws no line either — the
-     mantle strip against the base content is the separation. */
-  font-size: 12px;
+  border-bottom: 1px solid var(--t-surface);
+  font-size: var(--fs-2);
 }
 
 .topbar .spacer {
@@ -1770,30 +2160,44 @@ body {
   font-weight: 600;
   color: var(--t-accent);
   align-self: center;
-  margin-bottom: 6px;
 }
 
 .topbar .icon-btn {
   align-self: center;
-  margin-bottom: 6px;
 }
 
-/* ── Chrome-style session tab strip ───────────────────────────────────────── */
-/* Flat, squared tabs that fill the topbar height down to its bottom border (no
-   overlap trick). The active tab is a solid accent fill; inactive tabs a faint
-   tint of the same accent. --tab-accent defaults to the app accent; a colored
-   tab overrides it (with --tab-ink) inline. */
+/* ── Session tab strip ────────────────────────────────────────────────────── */
+/* Every tab is a bordered pill on one centre line. The look is defined ONCE here,
+   from the eight tokens (the owner's tuned values, snapped to the scale: radius
+   --r-2, gap --sp-2). Colour never marks a pill as active — the raised fill, the
+   ring and the heavier title do; a tab's colour is only its dot.
+   The tokens are declared for every host of a pill — the desktop strip, the
+   mobile drawer's session list, and its top row (the view switcher reads the
+   inactive text) — so none of them can drift from the strip. */
+.session-tabs,
+.drawer-sessions,
+.drawer-top {
+  --pill-border: color-mix(in srgb, var(--t-text) 10%, transparent);
+  --pill-fill: color-mix(in srgb, var(--t-surface), var(--t-text) 10.5%);
+  --pill-ring: 0 0 0 1.5px color-mix(in srgb, var(--t-text) 60%, transparent);
+  --pill-text: color-mix(in srgb, var(--t-text) 85%, var(--t-mantle));
+  --pill-hover: color-mix(in srgb, var(--t-surface), var(--t-text) 7%);
+  --cluster-pad: 2px;
+}
 .session-tabs {
   position: relative;
   display: flex;
-  /* flex-END, not stretch: Chrome's active tab is TALLER than its neighbours and
-     grows upward from a shared baseline. Everything in the strip therefore sits
-     on the bottom edge and only heights differ. */
-  align-items: flex-end;
+  align-items: center;
   align-self: stretch;
+  gap: var(--sp-2);
   min-width: 0;
+  /* A plain row is as tall as a framed cluster (pill + padding + 1px frame each
+     side), so creating a group never nudges the terminal. It also leaves the
+     active ring room: `overflow-x: auto` makes overflow-y compute to `auto`, so
+     the strip clips whatever a pill draws outside its own box. */
+  min-height: calc(var(--ctl-h) + 2 * (var(--cluster-pad) + 1px));
   flex: 0 1 auto;
-  padding: 0 8px;
+  padding: 0 var(--sp-2);
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -1801,60 +2205,62 @@ body {
   height: 0;
 }
 
+/* The base pill: grows with its title between a minimum and a maximum so a title
+   shows in full while there is room, and the strip scrolls only once every pill
+   is at its minimum. Inactive text is dimmed a step; there is no fill at rest.
+   --tab-accent (set inline on a coloured tab) paints the dot and nothing else. */
 .ctab {
-  --tab-accent: var(--t-accent);
-  --tab-ink: var(--t-accent-ink);
   position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 8px 0 10px;
-  flex: 0 1 170px;
-  min-width: 120px;
-  max-width: 190px;
-  height: 26px;
-  border: 0;
-  /* Top-only radius: a tab is a folder edge, open at the bottom towards the
-     content it belongs to. */
-  border-radius: 8px 8px 0 0;
-  border-top: 2px solid transparent;
-  background-color: color-mix(in srgb, var(--tab-accent) 8%, transparent);
-  color: var(--t-subtext);
+  gap: var(--sp-1);
+  padding: 0 var(--sp-2);
+  flex: 1 1 auto;
+  min-width: 92px;
+  max-width: 200px;
+  height: var(--ctl-h);
+  border: 1px solid var(--pill-border);
+  border-radius: var(--r-2);
+  color: var(--pill-text);
   font:
-    500 12px/1 system-ui,
+    500 var(--fs-2)/1 system-ui,
     sans-serif;
   cursor: pointer;
   user-select: none;
   -webkit-tap-highlight-color: transparent;
+  /* Two layers composed from custom properties, so a pill can be ringed (active)
+     and carry a drop marker (drag) at once without a rule per combination. */
+  box-shadow: var(--mark, 0 0 transparent), var(--ring, 0 0 transparent);
 }
 
-.ctab:not(.active):hover {
-  background-color: color-mix(in srgb, var(--tab-accent) 14%, transparent);
+/* Hover fills only a pill that is not active (the active one keeps its own
+   fill). A fused pill is excluded: its segments are the hover targets. */
+.ctab:not(.active):not(.fused):hover {
+  background-color: var(--pill-hover);
   color: var(--t-text);
 }
 
-/* The active tab is JOINED to the content: it stands 4px taller, takes the
-   content area's own background, and covers the topbar's bottom border with a
-   -1px margin so no seam is drawn between tab and terminal. Its accent survives
-   as the top border and the icon colour — a solid accent fill would break the
-   join, which is the whole point of the shape. */
+/* The active pill is the loudest thing on the strip: a raised fill (a step above
+   the surface), a ring, full-strength text and a heavier weight. Its colour dot,
+   if any, is the same as when inactive. */
 .ctab.active {
-  height: 30px;
-  background-color: var(--t-base);
-  border-top-color: var(--tab-accent);
+  --ring: var(--pill-ring);
+  background-color: var(--pill-fill);
   color: var(--t-text);
   font-weight: 600;
-  z-index: 2;
 }
-.ctab.active .ctab-icon {
-  color: var(--tab-accent);
-  opacity: 1;
+
+.ctab-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px; /* scale-ok: an identity dot, not a control size */
+  border-radius: 50%;
+  background: var(--tab-accent);
 }
 
 .ctab-icon {
-  font-size: 11px;
-  opacity: 0.85;
   flex: 0 0 auto;
+  font-size: var(--fs-1);
 }
 
 .ctab-title {
@@ -1878,12 +2284,12 @@ body {
   font: inherit;
 }
 
-/* Fused split pairing: two members rendered as one strip button, split by a 1px
-   seam. Each segment carries its OWN --tab-accent/--tab-ink (per-member color,
-   theme accent fallback), but the member colour reaches the ACCENT TIP only —
-   the focused half takes the content background and the other a neutral recess.
-   Filling the unfocused half with its own colour is what made a red tab out-shout
-   the focused one. An inactive pairing shows both as faint 8% tints. */
+/* Fused split pairing: ONE pill, a split glyph then two segments divided by a
+   1px seam. The glyph and the seam are drawn whether or not the pairing is
+   active, so it never reads as two ordinary tabs. When active the PILL takes the
+   ring and the FOCUSED segment takes the raised fill with full text; the other
+   segment stays unfilled with inactive text. Focus is told by fill and weight,
+   never by a member's colour (that is only its dot). */
 .ctab.fused {
   padding: 0;
   gap: 0;
@@ -1891,143 +2297,108 @@ body {
   max-width: none;
   flex: 0 0 auto;
   align-items: stretch;
-  background-color: transparent;
   /* One shared outer radius for the pair, clipped so the segments square off
      against the seam instead of each rounding themselves. */
-  border-radius: 8px 8px 0 0;
   overflow: hidden;
 }
 .ctab.fused.active {
   background-color: transparent;
-  border-top-color: transparent;
 }
-/* The pair's own top accent lives on the segments, so each keeps its member
-   colour while the block still reads as one raised tab.
-   BOTH halves of an active pairing show their accent tip — that is what says
-   "this whole block is the active tab"; the focused half then says which one.
-   The unfocused half must NOT be tinted with its own --tab-accent: a saturated
-   member colour (a red tab) drew the eye harder than the focused half's plain
-   background, so the pairing read as focused on the wrong side. Its fill is
-   therefore NEUTRAL — between the strip (--t-mantle) and the content (--t-base),
-   so it is legibly part of the raised tab and legibly recessed within it — and
-   the member colour survives only in the tip. */
-.ctab.fused.active .fused-seg {
-  border-top: 3px solid color-mix(in srgb, var(--tab-accent) 45%, transparent);
-  margin-top: -2px;
-  background-color: color-mix(in srgb, var(--t-base) 30%, var(--t-mantle));
-  color: var(--t-subtext);
-  font-weight: 500;
-}
-.fused-seg {
-  --tab-accent: var(--t-accent);
-  --tab-ink: var(--t-accent-ink);
+.fused-glyph {
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  padding: 0 var(--sp-1) 0 var(--sp-2);
+}
+.fused-seg {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
   min-width: 90px;
-  padding: 0 8px 0 10px;
+  padding: 0 var(--sp-2);
   border: 0;
   border-radius: 0;
-  background-color: color-mix(in srgb, var(--tab-accent) 8%, transparent);
-  color: var(--t-subtext);
+  color: var(--pill-text);
   font: inherit;
+  font-weight: 500;
   cursor: pointer;
   overflow: hidden;
 }
 .fused-seg + .fused-seg {
-  border-left: 1px solid var(--t-base);
+  border-left: 1px solid var(--pill-border);
 }
-/* The focused half: flush with the content (same background, no seam), full
-   accent tip, full-strength text. Three cues at once, because one of them was
-   not enough to read at a glance. */
+.fused-seg:not(.on):hover {
+  background-color: var(--pill-hover);
+  color: var(--t-text);
+}
 .ctab.fused.active .fused-seg.on {
-  background-color: var(--t-base);
-  border-top-color: var(--tab-accent);
+  background-color: var(--pill-fill);
   color: var(--t-text);
   font-weight: 600;
 }
-.ctab.fused.active .fused-seg.on .ctab-icon {
-  color: var(--tab-accent);
-  opacity: 1;
+
+/* Reorder insertion bar while a tab drag hovers the strip: the accent edge marks
+   where the drop will land (before this pill / after the last block). It sits in
+   the gap beside the pill, with a --t-base casing so it stays legible. Composed
+   with the active ring through --mark, so neither hides the other. */
+.ctab.drop-before {
+  --mark: -2px 0 0 0 var(--t-accent), -3px 0 0 0 var(--t-base);
 }
-/* Group bottom line spans the whole fused button (drawn over the segments). */
-.ctab.fused.grouped {
-  background-image: none;
-}
-.ctab.fused.grouped::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 3px;
-  background: var(--group-accent, var(--t-accent));
-  pointer-events: none;
+.ctab.drop-after {
+  --mark: 2px 0 0 0 var(--t-accent), 3px 0 0 0 var(--t-base);
 }
 
-/* Chrome-style reorder insertion bar while a tab drag hovers the strip: the
-   accent edge marks where the drop will land (before this tab / after the
-   last). Outer box-shadow so it sits over the flush edge without shifting
-   layout; a --t-base casing behind the bar keeps it legible even when the
-   neighbor is a solid same-accent fill. */
-.ctab.drop-before {
+/* ── Tab groups ──────────────────────────────────────────────────────────────
+   A group is a FRAMED CLUSTER: a 1px frame in the group colour around the chip
+   and every visible member. The frame and the chip carry the group's identity;
+   the member pills inside carry the active treatment and their own dots, so the
+   chip looks the same whichever tab is active. `--group-accent` defaults to the
+   app accent when a group has no colour; `--group-ink` reads over a solid group
+   fill. The wrapper is presentational: it adds no entries to the drop maths. */
+.group-cluster {
+  --group-accent: var(--t-accent);
+  --group-ink: var(--t-accent-ink);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 0 1 auto;
+  padding: var(--cluster-pad);
+  border: 1px solid var(--group-accent);
+  border-radius: var(--r-3);
+}
+/* The same insertion bar for a whole group: before it when a drop lands right
+   before the group (its chip), after it when a drop appends past a trailing one. */
+.group-cluster.drop-before {
   box-shadow:
     -2px 0 0 0 var(--t-accent),
     -3px 0 0 0 var(--t-base);
 }
-.ctab.drop-after {
+.group-cluster.drop-after {
   box-shadow:
     2px 0 0 0 var(--t-accent),
     3px 0 0 0 var(--t-base);
 }
 
-/* ── Tab groups ──────────────────────────────────────────────────────────────
-   The chip is the group's identity, rendered before its first member. Both the
-   chip and every member tab carry a 3px bottom bar in the group color (a
-   `--group-accent` background-image layer) — a SEPARATE color channel from each
-   tab's own accent fill, so a member shows its own color and its
-   group's color at once. `--group-accent` defaults to the app accent when a
-   group has no color; `--group-ink` reads over a solid group fill. */
 .group-chip {
-  --group-accent: var(--t-accent);
-  --group-ink: var(--t-accent-ink);
-  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 10px;
-  flex: 0 1 170px;
-  min-width: 120px;
-  max-width: 190px;
-  /* Explicit height: the strip aligns to flex-end now, so a child with no
-     intrinsic height collapses to its text box (this chip became a 12px sliver).
-     26px matches an inactive tab. */
-  height: 26px;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-2);
+  flex: 0 0 auto;
+  height: var(--ctl-h);
   border: 0;
-  /* A group is ONE block: the chip rounds its outer (left) corner, the last
-     member rounds the outer (right) one, everything between squares off. */
-  border-radius: 8px 0 0 0;
-  color: var(--group-accent);
+  border-radius: var(--r-2);
+  background-color: var(--group-accent);
+  color: var(--group-ink);
   font:
-    600 12px/1 system-ui,
+    600 var(--fs-2)/1 system-ui,
     sans-serif;
   cursor: pointer;
   user-select: none;
   -webkit-tap-highlight-color: transparent;
-  background-color: color-mix(in srgb, var(--group-accent) 8%, transparent);
-  background-image: linear-gradient(var(--group-accent), var(--group-accent));
-  background-repeat: no-repeat;
-  background-size: 100% 3px;
-  background-position: bottom left;
 }
 .group-chip:hover {
-  background-color: color-mix(in srgb, var(--group-accent) 14%, transparent);
-}
-/* When the active tab is a member, the chip fills solid in the group color. */
-.group-chip.member-active {
-  background-color: var(--group-accent);
-  color: var(--group-ink);
-  font-weight: 600;
+  background-color: color-mix(in srgb, var(--group-accent) 85%, var(--group-ink));
 }
 .group-chip-dot {
   flex: 0 0 auto;
@@ -2043,21 +2414,18 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* A collapsed chip shows the hidden-member count as a small badge. */
+/* A collapsed chip shows the hidden-member count as a small badge, inverted
+   against the chip's solid fill. */
 .group-chip-count {
   flex: 0 0 auto;
-  min-width: 15px;
-  height: 15px;
-  padding: 0 4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 var(--sp-1);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 8px;
-  font-size: 10px;
-  color: var(--group-ink);
-  background: var(--group-accent);
-}
-.group-chip.member-active .group-chip-count {
+  border-radius: var(--r-2);
+  font-size: var(--fs-1);
   color: var(--group-accent);
   background: var(--group-ink);
 }
@@ -2072,41 +2440,19 @@ body {
   font: inherit;
 }
 
-/* Cluster framing on member tabs: a 3px bottom bar in the group color, drawn as
-   a bottom-anchored background-image layer so it composes with the tab's own
-   background-color fill (tint OR solid active fill) — a member shows its own
-   accent AND the group color at once, active members included. `--group-accent`
-   is set inline. */
-.ctab.grouped {
-  --group-accent: var(--t-accent);
-  border-top-left-radius: 0;
-}
-/* Only the LAST member keeps the block's right corner. `:has(+ …)` reads the
-   next sibling, which is the only way to know "not last" with contiguous
-   members and no marker class — the registry guarantees contiguity. */
-.ctab.grouped:has(+ .ctab.grouped),
-.ctab.fused.grouped:has(+ .ctab.grouped) {
-  border-top-right-radius: 0;
-}
-.ctab.grouped {
-  background-image: linear-gradient(var(--group-accent), var(--group-accent));
-  background-repeat: no-repeat;
-  background-size: 100% 3px;
-  background-position: bottom left;
-}
-
-/* Will-join preview: a group-colored inset ring on the member a center-drop
-   would grow the group with (replaces the plain reorder bar for that hover). */
+/* Will-join preview: a group-coloured inset ring on the member a centre-drop
+   would grow the group with (replaces the plain reorder bar for that hover). It
+   composes with the active ring through --mark. */
 .ctab.join-armed {
-  box-shadow: inset 0 0 0 2px var(--group-accent, var(--t-accent));
+  --mark: inset 0 0 0 2px var(--group-accent, var(--t-accent));
 }
 
 /* A group-recolor swatch dot inside the "Add to <group>" menu row. */
 .menu-group-dot {
   display: inline-block;
   width: 10px;
-  height: 10px;
-  margin-right: 6px;
+  height: 10px; /* scale-ok: round dot, equal to its 10px width */
+  margin-right: var(--sp-2);
   border-radius: 50%;
   vertical-align: middle;
 }
@@ -2124,7 +2470,7 @@ body {
   border-radius: 50%;
   background: transparent;
   color: inherit;
-  font-size: 10px;
+  font-size: var(--fs-1);
   cursor: pointer;
 }
 .ctab:hover .ctab-kill,
@@ -2132,21 +2478,21 @@ body {
 .ctab-kill.dirty {
   visibility: visible;
 }
+/* A tint of the text colour, not --t-surface: on the active pill the fill is
+   already a step above the surface, so a surface hover would not show. */
 .ctab-kill:hover {
-  background: var(--t-surface);
+  background: color-mix(in srgb, var(--t-text) 14%, transparent);
 }
 
 .ctab-new {
   flex: 0 0 auto;
-  align-self: center;
-  width: 24px;
-  height: 24px;
-  margin: 0 2px 3px;
+  width: var(--ctl-h);
+  height: var(--ctl-h);
   border: 0;
-  border-radius: 50%;
+  border-radius: var(--r-2);
   background: transparent;
   color: var(--t-subtext);
-  font-size: 15px;
+  font-size: var(--fs-4);
   line-height: 1;
   cursor: pointer;
 }
@@ -2155,32 +2501,83 @@ body {
   color: var(--t-text);
 }
 
-/* Right-click tab menu. */
+/* Right-click tab menu. Items are flush (no gap): the groups are told apart by a
+   hairline, not by air, and the inner radius (--r-2) sits concentric inside the
+   outer one (--r-3) less the padding. */
 .tab-menu {
   position: fixed;
   z-index: 80;
   min-width: 180px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 6px;
+  padding: var(--sp-1);
   border: 1px solid var(--t-surface);
-  border-radius: 10px;
+  border-radius: var(--r-3);
   background: var(--t-mantle);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  /* Opened at the pointer, so it grows from the corner the pointer is in. Micro
+     tier: a menu is feedback for a click, not a surface arriving. */
+  transform-origin: top left;
+  animation: tab-menu-in var(--mo-micro, 140ms) var(--mo-ease) both;
+}
+
+@keyframes tab-menu-in {
+  from {
+    transform: scale(0.97);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tab-menu {
+    animation: none;
+  }
 }
 
 .tab-menu-item {
   text-align: left;
-  padding: 8px 10px;
+  padding: var(--sp-2) var(--sp-3);
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--r-2);
   background: transparent;
   color: var(--t-text);
-  font-size: 13px;
+  font-size: var(--fs-3);
   cursor: pointer;
 }
 .tab-menu-item:hover {
+  background: var(--t-surface);
+}
+
+/* The desktop menu's row: a leading 16px icon, the label, one control height.
+   Scoped under `.tab-menu` because the mobile long-press sheet (TabSheet) reuses
+   `.tab-menu-item` for its group rows and has its own sizing — the base rule
+   above is what it keeps. */
+.tab-menu .tab-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: var(--ctl-h);
+  padding: 0 var(--sp-2);
+  white-space: nowrap;
+}
+
+/* The group's colour dot already sits in its own gap; the sheet's margin would
+   double it here. */
+.tab-menu .menu-group-dot {
+  margin-right: 0;
+}
+
+/* Split down: the split glyph turned a quarter. A transform on a static menu
+   icon, not motion. */
+.tab-menu-icon-turned {
+  display: inline-flex;
+  transform: rotate(90deg);
+}
+
+.tab-menu-sep {
+  flex: 0 0 auto;
+  height: 1px;
+  margin: var(--sp-1) var(--sp-2);
   background: var(--t-surface);
 }
 
@@ -2197,21 +2594,23 @@ body {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--sp-2);
 }
+/* A caption over a swatch row: the section title (ui.css), not an uppercase
+   tracked 10px label. The mobile sheet shares it. */
 .swatch-row-label {
-  font-size: 10px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  font-size: var(--fs-1);
+  font-weight: 600;
+  letter-spacing: 0;
   color: var(--t-subtext);
 }
 
 .tab-swatch {
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   padding: 0;
   border: 2px solid transparent;
-  border-radius: 2px;
+  border-radius: var(--r-1);
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
@@ -2231,10 +2630,10 @@ body {
   align-items: center;
   justify-content: center;
   min-width: 26px;
-  height: 26px;
-  padding: 0 6px;
+  height: var(--ctl-h);
+  padding: 0 var(--sp-2);
   border: 1px solid var(--t-surface);
-  border-radius: 7px;
+  border-radius: var(--r-2);
   background: transparent;
   color: var(--t-text);
   cursor: pointer;
@@ -2265,15 +2664,15 @@ body {
   width: min(94vw, 420px);
   max-height: 86vh;
   overflow: auto;
-  padding: 14px 16px;
-  border-radius: 12px;
+  padding: var(--sp-4);
+  border-radius: var(--r-3);
   font-size: 13px;
   background: var(--t-mantle);
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
 }
 
 .panel h2 {
-  margin: 0 0 10px;
+  margin: 0 0 var(--sp-3);
   font-size: 15px;
 }
 
@@ -2281,8 +2680,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 5px 0;
+  gap: var(--sp-3);
+  padding: var(--sp-1) 0;
   border-bottom: 1px solid var(--t-surface);
 }
 
@@ -2296,29 +2695,31 @@ body {
 
 .field select,
 .field input[type='number'] {
-  padding: 3px 6px;
+  padding: var(--sp-1) var(--sp-2);
   font-size: 13px;
   border: 1px solid var(--t-surface);
-  border-radius: 7px;
+  border-radius: var(--r-2);
   background: var(--t-base);
   color: var(--t-text);
   font: inherit;
 }
 
 /* ── Settings form ──────────────────────────────────────────────────────────
-   One block of rules for BOTH settings hosts (the desktop modal and the mobile
-   drawer), so the two can't drift. Rows are sized off --mbtn-h — the extra-keys
-   key height, which is this project's touch-target reference — and grouped
-   under section headings; a flat list of fifteen rows reads as a wall. */
+   The root of BOTH settings hosts (the desktop dock and the mobile drawer), so
+   the two cannot drift. Everything about its rows, cards and controls lives in
+   settings/settings-view.css, which is imported by the component; what stays here
+   is what a HOST may need to reach before that sheet loads: the control column
+   width (`--set-control`, which the drawer overrides) and the type size.
+
+   The wrapper owns the TYPE SCALE too, not just the row metrics. It never did,
+   so the form inherited the app's body size and a 300px dock wrapped labels like
+   "Mobile mode" onto two lines. */
 .settings-form {
-  --set-control: 180px;
-  /* The wrapper owns the TYPE SCALE too, not just the row metrics. It never did,
-     so the form inherited the app's body size and a 280px dock wrapped labels
-     like "Mobile mode" onto two lines. */
-  font-size: 12.5px;
+  --set-control: 140px;
+  font-size: var(--fs-2);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--sp-3);
 }
 
 .settings-section {
@@ -2326,196 +2727,10 @@ body {
   flex-direction: column;
 }
 
-.settings-section-title {
-  margin: 0 0 2px;
-  padding: 0 2px;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--t-accent);
-}
-
-/* Rows are ROWS, not table lines. The rule-per-row treatment made a fifteen-row
-   form read as a spreadsheet; the row is now a hoverable block with the label at
-   full text weight and the control right-aligned, which is what makes a settings
-   list scannable. Shared by the dock and the mobile drawer, so both change at once. */
-.settings-form .field {
-  gap: 12px;
-  min-height: var(--mbtn-h, 30px);
-  padding: 6px 8px;
-  border-bottom: 0;
-  border-radius: 7px;
-  transition: background-color var(--mo-micro, 140ms) ease;
-}
-.settings-form .field:hover {
-  background-color: color-mix(in srgb, var(--t-surface) 50%, transparent);
-}
-.settings-form .field label {
-  color: var(--t-text);
-  line-height: 1.3;
-}
-/* A second line under the label carries the value or the consequence, so a row
-   can say what it does without a tooltip. */
-.settings-form .field .field-sub {
-  display: block;
-  margin-top: 2px;
-  font-size: 10.5px;
-  color: var(--t-subtext);
-}
-.settings-form .field select,
-.settings-form .field input[type='number'],
-.settings-form .field input[type='text'] {
-  padding: 6px 9px;
-  border-radius: 7px;
-  background: var(--t-base);
-  border: 1px solid var(--t-surface);
-  transition:
-    border-color var(--mo-micro, 140ms) ease,
-    box-shadow var(--mo-micro, 140ms) ease;
-}
-.settings-form .field select:focus-visible,
-.settings-form .field input:focus-visible {
-  outline: 0;
-  border-color: var(--t-accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--t-accent) 18%, transparent);
-}
-.settings-form .field button {
-  padding: 6px 11px;
-  border-radius: 7px;
-  border: 1px solid var(--t-surface);
-  background: var(--t-base);
-  color: var(--t-subtext);
-  cursor: pointer;
-  transition:
-    background-color var(--mo-micro, 140ms) ease,
-    color var(--mo-micro, 140ms) ease;
-}
-.settings-form .field button:hover:not(:disabled) {
-  background: var(--t-surface);
-  color: var(--t-text);
-}
-
-.settings-form .field:last-child {
-  border-bottom: 0;
-}
-
-.settings-form .field label {
-  display: flex;
-  flex: 1 1 auto;
-  min-width: 0;
-  flex-direction: column;
-  gap: 1px;
-  color: var(--t-text);
-  line-height: 1.25;
-}
-
 /* Secondary line inside a label (e.g. the running build next to Reload). */
 .field-hint {
-  font-size: 10px;
+  font-size: var(--fs-1);
   color: var(--t-subtext);
-}
-
-.settings-form .field select,
-.settings-form .field input[type='number'],
-.settings-form .field input[type='text'],
-.settings-form .field button {
-  flex: 0 0 auto;
-  max-width: var(--set-control);
-  min-height: var(--mbtn-h, 30px);
-  padding: 3px 8px;
-  border: 1px solid color-mix(in srgb, var(--t-text) 18%, transparent);
-  border-radius: 7px;
-  background: var(--t-surface);
-  color: var(--t-text);
-  font: inherit;
-  font-size: 12px;
-}
-
-.settings-form .field select {
-  /* Room for the native caret, which sits inside the padding box. */
-  padding-right: 22px;
-}
-
-.settings-form .field input[type='number'] {
-  width: 84px;
-  text-align: right;
-}
-
-.settings-form .field button {
-  cursor: pointer;
-  font-weight: 600;
-}
-
-.settings-form .field button:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.settings-form .field button:not(:disabled):active {
-  background: var(--t-accent);
-  color: var(--t-accent-ink, var(--t-base));
-}
-
-/* A row whose value needs the full width (a URL, an install command). */
-.settings-form .field.stacked {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 5px;
-}
-
-.settings-form .field.stacked .field-row {
-  display: flex;
-  gap: 6px;
-}
-
-.settings-form .field.stacked input[type='text'] {
-  flex: 1 1 auto;
-  max-width: none;
-  min-width: 0;
-}
-
-/* Toggle switch. Styling the checkbox ITSELF (rather than wrapping it) keeps
-   the label's `for=` association and the keyboard behaviour untouched. */
-.settings-form input[type='checkbox'].switch {
-  appearance: none;
-  -webkit-appearance: none;
-  position: relative;
-  flex: 0 0 auto;
-  width: 42px;
-  height: 24px;
-  margin: 0;
-  border: 0;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--t-text) 22%, transparent);
-  cursor: pointer;
-  transition: background 130ms ease;
-}
-
-.settings-form input[type='checkbox'].switch::after {
-  content: '';
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: var(--t-base);
-  transition: transform 130ms ease;
-}
-
-.settings-form input[type='checkbox'].switch:checked {
-  background: var(--t-accent);
-}
-
-.settings-form input[type='checkbox'].switch:checked::after {
-  transform: translateX(18px);
-  background: var(--t-accent-ink, var(--t-base));
-}
-
-.settings-form input[type='checkbox'].switch:focus-visible {
-  outline: 2px solid var(--t-accent);
-  outline-offset: 2px;
 }
 
 /* Session ended / taken over. This is a MODAL moment — the pane behind it is a
@@ -2541,18 +2756,18 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-3);
   max-width: 320px;
-  padding: 20px 22px;
+  padding: var(--sp-5) var(--sp-6);
   border: 1px solid var(--t-surface);
-  border-radius: 12px;
+  border-radius: var(--r-3);
   background: var(--t-mantle);
   box-shadow: 0 14px 40px color-mix(in srgb, var(--t-base) 80%, transparent);
 }
 
 .exit-card-msg {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--fs-4);
   font-weight: 600;
   line-height: 1.3;
   color: var(--t-text);
@@ -2560,7 +2775,7 @@ body {
 
 .exit-card-hint {
   margin: 0;
-  font-size: 11.5px;
+  font-size: var(--fs-1);
   line-height: 1.45;
   color: var(--t-subtext);
 }
@@ -2587,13 +2802,13 @@ body {
   max-width: 380px;
   padding: 4px;
   border: 1px solid var(--t-mantle);
-  border-radius: 8px;
+  border-radius: var(--r-3);
   background: var(--t-surface);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
 }
 
 .link-menu-url {
-  padding: 6px 8px;
+  padding: var(--sp-2);
   color: var(--t-subtext);
   font-size: 11px;
   /* A long URL must not stretch the menu off-screen. */
@@ -2605,9 +2820,9 @@ body {
 .link-menu-item {
   display: block;
   width: 100%;
-  padding: 7px 8px;
+  padding: var(--sp-2);
   border: none;
-  border-radius: 5px;
+  border-radius: var(--r-2);
   background: transparent;
   color: var(--t-text);
   font-size: 13px;
@@ -2628,7 +2843,7 @@ body {
   bottom: 8px;
   z-index: 40;
   display: flex;
-  gap: 10px;
+  gap: var(--sp-3);
   padding: 4px 8px;
   border-radius: 6px;
   background: var(--t-mantle);
@@ -2661,11 +2876,11 @@ body {
 .palette-vim-mode {
   position: absolute;
   right: 12px;
-  padding: 2px 6px;
+  padding: 2px var(--sp-2);
   border-radius: 4px;
   background: var(--t-accent);
   color: var(--t-accent-ink, var(--t-base));
-  font-size: 10px;
+  font-size: var(--fs-1);
   font-weight: 700;
   letter-spacing: 0.06em;
   pointer-events: none;
@@ -2673,7 +2888,7 @@ body {
 
 .palette-input {
   width: 100%;
-  padding: 12px 14px;
+  padding: var(--sp-3) var(--sp-4);
   border: none;
   border-bottom: 1px solid var(--t-mantle);
   background: transparent;
@@ -2718,7 +2933,7 @@ body {
 .kb-conflict {
   color: var(--t-accent);
   font-size: 13px;
-  margin: 6px 0;
+  margin: var(--sp-2) 0;
 }
 
 /* ── PWA window-controls-overlay: lay the topbar into the titlebar area ──────── */
@@ -2730,12 +2945,13 @@ body {
        short by exactly the left inset. Zero on Windows (buttons on the right),
        ~75px on macOS, where the traffic lights sit on the left. */
     width: calc(env(titlebar-area-x, 0px) + env(titlebar-area-width, 100%));
-    /* MIN, never a fixed height. The strip is ~33px and this topbar needs 36
-       (6px padding + a 30px active tab); forcing the smaller number clipped the
-       active tab's bottom edge, because `.session-tabs` sets `overflow-x: auto`
-       and that makes overflow-y compute to `auto` too. The clipped edge is
-       precisely the join to the content that the whole Chrome shape rests on,
-       so the topbar is allowed to overflow the strip instead. */
+    /* MIN, never a fixed height. The title bar is ~33px and this topbar needs
+       ~43 (4px padding each side + a 34px strip + a 1px separator); forcing the
+       smaller number clips the strip, because `.session-tabs` sets
+       `overflow-x: auto` and that makes overflow-y compute to `auto` too. The
+       active pill's ring and a cluster's frame live at the strip's edges, so
+       they would be the first to go — the topbar may overflow the title bar
+       instead. */
     min-height: env(titlebar-area-height, auto);
     -webkit-app-region: drag;
   }
@@ -2814,7 +3030,7 @@ body {
   height: 52vh;
   min-height: 260px;
   border: 1px solid var(--t-surface);
-  border-radius: 8px;
+  border-radius: var(--r-3);
   overflow: hidden;
   margin-top: 8px;
 }

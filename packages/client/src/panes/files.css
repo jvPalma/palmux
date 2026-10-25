@@ -34,7 +34,7 @@
  * invisible — this is the one place the current path is stated. */
 .ft-path {
   display: block;
-  font-size: 10.5px;
+  font-size: var(--fs-1);
   color: var(--t-subtext);
   white-space: nowrap;
   overflow: hidden;
@@ -50,17 +50,17 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  font-size: 11.5px;
+  font-size: var(--fs-2);
 }
 
 .ft-row {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: var(--sp-2);
   width: 100%;
-  padding: 4px 7px 4px calc(7px + var(--ft-depth, 0) * 14px);
+  padding: var(--sp-1) var(--sp-2) var(--sp-1) calc(var(--sp-2) + var(--ft-depth, 0) * 14px);
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--r-2);
   background: transparent;
   color: var(--t-text);
   font: inherit;
@@ -86,28 +86,29 @@
 }
 
 .ft-caret {
-  flex: 0 0 8px;
-  width: 8px;
-  font-size: 9px;
+  /* Sized to the 12px chevron icon it holds; at 8px the svg overhung the box. */
+  flex: 0 0 12px;
+  width: 12px;
+  font-size: var(--fs-1);
   color: var(--tab-c-ansi8);
 }
 
 /* Material Icon Theme, vendored into public/file-icons (see file-icons.ts).
-   Fixed 15px box whichever form renders, so the name column never shifts when
+   Fixed 16px box whichever form renders, so the name column never shifts when
    the index lands and the glyph is replaced by an image. The icons carry their
    own colours by design — that is the entire reason for importing them — so the
    theme's per-kind tint applies to the FALLBACK only. */
 .ft-glyph {
-  flex: 0 0 15px;
-  width: 15px;
-  height: 15px;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
 }
 
 .ft-glyph-fallback {
-  font-size: 10px;
+  font-size: var(--fs-1);
   color: var(--tab-c-ansi8);
 }
 
@@ -132,10 +133,10 @@
 .ft-note {
   display: flex;
   align-items: baseline;
-  gap: 7px;
-  padding: 4px 7px 4px calc(7px + var(--ft-depth, 0) * 14px);
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-2) var(--sp-1) calc(var(--sp-2) + var(--ft-depth, 0) * 14px);
   color: var(--t-subtext);
-  font-size: 11px;
+  font-size: var(--fs-1);
 }
 
 .ft-note-text {
@@ -148,6 +149,64 @@
   color: var(--t-text);
 }
 
+/* ── Rows entering and leaving ───────────────────────────────────────────────
+ *
+ * Every row of a root sits in a `.ft-leaf` that animates its OWN occupied space,
+ * the kit Collapsible's `grid-template-rows: 1fr ↔ 0fr`, with opacity. Fading the
+ * row alone and unmounting it afterwards would make every row below jump by its
+ * height at the end; collapsing the space with the fade lets them glide up.
+ *
+ * `FileTree`'s `useLeavingItems` keeps a removed row mounted for --mo-micro with
+ * `data-phase='leaving'`, and draws an inserted one as `entering` for two frames
+ * before it is `present`. These are transitions, never keyframes, so a change
+ * interrupted halfway (a delete undone by a refresh, a folder re-opened while it
+ * closes) retargets from where it is.
+ *
+ * The tier an ENTRANCE runs on is `data-enter`. A transition takes its duration
+ * and delay from the style it ENDS on, so the rule sits on the present row too. A
+ * list's first fill is the staggered tier; a row inserted later is micro. */
+.ft-leaf {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition:
+    grid-template-rows var(--mo-micro) ease,
+    opacity var(--mo-micro) ease;
+}
+
+/* The clip that lets a track shrink to 0fr; rows are one line, and the keyboard
+ * ring is drawn inside the row (outline-offset: -2px), so nothing needs to
+ * overhang. */
+.ft-leaf-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ft-leaf[data-phase='entering'],
+.ft-leaf[data-phase='leaving'] {
+  grid-template-rows: 0fr;
+  opacity: 0;
+}
+
+.ft-leaf[data-phase='leaving'] {
+  pointer-events: none;
+}
+
+/* The first fill: --mo-enter, a step per row. The step is capped because a
+ * listing is not a handful of items — at 40ms a row, the last of 300 would wait
+ * twelve seconds. Rows past the cap arrive together with the tenth. */
+.ft-leaf[data-enter='stagger'] {
+  transition-duration: var(--mo-enter);
+  transition-timing-function: var(--mo-ease);
+  transition-delay: calc(min(var(--ft-i, 0), 10) * var(--mo-stagger));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ft-leaf {
+    transition: none;
+  }
+}
+
 /* ── file pane ─────────────────────────────────────────────────────────────── */
 
 .fp-frame {
@@ -155,14 +214,14 @@
 }
 
 .fp-head {
-  gap: 8px;
-  padding: 7px 11px;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
 }
 
 .fp-path {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: 10.5px;
+  font-size: var(--fs-1);
   color: var(--t-subtext);
   white-space: nowrap;
   overflow: hidden;
@@ -174,7 +233,7 @@
 }
 
 .fp-state {
-  font-size: 10.5px;
+  font-size: var(--fs-1);
   color: var(--t-subtext);
   white-space: nowrap;
 }
@@ -193,7 +252,7 @@
  * any width — which is what a floating corner button did. */
 .fp-close {
   flex: 0 0 auto;
-  font-size: 12px;
+  font-size: var(--fs-2);
 }
 
 /* Both views stay mounted and stacked; the inactive one is hidden rather than
@@ -257,6 +316,12 @@
   padding: 2px 4px 2px 0;
 }
 
+/* A root header is a SECTION title: the same small secondary-colour label as a
+   Settings section or a New-tab section (ui.css `.ui-collapsible-trigger`),
+   spelled out here because this trigger is a plain button, not the kit's
+   Collapsible. It was the one uppercase, tracked, full-colour caption in the
+   Explorer, which read as a third heading style beside the panel title and the
+   section titles everywhere else. */
 .ft-sect-trigger {
   flex: 1 1 auto;
   min-width: 0;
@@ -266,12 +331,12 @@
   padding: 4px 2px;
   border: 0;
   background: none;
-  color: var(--t-text);
+  color: var(--t-subtext);
   font: inherit;
-  font-size: 11px;
+  font-size: var(--fs-1);
   font-weight: 600;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
+  letter-spacing: 0;
+  text-transform: none;
   text-align: left;
   cursor: pointer;
 }
@@ -281,8 +346,8 @@
 }
 
 .ft-sect-caret {
-  flex: 0 0 9px;
-  font-size: 9px;
+  flex: 0 0 12px;
+  font-size: var(--fs-1);
   color: var(--t-subtext);
 }
 
@@ -297,18 +362,17 @@
    a basename, and `projects` alone does not say which one is pinned. The full path
    is on the title attribute — showing it here needed front-truncation, and the
    `direction: rtl` trick that does that reorders the leading slash (measured:
-   `/home/user/projects` rendered as `home/user/projects/`). */
+   `/home/user/projects` rendered as `home/user/projects/`). The title is now
+   subtext too, so the path steps down by weight and the theme's dim slot. */
 .ft-sect-path {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--t-subtext);
-  font-size: 10px;
+  color: var(--tab-c-ansi8, var(--t-subtext));
+  font-size: var(--fs-1);
   font-weight: 400;
-  text-transform: none;
-  letter-spacing: 0;
 }
 
 .ft-sect-btn {
@@ -320,10 +384,10 @@
   justify-content: center;
   padding: 0;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--r-1);
   background: none;
   color: var(--t-subtext);
-  font-size: 11px;
+  font-size: var(--fs-1);
   line-height: 1;
   cursor: pointer;
 }
@@ -343,7 +407,7 @@
 .ft-pick {
   flex: 0 0 12px;
   width: 12px;
-  font-size: 10px;
+  font-size: var(--fs-1);
   color: var(--t-subtext);
 }
 
@@ -360,9 +424,9 @@
 .ft-bulk {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-2);
   flex-wrap: wrap;
-  padding: 8px 6px;
+  padding: var(--sp-2);
   border-top: 1px solid var(--t-surface);
   background: var(--t-mantle);
 }
@@ -371,5 +435,5 @@
   flex: 1 1 auto;
   min-width: 60px;
   color: var(--t-subtext);
-  font-size: 11px;
+  font-size: var(--fs-1);
 }

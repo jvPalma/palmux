@@ -105,4 +105,243 @@ describe('useFileUpload', () => {
     view.result.current.openPicker();
     expect(anyClick).toHaveBeenCalled();
   });
+
+  // The drawer holds the layout still for a picker, and must hold it only for one
+  // that is actually up. So a launch says whether it launched.
+  it('says whether a picker was launched', () => {
+    const { view } = setup();
+    const { openPicker, openImagePicker } = view.result.current;
+
+    expect(openPicker()).toBe(true);
+    expect(openImagePicker()).toBe(true);
+
+    // Unmounted, the hidden inputs are gone: the click goes nowhere.
+    view.unmount();
+    expect(openPicker()).toBe(false);
+    expect(openImagePicker()).toBe(false);
+  });
+});
+
+// A caller that holds its layout for the picker needs to hear when the picker is
+// over, and the page gets no word of it from the OS dialog. `change` and `cancel`
+// are the real signals; a focus back on a VISIBLE page is the fallback, after a
+// grace for a late `change`. Nothing is time-based: a photo takes as long as it takes.
+const setVisibility = (state: 'visible' | 'hidden') =>
+  Object.defineProperty(document, 'visibilityState', { value: state, configurable: true });
+const focusWindow = () => act(() => void window.dispatchEvent(new Event('focus')));
+const advance = (ms: number) => act(() => void vi.advanceTimersByTime(ms));
+
+describe('useFileUpload picker return', () => {
+  const GRACE_MS = 300;
+  const fire = (testId: string, type: 'change' | 'cancel') =>
+    act(() => void input(testId).dispatchEvent(new Event(type)));
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', mockUpload());
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    setVisibility('visible');
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    Reflect.deleteProperty(document, 'visibilityState');
+  });
+
+  it('reports a pick once', () => {
+    const { view } = setup();
+    const onReturn = vi.fn();
+    view.result.current.openPicker(onReturn);
+    expect(onReturn).not.toHaveBeenCalled();
+
+    fire('upload-input', 'change');
+    fire('upload-input', 'change'); // a second pick is a second launch's business
+    expect(onReturn).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a cancel once, and listens on the input that was opened', () => {
+    const { view } = setup();
+    const onReturn = vi.fn();
+    view.result.current.openImagePicker(onReturn);
+
+    fire('upload-input', 'cancel'); // the OTHER input
+    expect(onReturn).not.toHaveBeenCalled();
+    fire('upload-image-input', 'cancel');
+    fire('upload-image-input', 'cancel');
+    expect(onReturn).toHaveBeenCalledTimes(1);
+  });
+
+  it('never lets go on elapsed time alone', () => {
+    const { view } = setup();
+    const onReturn = vi.fn();
+    view.result.current.openPicker(onReturn);
+
+    advance(10 * 60 * 1000);
+    expect(onReturn).not.toHaveBeenCalled();
+    fire('upload-input', 'change');
+    expect(onReturn).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not count a focus while the page is hidden as a return', () => {
+    const { view } = setup();
+    const onReturn = vi.fn();
+    view.result.current.openPicker(onReturn);
+
+    setVisibility('hidden');
+    focusWindow();
+    advance(60 * 1000);
+    expect(onReturn).not.toHaveBeenCalled();
+  });
+
+  it('treats a confirmed return with no change as a cancel, after the grace', () => {
+    const { view } = setup();
+    const onReturn = vi.fn();
+    view.result.current.openPicker(onReturn);
+
+    focusWindow();
+    expect(onReturn).not.toHaveBeenCalled();
+    advance(0); // the tick; the grace is still running
+    advance(GRACE_MS - 1);
+    expect(onReturn).not.toHaveBeenCalled();
+    advance(1);
+    expect(onReturn).toHaveBeenCalledTimes(1);
+
+    // Settled: neither another focus nor another clock reports it again.
+    focusWindow();
+    advance(60 * 1000);
+    expect(onReturn).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not restart the grace on a second focus, nor report twice', () => {
+    const { view } = setup();
+    const onReturn = vi.fn();
+    view.result.current.openPicker(onReturn);
+
+    focusWindow();
+    advance(100);
+    focusWindow(); // a flicker of focus inside the grace
+    advance(60 * 1000);
+    expect(onReturn).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets a late change win the grace, and reports once', () => {
+    const { view } = setup();
+    const onReturn = vi.fn();
+    view.result.current.openPicker(onReturn);
+
+    focusWindow();
+    advance(GRACE_MS / 2);
+    fire('upload-input', 'change');
+    expect(onReturn).toHaveBeenCalledTimes(1);
+    advance(60 * 1000);
+    expect(onReturn).toHaveBeenCalledTimes(1);
+  });
+
+  // The return listeners ride on the SAME input as the upload's own `change`: a pick
+  // has to do both, and the order they were added in must not matter to either.
+  it('uploads a pick and reports the return, both once', async () => {
+    const { view, sendToPty } = setup();
+    const onReturn = vi.fn();
+    view.result.current.openPicker(onReturn);
+
+    pick('upload-input', [file('a.png')]);
+    expect(onReturn).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(sendToPty).toHaveBeenCalledWith('/tmp/a.png'));
+    expect(sendToPty).toHaveBeenCalledTimes(1);
+    expect(onReturn).toHaveBeenCalledTimes(1);
+  });
+
+  // On a desktop browser the window's `focus` commonly arrives AFTER the `change`. A
+  // listener that survived the settle would count it as a second, confirmed return.
+  it('does not report again when the window refocuses after a pick or a cancel', () => {
+    const { view } = setup();
+    const onReturn = vi.fn();
+    view.result.current.openPicker(onReturn);
+    fire('upload-input', 'change');
+    focusWindow();
+    advance(60 * 1000);
+    expect(onReturn).toHaveBeenCalledTimes(1);
+
+    const onCancelReturn = vi.fn();
+    view.result.current.openImagePicker(onCancelReturn);
+    fire('upload-image-input', 'cancel');
+    focusWindow();
+    advance(60 * 1000);
+    expect(onCancelReturn).toHaveBeenCalledTimes(1);
+  });
+
+  // A focus on a hidden page is ignored, not spent: the picker is still up, and the real
+  // return still has to be heard when the page is visible again.
+  it('still hears the return after a focus it ignored while the page was hidden', () => {
+    const { view } = setup();
+    const onReturn = vi.fn();
+    view.result.current.openPicker(onReturn);
+
+    setVisibility('hidden');
+    focusWindow();
+    advance(60 * 1000);
+    expect(onReturn).not.toHaveBeenCalled();
+
+    setVisibility('visible');
+    focusWindow();
+    advance(GRACE_MS - 1);
+    expect(onReturn).not.toHaveBeenCalled();
+    advance(1);
+    expect(onReturn).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives the image picker the same confirmed return', () => {
+    const { view } = setup();
+    const onReturn = vi.fn();
+    view.result.current.openImagePicker(onReturn);
+
+    focusWindow();
+    advance(GRACE_MS - 1);
+    expect(onReturn).not.toHaveBeenCalled();
+    advance(1);
+    expect(onReturn).toHaveBeenCalledTimes(1);
+  });
+
+  // A launch that went nowhere is not a picker: nothing is up to come back from, so a
+  // caller must never be told it returned.
+  it('never reports the return of a picker that did not launch', () => {
+    const { view } = setup();
+    const { openPicker } = view.result.current;
+    view.unmount();
+
+    const onReturn = vi.fn();
+    expect(openPicker(onReturn)).toBe(false);
+    focusWindow();
+    advance(60 * 1000);
+    expect(onReturn).not.toHaveBeenCalled();
+  });
+
+  it('settles the previous picker when a new one launches', () => {
+    const { view } = setup();
+    const first = vi.fn();
+    const second = vi.fn();
+    view.result.current.openPicker(first);
+    view.result.current.openImagePicker(second);
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(second).not.toHaveBeenCalled();
+
+    fire('upload-image-input', 'cancel');
+    expect(second).toHaveBeenCalledTimes(1);
+    expect(first).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not strand a caller when the pane unmounts mid-picker', () => {
+    const { view } = setup();
+    const onReturn = vi.fn();
+    view.result.current.openPicker(onReturn);
+
+    view.unmount();
+    expect(onReturn).toHaveBeenCalledTimes(1);
+  });
+
+  it('launches without a return callback', () => {
+    const { view } = setup();
+    expect(view.result.current.openPicker()).toBe(true);
+    focusWindow();
+    advance(60 * 1000); // nothing to report to, and nothing throws
+  });
 });

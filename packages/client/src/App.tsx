@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { JsonObject, TabMeta, WebAppLink } from '@palmux/shared';
-import { DEFAULT_MAX_UPLOAD_BYTES, normalizeOrder } from '@palmux/shared';
+import { DEFAULT_MAX_UPLOAD_BYTES, forgivingOrder, normalizeOrder } from '@palmux/shared';
 import { WsClient } from './lib/ws';
 import { Toast, type ToastAction, type ToastHandle } from './Toast';
 import { useSettings } from './settings/useSettings';
-import { DEFAULTS, resolveMobileMode } from './settings/settings';
+import { DEFAULTS, resolveMobileMode, type ClientSettings } from './settings/settings';
 import { useKeybindings } from './keybindings/useKeybindings';
 import {
   ACTION_LABELS,
@@ -15,7 +15,8 @@ import {
 } from './keybindings/keybindings';
 import { CommandPalette } from './command-palette/CommandPalette';
 import { SettingsFields } from './settings/SettingsFields';
-import { ConfigEditor, type ConfigEditorMode } from './settings/ConfigEditor';
+import { reloadApp } from './settings/app-reload';
+import { ConfigEditor, focusLost, type ConfigEditorMode } from './settings/ConfigEditor';
 import { FileTree } from './panes/FileTree';
 import { DictationView } from './dictation/DictationView';
 import { RecordingToast } from './dictation/RecordingToast';
@@ -37,9 +38,24 @@ import { useSoftKeyboard } from './mobile/useSoftKeyboard';
 import { NO_MODS } from './mobile/key-encoder';
 import { SessionTabs, type TabGrouping } from './session/SessionTabs';
 import { pruneRecord, reorderIds } from './session/tab-meta';
-import { decideGroupDrop, groupIdMap } from './session/tab-groups';
+import {
+  decideGroupDrop,
+  groupEdgeTarget,
+  groupIdMap,
+  outsideForeignGroup,
+  type GroupEdge,
+} from './session/tab-groups';
 import { useTabGroups } from './session/useTabGroups';
 import { SessionDrawer, type DrawerActions, type DrawerView } from './session/SessionDrawer';
+import {
+  accepts,
+  buildNodes,
+  resolveDrop,
+  tabValue,
+  groupValue,
+  type DrawerDrop,
+  type DropResult,
+} from './session/drawer-tree';
 import {
   DockPanel,
   DOCK_SETTLE_MS,
@@ -79,7 +95,9 @@ import { SplitView } from './session/SplitView';
 import { type MobileGestures } from './terminal/TerminalPane';
 import { downloadFromServer } from './terminal/download';
 import { NewTabChooser } from './panes/NewTabChooser';
+import { DropdownMenu, IconButton, type DropdownMenuItemSpec } from './ui';
 import { ErrorBoundary } from './ui/ErrorBoundary';
+import { Icon } from './ui/icons';
 import { closeManyMessage } from './session/close-many';
 import { DashboardBody, type CreateSpec } from './panes/DashboardBody';
 import { focusedEditor } from './panes/editor-registry';
@@ -110,9 +128,26 @@ const DRAWER_HOSTED_VIEWS: readonly DrawerView[] = ['files', 'dictation'];
 const KEYBOARD_GONE_PX = 100;
 
 /**
- * Whether the end of a native text selection should put the soft keyboard back.
+ * How long a re-raised keyboard gets to come back before the app gives up and
+ * re-pins to the grown viewport. Measured on a Galaxy S26: the IME was back
+ * 91ms after the focus().
+ */
+const KEYBOARD_RETURN_MS = 600;
+
+/**
+ * How long the viewport must hold still, back within a keyboard of the pinned
+ * height, before a keyboard restore counts as finished. Crossing back under the
+ * threshold is not arrival: an IME animates in through heights between the two
+ * (844 → 580 → 500), and committing the first of them is the second resize the
+ * restore exists to avoid. `KEYBOARD_RETURN_MS` stays the upper bound.
+ */
+const RESTORE_SETTLE_MS = 150;
+
+/**
+ * Whether the end of a hold on the layout (a native text selection, or the
+ * drawer) should put the soft keyboard back.
  *
- * Both gates carry weight. `deferred` says a selection is what held the layout
+ * Both gates carry weight. `deferred` says a hold is what kept the layout
  * still, so an ordinary keyboard dismissal never triggers a re-raise and fights
  * the user. The growth test says the keyboard was actually UP when the
  * selection began — someone selecting text while merely READING must not be
@@ -125,6 +160,38 @@ export function shouldRestoreKeyboard(
   pinnedHeight: number,
 ): boolean {
   return deferred && height > pinnedHeight + KEYBOARD_GONE_PX;
+}
+
+/** Asked before anything unmounts Settings' raw config.json editor while it holds unsaved text. */
+const DISCARD_CONFIG = 'Discard unsaved changes to config.json?';
+
+/** What `closeDrawer` can be told. `picker` hides the drawer but keeps the layout hold. */
+export interface DrawerCloseOptions {
+  holdUntil?: 'picker';
+}
+
+/**
+ * The drawer's claim on the layout while it is open (or while a native picker it
+ * launched is). `kbdWasUp` is the keyboard's state when the drawer OPENED, which
+ * is the only moment it can be read: once the drawer takes focus the IME may
+ * leave, and from then on "was it up?" has no answer. A drawer reopened over a
+ * pending picker adds what IT found, so either opening is restored. `picker` says
+ * the drawer is hidden but the hold is waiting for a file picker to come back.
+ */
+interface DrawerHold {
+  kbdWasUp: boolean;
+  picker: boolean;
+}
+
+/**
+ * Whether the soft keyboard is up right now. Focus alone cannot say — Android
+ * dismisses the IME without blurring the textarea — so the pinned height has to
+ * sit a keyboard's worth below the screen as well.
+ */
+function softKeyboardUp(): boolean {
+  if (document.activeElement?.id !== 'mobile-kbd') return false;
+  const pinned = Number.parseFloat(document.documentElement.style.getPropertyValue('--app-height'));
+  return Number.isFinite(pinned) && window.screen.height - pinned > KEYBOARD_GONE_PX;
 }
 
 // No 'settings' member: settings have TWO hosts now, the dock on desktop and
@@ -168,6 +235,50 @@ function visibleEntries(
     }
   }
   return entries;
+}
+
+/** What a drop does to the dragged tabs' group, in the server's `groupUpdate` terms. */
+interface DropMembership {
+  ids: ReadonlySet<string>;
+  addTo?: string | undefined;
+  removeFrom?: string | undefined;
+}
+
+/**
+ * A drop applied to `prev`, the tab list as it is when React gets to it.
+ *
+ * The drop was resolved against `tabsRef`, the latest list, and `prev` need not be
+ * it. A pointer event renders before a queued `sessions` broadcast does, so React
+ * first applies this update to the list WITHOUT that broadcast, then rebases it
+ * onto the broadcast. Rebuilding the list from the drop's `order` alone once
+ * discarded a tab a broadcast brought and overwrote a membership it changed, and
+ * the server, already holding the order it was sent, sent nothing to put either
+ * back. So the drop is applied to whichever list `prev` is the way the server
+ * applies it
+ * (`groupUpdate`, then `reorder`): membership first and conditionally (an add
+ * moves the tab into the group, stealing it from any other; a removal acts only
+ * on a tab still in that group), then the forgiving permutation (unknown ids
+ * dropped, tabs the order never named kept in their prior relative order), then
+ * the contiguity normalize.
+ */
+function applyDrop(prev: TabMeta[], order: string[], change?: DropMembership): TabMeta[] {
+  const patch = (t: TabMeta): TabMeta => {
+    if (!change?.ids.has(t.id)) return t;
+    if (change.addTo !== undefined) {
+      return t.groupId === change.addTo ? t : { ...t, groupId: change.addTo };
+    }
+    if (change.removeFrom === undefined || t.groupId !== change.removeFrom) return t;
+    const copy = { ...t };
+    delete copy.groupId;
+    return copy;
+  };
+  const byId = new Map(prev.map((t) => [t.id, patch(t)]));
+  const ids = forgivingOrder(
+    prev.map((t) => t.id),
+    order,
+    (id) => byId.has(id),
+  );
+  return normalizeOrder(ids, (id) => byId.get(id)?.groupId).flatMap((id) => byId.get(id) ?? []);
 }
 
 export function App() {
@@ -229,7 +340,23 @@ export function App() {
   // resize is paused and flushes exactly ONE on release, so a toggle costs each
   // attached shell one SIGWINCH instead of one per animation frame.
   const [dockBusy, setDockBusy] = useState(false);
+  const dockViewRef = useRef(dockView);
+  dockViewRef.current = dockView;
+  // The ONLY writer of `dockView`, so every way out of Settings comes through
+  // here: another rail view, the rail toggle, the dock's close button, a
+  // keybinding, a row inside the form. Leaving unmounts ConfigEditor and its
+  // unsaved buffer with it (keeping it mounted would load Monaco for every
+  // desktop session), so a dirty buffer asks first, the way `guardedReload` does.
+  // Cancel stays on Settings and shows that buffer in Raw. The view is read from
+  // a ref so this keeps its identity for everything that depends on it.
   const openDockView = useCallback((next: DockView | null) => {
+    if (dockViewRef.current === 'settings' && next !== 'settings' && configDirtyRef.current) {
+      if (!window.confirm(DISCARD_CONFIG)) {
+        setCfgMode('raw');
+        return;
+      }
+      configDirtyRef.current = false;
+    }
     setDockBusy(true);
     setDockView(next);
     writeDockView(next);
@@ -240,9 +367,28 @@ export function App() {
     return () => clearTimeout(t);
   }, [dockBusy, dockView]);
 
-  // Settings' Raw/Form toggle, and the file the browser opened into the content
+  // Whether Settings shows its form or the raw config.json editor (the "Edit
+  // config.json" row opens it), and the file the browser opened into the content
   // area. Both are view state, not app state — neither persists.
   const [cfgMode, setCfgMode] = useState<ConfigEditorMode>('form');
+  // Whether that editor holds text config.json does not — read only by the
+  // Reload and leave-Settings guards, so a ref: nothing renders from it.
+  const configDirtyRef = useRef(false);
+  const onConfigDirty = useCallback((dirty: boolean) => {
+    configDirtyRef.current = dirty;
+  }, []);
+  // The Edit config.json row goes with the form as Raw opens (ConfigEditor then
+  // takes focus), and the form comes back NEW as Raw closes, with the editor's
+  // `‹ Settings` hidden under the focus it held. So the way back hands focus to
+  // the row that opened the editor, here, where both are in reach. Only when
+  // focus was lost: never from a text field, or from anything else it still holds.
+  const editConfigRef = useRef<HTMLButtonElement>(null);
+  const shownCfgMode = useRef(cfgMode);
+  useLayoutEffect(() => {
+    if (shownCfgMode.current === cfgMode) return;
+    shownCfgMode.current = cfgMode;
+    if (cfgMode === 'form' && focusLost()) editConfigRef.current?.focus();
+  }, [cfgMode]);
   // The mobile drawer hosts the SAME views as the desktop dock. Its own state,
   // not dockView: the dock never renders on mobile, and sharing one value would
   // make a phone's choice follow you to a desktop.
@@ -263,9 +409,64 @@ export function App() {
   const [dirtyTabs, setDirtyTabs] = useState<{ [id: string]: boolean }>({});
   const [sheetTabId, setSheetTabId] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  // The drawer holds the viewport effect's layout still while it is open, the way
+  // a native selection does. A ref, not state: the effect must not re-subscribe
+  // (that drops `--app-height`), and nothing renders from it.
+  const drawerHoldRef = useRef<DrawerHold | null>(null);
+  // The viewport effect's release path, installed while it is subscribed. It takes
+  // what the ending hold recorded, because the hold itself is gone by the time the
+  // effect's next frame runs.
+  const viewportReleaseRef = useRef<(kbdWasUp: boolean) => void>(() => {});
+  const openDrawer = useCallback(() => {
+    const hold = drawerHoldRef.current;
+    // Reopening over a hold that was waiting on a picker takes it back: the
+    // drawer's own close releases it now. The keyboard state recorded first is
+    // still worth restoring, and so is one this opening finds up.
+    if (hold) {
+      hold.picker = false;
+      hold.kbdWasUp ||= softKeyboardUp();
+    } else drawerHoldRef.current = { kbdWasUp: softKeyboardUp(), picker: false };
+    setDrawerOpen(true);
+  }, []);
+  const releaseDrawerHold = useCallback(() => {
+    const kbdWasUp = drawerHoldRef.current?.kbdWasUp ?? false;
+    drawerHoldRef.current = null;
+    viewportReleaseRef.current(kbdWasUp);
+  }, []);
+  // The ONE way the drawer closes. A close path that skipped the release would
+  // strand the terminal at the keyboard-up height.
+  const closeDrawer = useCallback(
+    (opts?: DrawerCloseOptions) => {
+      setDrawerOpen(false);
+      const hold = drawerHoldRef.current;
+      if (!hold) return;
+      if (opts?.holdUntil === 'picker') {
+        // The native picker may take the IME with it, and the page cannot see that
+        // happen, so the layout stays held until the picker reports back.
+        hold.picker = true;
+        return;
+      }
+      releaseDrawerHold();
+    },
+    [releaseDrawerHold],
+  );
+  // A picker's return: the only thing that lets go of a picker hold. No clock —
+  // choosing a file or taking a photo takes as long as it takes.
+  const releasePickerHold = useCallback(() => {
+    if (drawerHoldRef.current?.picker) releaseDrawerHold();
+  }, [releaseDrawerHold]);
   const [fontFamilies, setFontFamilies] = useState<string[]>([]);
+  // The LATEST selection, ahead of React, for the reason `tabsRef` gives below: a
+  // close-navigation only queues `setSessionId`, and the next broadcast must
+  // decide from the tab it chose, not from the dead one against a list that no
+  // longer holds it (the neighbour rule then fell back to the FIRST tab). So
+  // every navigation goes through `showTab`, and a render does not write the
+  // ref: a click renders ahead of a socket message and would put the old id back.
   const sessionIdRef = useRef(sessionId);
-  sessionIdRef.current = sessionId;
+  const showTab = useCallback((id: string) => {
+    sessionIdRef.current = id;
+    setSessionId(id);
+  }, []);
   // Terminal tabs chosen "open in tmux <name>": id → session name, or null for a
   // new unnamed one. Read-and-cleared by the pane that mounts on that id, so a
   // recycled id can never inherit a previous tab's target.
@@ -278,8 +479,13 @@ export function App() {
     return target;
   }, []);
 
+  // The LATEST tab list, ahead of React: whatever changes the list (a `sessions`
+  // broadcast, a drop, a split's fuse sync) writes it here first, then queues the
+  // same change with `setTabs`. A render does not write it. A pointer event
+  // renders before a queued broadcast does, and copying `tabs` back here then put
+  // the older list in front of the next drop, which went out without the tab
+  // that broadcast brought. So a new `setTabs` must write this too.
   const tabsRef = useRef(tabs);
-  tabsRef.current = tabs;
   const dirtyRef = useRef(dirtyTabs);
   dirtyRef.current = dirtyTabs;
   const newTabOpenRef = useRef(newTabOpen);
@@ -309,6 +515,44 @@ export function App() {
   const mobileActive = resolveMobileMode(settings.mobileMode);
   const mobileActiveRef = useRef(mobileActive);
   mobileActiveRef.current = mobileActive;
+
+  // Switching the mobile layer ON drops the whole dock (it never renders there),
+  // and Settings' raw config.json buffer goes with it: the same loss leaving
+  // Settings asks about, so the same question, asked BEFORE the change is applied
+  // or persisted. Cancel leaves the setting and the editor as they were.
+  // Known gap, not fixed: `mobileMode: 'auto'` re-resolves on every render from
+  // the device itself (`isMobileDevice`: a coarse pointer, touch points), so a
+  // desktop that starts reporting one (a convertible losing its keyboard, the
+  // devtools device toolbar) flips `mobileActive` with no user action to ask
+  // against, and the editor still unmounts.
+  const changeSettings = useCallback(
+    (partial: Partial<ClientSettings>) => {
+      const intoMobile =
+        partial.mobileMode !== undefined &&
+        !mobileActiveRef.current &&
+        resolveMobileMode(partial.mobileMode);
+      if (intoMobile && configDirtyRef.current) {
+        if (!window.confirm(DISCARD_CONFIG)) return;
+        configDirtyRef.current = false;
+      }
+      updateSettings(partial);
+    },
+    [updateSettings],
+  );
+
+  // The scale's `--ctl-h` grows under `:root[data-mobile='true']`. It is an
+  // attribute rather than a media query because auto mode resolves from
+  // `maxTouchPoints`, not the pointer type (`resolveMobileMode`) — only the
+  // resolved value agrees with `.app.mobile`. It sits on <html>, not `.app`,
+  // because Radix portals menus and popups outside `.app`.
+  useEffect(() => {
+    if (!mobileActive) return;
+    const root = document.documentElement;
+    root.dataset.mobile = 'true';
+    return () => {
+      delete root.dataset.mobile;
+    };
+  }, [mobileActive]);
 
   // Re-skin the whole app when the theme changes (boot is handled pre-paint in
   // main.tsx). useLayoutEffect so tokens land before the browser paints the new
@@ -602,16 +846,24 @@ export function App() {
 
   // Upload picker / clipboard-paste target the focused terminal pane; guard the
   // entry points so a non-terminal tab shows a toast instead of a silent drop.
-  const guardedOpenPicker = useCallback(() => {
+  // They answer whether a picker actually opened: the drawer holds the layout for
+  // a picker, and must not hold it for a toast.
+  const guardedOpenPicker = useCallback((): boolean => {
     const api = registry.focusedApi();
-    if (!api) return showToast('Open a terminal tab to upload');
-    api.openPicker();
-  }, [registry, showToast]);
-  const guardedOpenImagePicker = useCallback(() => {
+    if (!api) {
+      showToast('Open a terminal tab to upload');
+      return false;
+    }
+    return api.openPicker(releasePickerHold);
+  }, [registry, showToast, releasePickerHold]);
+  const guardedOpenImagePicker = useCallback((): boolean => {
     const api = registry.focusedApi();
-    if (!api) return showToast('Open a terminal tab to upload');
-    api.openImagePicker();
-  }, [registry, showToast]);
+    if (!api) {
+      showToast('Open a terminal tab to upload');
+      return false;
+    }
+    return api.openImagePicker(releasePickerHold);
+  }, [registry, showToast, releasePickerHold]);
   // Download a file (or glob → ZIP) OFF the server machine. The path prompt is
   // deliberately plain — paths are usually copied straight out of the terminal.
   const doDownload = useCallback(() => {
@@ -656,10 +908,13 @@ export function App() {
    * which. Nothing writes the address any more; the window remembers instead
    * (the persist effect below), and back belongs to web panes alone.
    */
-  const switchSession = useCallback((id: string) => {
-    if (id === sessionIdRef.current) return;
-    setSessionId(id);
-  }, []);
+  const switchSession = useCallback(
+    (id: string) => {
+      if (id === sessionIdRef.current) return;
+      showTab(id);
+    },
+    [showTab],
+  );
 
   // A fuse-sync effect: relocate `moveId` immediately after `keepId` and patch
   // its group membership to the target's — optimistically (byte-identical to the
@@ -678,18 +933,16 @@ export function App() {
       const baseGof = groupIdMap(src);
       const postGof = (x: string): string | undefined =>
         x === e.moveId ? (e.targetGid ?? undefined) : baseGof(x);
-      const patch = (t: TabMeta): TabMeta => {
-        if (t.id !== e.moveId) return t;
-        if (e.targetGid === null) {
-          const copy = { ...t };
-          delete copy.groupId;
-          return copy;
-        }
-        return { ...t, groupId: e.targetGid };
-      };
       const order = normalizeOrder(next, postGof);
-      const byId = new Map(src.map((t) => [t.id, t]));
-      setTabs(order.flatMap((i) => (byId.has(i) ? [patch(byId.get(i)!)] : [])));
+      const moved = new Set([e.moveId]);
+      let change: DropMembership | undefined;
+      if (e.targetGid) change = { ids: moved, addTo: e.targetGid };
+      else if (e.moveGid) change = { ids: moved, removeFrom: e.moveGid };
+      // Committed the way a drop is: the snapshot first, and the list React holds
+      // patched the way the server patches it (see `applyDrop`), so the drop that
+      // follows before the next broadcast sees the partner where it now is.
+      tabsRef.current = applyDrop(src, order, change);
+      setTabs((prev) => applyDrop(prev, order, change));
       if (e.targetGid) {
         wsControlRef.current?.sendGroupUpdate({ id: e.targetGid, addIds: [e.moveId], order });
       } else if (e.moveGid) {
@@ -708,7 +961,7 @@ export function App() {
         case 'navigate':
           // One mode now. `push` / `replace` / `set` existed only to say what to
           // do with the URL, and nothing writes the URL.
-          setSessionId(e.id);
+          showTab(e.id);
           break;
         case 'chooserPage':
           setChooserPage(e.value);
@@ -738,7 +991,7 @@ export function App() {
           break;
       }
     },
-    [openSplit, dissolve, setSlotTab, focusSlot, applyFuseSync],
+    [showTab, openSplit, dissolve, setSlotTab, focusSlot, applyFuseSync],
   );
 
   // Translate a navigation gesture/socket event into effects (pure decision) and
@@ -750,7 +1003,10 @@ export function App() {
         pairings: pairingsRef.current,
         tabs: tabsRef.current,
         mobileActive: mobileActiveRef.current,
-        activeKind: activeKindRef.current,
+        // From the two snapshots, not the render's `activeKind`: a navigation
+        // that has not rendered yet already moved `sessionId`, and a split opened
+        // in that gap must not pair the new id with the old tab's kind.
+        activeKind: tabsRef.current.find((t) => t.id === sessionIdRef.current)?.kind ?? 'terminal',
         seenTermIds: seenTermIdsRef.current,
         popout,
         groupOf: groupIdMap(tabsRef.current),
@@ -832,7 +1088,7 @@ export function App() {
   // a bare reorder would be bounced back to contiguity by normalizeOrder); a
   // plain move sends `reorderTabs`. Optimistic in all three so there's no flash.
   const doReorder = useCallback(
-    (id: string, index: number, joinGid?: string) => {
+    (id: string, index: number, joinGid?: string, anchor?: GroupEdge, boundary?: boolean) => {
       setDragTabId(null);
       const src = tabsRef.current;
       const ids = src.map((t) => t.id);
@@ -841,9 +1097,14 @@ export function App() {
       if (!ids.includes(id)) return;
       // `index` is an insertion index into the VISIBLE ENTRY list (a fused pairing
       // is ONE entry, collapsed members hidden). The entry's strip-first id anchors
-      // the drop; map it to a FULL-order position.
+      // the drop; map it to a FULL-order position. An explicit `anchor` (the group
+      // the drop sits right before) wins: with a group collapsed, "before its chip"
+      // and "after it" share one entry index. It is resolved to the group's first
+      // member NOW, not at hover time — another window may have moved that tab out
+      // of the group since — and a group that is gone falls back to the index.
       const entries = visibleEntries(src, collapsedRef.current, pairingsRef.current);
-      const beforeId = entries[index]?.[0];
+      const edge = anchor ? groupEdgeTarget(src, anchor) : undefined;
+      let beforeId = edge ?? entries[index]?.[0];
 
       // A dragged pairing member moves the WHOLE block (slot order preserved) so
       // the two stay fused-adjacent; a plain tab moves alone.
@@ -851,6 +1112,18 @@ export function App() {
       const block = p ? [p.a.tabId, p.b.tabId].filter((x) => ids.includes(x)) : [id];
       const isBlock = block.length > 1;
       if (isBlock && beforeId !== undefined && block.includes(beforeId)) return; // onto itself
+
+      const baseGof = groupIdMap(src);
+      // A boundary drop (resolved between pills) never joins. The strip already
+      // resolves one inside a foreign group to its edge, but the boundary was
+      // computed at HOVER time: another window can group the tabs either side of
+      // it before the drop lands, and that order alone would read as a join. So
+      // re-resolve it here against the order the drop actually applies to.
+      if (boundary && !(beforeId !== undefined && block.includes(beforeId))) {
+        const rest = ids.filter((x) => !block.includes(x));
+        const at = beforeId === undefined ? rest.length : rest.indexOf(beforeId);
+        beforeId = rest[outsideForeignGroup(rest, at, baseGof, baseGof(id))];
+      }
 
       let next: string[];
       if (isBlock) {
@@ -863,32 +1136,26 @@ export function App() {
         next = reorderIds(ids, id, fullIndex);
       }
 
-      const baseGof = groupIdMap(src);
       // Group decision. A two-tab block collapses to its dragged representative so
       // decideGroupDrop sees the block's TRUE left/right neighbors (not the partner).
       const virtual = isBlock ? next.filter((x) => x === id || !block.includes(x)) : next;
-      const decision = decideGroupDrop(virtual, baseGof, id, joinGid);
+      const decision = decideGroupDrop(virtual, baseGof, id, joinGid, boundary);
 
       // Run the SHARED contiguity model over the POST-mutation membership so the
       // optimistic order is byte-identical to what the server will broadcast (no
       // flash, no drift) — and send that already-normalized order.
       const set = new Set(block);
-      let patch: (t: TabMeta) => TabMeta = (t) => t;
+      let change: DropMembership | undefined;
       let postGof = baseGof;
       let send: (order: string[]) => void;
       if (decision.join) {
         const join = decision.join;
-        patch = (t) => (set.has(t.id) ? { ...t, groupId: join } : t);
+        change = { ids: set, addTo: join };
         postGof = (x) => (set.has(x) ? join : baseGof(x));
         send = (order) => wsControlRef.current?.sendGroupUpdate({ id: join, addIds: block, order });
       } else if (decision.leave) {
         const leave = decision.leave;
-        patch = (t) => {
-          if (!set.has(t.id)) return t;
-          const copy = { ...t };
-          delete copy.groupId;
-          return copy;
-        };
+        change = { ids: set, removeFrom: leave };
         postGof = (x) => (set.has(x) ? undefined : baseGof(x));
         send = (order) =>
           wsControlRef.current?.sendGroupUpdate({ id: leave, removeIds: block, order });
@@ -897,8 +1164,10 @@ export function App() {
         send = (order) => wsControlRef.current?.sendReorderTabs(order);
       }
       const order = normalizeOrder(next, postGof);
-      const byId = new Map(src.map((t) => [t.id, t]));
-      setTabs(() => order.flatMap((i) => (byId.has(i) ? [patch(byId.get(i)!)] : [])));
+      // Applied to the list React holds, not rebuilt from `src`: a broadcast may
+      // be queued behind this drop (see `applyDrop`).
+      tabsRef.current = applyDrop(src, order, change);
+      setTabs((prev) => applyDrop(prev, order, change));
       send(order);
     },
     [collapsedRef],
@@ -907,7 +1176,7 @@ export function App() {
   // Chip block move: relocate the whole (contiguous) member block to the visible
   // insertion index, preserving inner order. One `reorderTabs`, applied optimistically.
   const moveGroup = useCallback(
-    (gid: string, index: number) => {
+    (gid: string, index: number, anchor?: GroupEdge) => {
       const src = tabsRef.current;
       const ids = src.map((t) => t.id);
       const memberSet = new Set(src.filter((t) => t.groupId === gid).map((t) => t.id));
@@ -915,18 +1184,101 @@ export function App() {
       const rest = ids.filter((x) => !memberSet.has(x));
       const members = ids.filter((x) => memberSet.has(x));
       const entries = visibleEntries(src, collapsedRef.current, pairingsRef.current);
-      const beforeId = entries[index]?.[0];
+      // `anchor`: the same group edge as doReorder's, resolved the same way — to
+      // that group's CURRENT first member, else the index once the group is gone.
+      const edge = anchor ? groupEdgeTarget(src, anchor) : undefined;
+      const beforeId = edge ?? entries[index]?.[0];
       if (beforeId !== undefined && memberSet.has(beforeId)) return; // dropped on itself
       const at = beforeId === undefined ? rest.length : Math.max(0, rest.indexOf(beforeId));
-      const nextOrder = [...rest.slice(0, at), ...members, ...rest.slice(at)];
+      // Normalized BEFORE the no-op check, the optimistic state and the send. Moved
+      // between two members of another group, the block would split that group,
+      // and the server answers a split order by normalizing it — back to the
+      // order it already has, which it does not broadcast. Sent raw, the client
+      // would keep drawing the split order until some unrelated broadcast.
+      const nextOrder = normalizeOrder(
+        [...rest.slice(0, at), ...members, ...rest.slice(at)],
+        groupIdMap(src),
+      );
       if (nextOrder.every((v, i) => v === ids[i])) return;
-      setTabs((prev) => {
-        const byId = new Map(prev.map((t) => [t.id, t]));
-        return nextOrder.flatMap((i) => byId.get(i) ?? []);
-      });
+      tabsRef.current = applyDrop(src, nextOrder);
+      setTabs((prev) => applyDrop(prev, nextOrder));
       wsControlRef.current?.sendReorderTabs(nextOrder);
     },
     [collapsedRef],
+  );
+
+  // ── The drawer's tree gestures ──────────────────────────────────────────────
+  // The mobile drawer drags a row to a place in a two-level tree, not to a strip
+  // index, so its drops go through the tree model (`session/drawer-tree.ts`) and
+  // land on the same wire operations the strip already speaks. They sit BESIDE
+  // doReorder/moveGroup rather than replacing them: the desktop strip resolves its
+  // drops against visible entries, fused pairings and group edges, none of which
+  // the drawer has.
+  // The latest group list, written by the `sessions` handler alone (the groups'
+  // only writer) the moment a broadcast arrives, and never by a render, for the
+  // reason `tabsRef` gives. A drop never needs to: membership lives on the tabs,
+  // and a group a drop empties has no node left to resolve against.
+  const groupsRef = useRef(groups);
+
+  // The model's answer for a drop against the order as it is NOW, or null when
+  // there is nothing to do: the drop is refused, it names a node another window
+  // has closed since the drag began, or it lands where the node already sits.
+  // Nothing goes on the wire for those.
+  const resolveTreeDrop = useCallback((dragged: string, drop: DrawerDrop): DropResult | null => {
+    const src = tabsRef.current;
+    if (!accepts(buildNodes(src, groupsRef.current), dragged, drop)) return null;
+    const ids = src.map((t) => t.id);
+    const result = resolveDrop(ids, groupIdMap(src), dragged, drop);
+    if (!result) return null;
+    const { addTo, removeFrom } = result.membership;
+    const same = result.order.every((v, i) => v === ids[i]);
+    return same && addTo === undefined && removeFrom === undefined ? null : result;
+  }, []);
+
+  // A tab dropped before/after a row, onto a group header, or on the root area:
+  // a membership change goes as `groupUpdate` (membership AND position in one
+  // atomic message — a bare reorder would be bounced back to contiguity), a plain
+  // move as `reorderTabs`. Optimistic with the same normalized order the server
+  // will broadcast, so the list does not flash back while the round trip runs.
+  // The snapshot moves at once too, so a second drop before the next render is
+  // resolved against this one.
+  const moveTabInTree = useCallback(
+    (id: string, drop: DrawerDrop) => {
+      const result = resolveTreeDrop(tabValue(id), drop);
+      if (!result) return;
+      const { order, membership } = result;
+      const { addTo, removeFrom } = membership;
+      const change: DropMembership = { ids: new Set([id]), addTo, removeFrom };
+      tabsRef.current = applyDrop(tabsRef.current, order, change);
+      setTabs((prev) => applyDrop(prev, order, change));
+      const ws = wsControlRef.current;
+      if (addTo !== undefined) ws?.sendGroupUpdate({ id: addTo, addIds: [id], order });
+      else if (removeFrom !== undefined) {
+        ws?.sendGroupUpdate({ id: removeFrom, removeIds: [id], order });
+      } else ws?.sendReorderTabs(order);
+    },
+    [resolveTreeDrop],
+  );
+
+  // A group header dragged as a block: membership never changes, so it is always
+  // one `reorderTabs`.
+  const moveGroupInTree = useCallback(
+    (gid: string, drop: DrawerDrop) => {
+      const result = resolveTreeDrop(groupValue(gid), drop);
+      if (!result) return;
+      const { order } = result;
+      tabsRef.current = applyDrop(tabsRef.current, order);
+      setTabs((prev) => applyDrop(prev, order));
+      wsControlRef.current?.sendReorderTabs(order);
+    },
+    [resolveTreeDrop],
+  );
+
+  // What the drawer's tree gestures call. Spread into the drawer rather than
+  // named inline so they reach it the moment it declares them.
+  const drawerTreeProps = useMemo(
+    () => ({ onMoveTab: moveTabInTree, onMoveGroup: moveGroupInTree }),
+    [moveTabInTree, moveGroupInTree],
   );
 
   // The whole tab-group concern bundled for SessionTabs/SessionDrawer — one
@@ -1024,7 +1376,7 @@ export function App() {
             createTabRef.current?.({ kind: 'terminal' });
           } else {
             const target = resolveSelection({ stored: readSelection(), tabs: msg.tabs });
-            if (target) setSessionId(target);
+            if (target) showTab(target);
             else setChooserPage(true);
           }
         } else {
@@ -1034,6 +1386,12 @@ export function App() {
           // On-screen splits reconcile in their own effect.
           dispatch({ type: 'sessionsBroadcast', tabs: msg.tabs });
         }
+        // ONE latest snapshot. `setTabs` only queues the list, and anything
+        // resolved before React renders it (a drop above all) must already see
+        // it. Moved only now: the close-navigation decision above is the one
+        // reader that needs the list as it was.
+        tabsRef.current = msg.tabs;
+        groupsRef.current = msg.groups ?? [];
         setTabs(msg.tabs);
       } else if (msg.type === 'settings') applySettings(msg.settings);
       else if (msg.type === 'extraKeys') applyExtraKeys(msg.extraKeys);
@@ -1082,6 +1440,7 @@ export function App() {
     registry,
     applyGroupBroadcast,
     dispatch,
+    showTab,
     showToast,
     boot.kind,
   ]);
@@ -1100,9 +1459,19 @@ export function App() {
     // The drawer is the container, so it has to be open to hold anything —
     // the keybinding can fire with it closed.
     setDrawerView('sessions');
-    setDrawerOpen(true);
+    openDrawer();
     setNewTabOpen(true);
-  }, [openDockView]);
+  }, [openDockView, openDrawer]);
+
+  // Two hosts, no modal: the dock on desktop, the drawer's own settings view
+  // on mobile (where the dock is forced off and the drawer IS the container).
+  // One function for the `settings` keybinding and the topbar app menu, so the
+  // two routes cannot open different things.
+  const openSettings = () => {
+    if (!mobileActiveRef.current) return openDockView('settings');
+    setDrawerView('settings');
+    openDrawer();
+  };
 
   // Rebindable desktop keybindings, wired to the actions that currently have a
   // target. Unbound / unwired chords fall through to the terminal untouched.
@@ -1110,13 +1479,7 @@ export function App() {
     commandPalette: () => setPanel('commandPalette'),
     search: () => registry.focusedApi()?.openSearch(),
     newTab: openNewTab,
-    // Two hosts, no modal: the dock on desktop, the drawer's own settings view
-    // on mobile (where the dock is forced off and the drawer IS the container).
-    settings: () => {
-      if (!mobileActiveRef.current) return openDockView('settings');
-      setDrawerView('settings');
-      setDrawerOpen(true);
-    },
+    settings: openSettings,
     tips: () => setPanel('tips'),
     diagnostics: copyDiagnostics,
     exportScrollback: () => {
@@ -1223,8 +1586,8 @@ export function App() {
     if (!activeDissolved) return;
     const fallback =
       activeDissolved.survivor ?? tabs.find((t) => t.kind === 'terminal')?.id ?? tabs[0]?.id ?? '0';
-    if (fallback !== active) setSessionId(fallback);
-  }, [pairings, tabs, setPairings, applyFuseSync]);
+    if (fallback !== active) showTab(fallback);
+  }, [pairings, tabs, setPairings, applyFuseSync, showTab]);
 
   // Close = kill, with kind-appropriate confirmation owned here.
   const closeTab = useCallback((id: string) => {
@@ -1261,6 +1624,41 @@ export function App() {
     );
     if (!message || !window.confirm(message)) return;
     for (const t of victims) wsControlRef.current?.sendKill(t.id);
+  }, []);
+
+  // Reload app, behind the same discard confirm closing a dirty editor gets.
+  // `reloadApp` reloads unconditionally, and an editor whose save was refused
+  // keeps its text only in the buffer — `dirtyRef` is the one place that knows,
+  // so a bare reload would destroy it without a word. Shared by the topbar menu
+  // and Settings → Reload app in BOTH its hosts, the dock and the mobile drawer.
+  //
+  // Resolves `true` as soon as the reload is CONFIRMED, not when it ends:
+  // `reloadApp` sweeps caches, updates the service worker and re-fetches the
+  // document before it navigates, and the Settings row has to show "Reloading…"
+  // during that wait. `false` means the user cancelled and nothing happened.
+  //
+  // Settings' raw config.json buffer counts too: it is not a tab, but its text
+  // exists nowhere else until a Save succeeds, and it survives hidden behind
+  // the Form view where the Reload row sits.
+  const guardedReload = useCallback((): Promise<boolean> => {
+    const unsaved = tabsRef.current.filter(
+      (t) => t.kind === 'editor' && dirtyRef.current[t.id],
+    ).length;
+    const subjects = [
+      ...(unsaved > 0 ? [`${unsaved} editor ${unsaved > 1 ? 'tabs' : 'tab'}`] : []),
+      ...(configDirtyRef.current ? ['config.json'] : []),
+    ];
+    const plural = subjects.length > 1 || unsaved > 1;
+    if (
+      subjects.length > 0 &&
+      !window.confirm(
+        `${subjects.join(' and ')} ${plural ? 'have' : 'has'} unsaved changes. Reload and discard them?`,
+      )
+    ) {
+      return Promise.resolve(false);
+    }
+    void reloadApp();
+    return Promise.resolve(true);
   }, []);
 
   const renameTab = useCallback(
@@ -1358,11 +1756,53 @@ export function App() {
     if (!vv || !mobileActive) return;
     const root = document.documentElement.style;
     let raf = 0;
-    let deferred = false;
-    // The height the app is currently PINNED to. While a selection defers the
+    // A hold has kept the layout still since it was last pinned, so the next
+    // apply that finds no hold is that hold's RELEASE. It is set the moment a hold
+    // is seen or hands itself back — not only when a viewport frame happened to
+    // run under it: the IME's viewport event and a release can land in the same
+    // frame, and a release that found "nothing deferred" used to pin the grown
+    // viewport without the keyboard.
+    let held = false;
+    // What each hold recorded about the keyboard, kept per SOURCE so one ending
+    // cannot overwrite another's record, and combined at the final release: raise
+    // if any of them saw it up. A selection cannot tell at its start (it blurs the
+    // textarea either way), so it always asks and leaves the answer to the growth
+    // test below; the drawer, and a picker it launched, recorded it at open. A
+    // drawer that opened over a DOWN keyboard has nothing to restore of its own,
+    // however far the viewport grows.
+    const intent = { selection: false, drawer: false };
+    // The geometry the app is currently PINNED to. While a hold defers the
     // replay this stays at the keyboard-up height, which is what makes the
     // dead space below the terminal, and what the restore below compares to.
     let pinnedH = vv.height;
+    let pinnedTop = vv.offsetTop;
+    // The drawer defers an UPDATE to a layout that is already pinned, never the
+    // first pin: mobile mode can come back on while the drawer is still open.
+    let pinned = false;
+    // A release that re-raised the keyboard leaves the layout RESTORING until the
+    // keyboard is back. Meanwhile viewport events write nothing: a scroll, or the
+    // IME animating in, used to pin the keyboard-less height at once and cancel
+    // the fallback, and the IME's arrival then resized every shell a second time.
+    // It ends ONCE, on whichever fires first: the settle timer (the viewport back
+    // within a keyboard of the pinned height and still for RESTORE_SETTLE_MS) or
+    // the fallback (the keyboard never came back).
+    let restoring = false;
+    let restoreFallback = 0;
+    let restoreSettle = 0;
+    // The frame a restore's end asks for commits the final geometry, and writes
+    // nothing when that is the geometry already pinned.
+    let restoreEnded = false;
+    const stopRestore = () => {
+      restoring = false;
+      clearTimeout(restoreFallback);
+      clearTimeout(restoreSettle);
+      restoreSettle = 0;
+    };
+    const endRestore = () => {
+      stopRestore();
+      restoreEnded = true;
+      onVV();
+    };
     const apply = () => {
       raf = 0;
       // Starting a native text selection BLURS the hidden keyboard textarea (a
@@ -1370,9 +1810,18 @@ export function App() {
       // dismisses the IME — which fires this handler. Re-fitting the terminal
       // here reflows the buffer out from under the selection and the user's
       // selection vanishes mid-gesture. Hold the layout still until they let
-      // go; the keyboard is on its way out either way.
-      if (hasNativeSelection()) {
-        deferred = true;
+      // go; the keyboard is on its way out either way. An open drawer holds it
+      // for the same reason: the IME leaves when the drawer takes a tap, and
+      // resizing every shell behind a panel that covers them is all cost.
+      // Overlapping holds release only when the LAST of them has ended.
+      const selecting = hasNativeSelection();
+      if (selecting || (pinned && drawerHoldRef.current)) {
+        held = true;
+        if (selecting) intent.selection = true;
+        // A hold taken while the keyboard was coming back takes over: its own
+        // release decides afresh whether there is anything to restore.
+        stopRestore();
+        restoreEnded = false;
         return;
       }
       // …and nothing was bringing it BACK. The blur is unavoidable, but once
@@ -1383,28 +1832,73 @@ export function App() {
       // were pinned to is what says so (the same test `ExtraKeysBar` uses after
       // a long press), so someone who merely selects text while reading does
       // not get a keyboard they never asked for.
-      const restore = shouldRestoreKeyboard(deferred, vv.height, pinnedH);
-      deferred = false;
-      pinnedH = vv.height;
-      root.setProperty('--app-height', `${vv.height}px`);
-      root.setProperty('--app-top', `${vv.offsetTop}px`);
-      registry.focusedApi()?.refit();
+      const released = held;
+      const restore =
+        (intent.selection || intent.drawer) && shouldRestoreKeyboard(released, vv.height, pinnedH);
+      held = false;
+      intent.selection = false;
+      intent.drawer = false;
+      // Re-raise BEFORE re-pinning, and keep the keyboard-up height meanwhile.
+      // Applying the grown height first resized every shell to the full screen
+      // and back again ~100ms later when the IME returned — measured on a phone
+      // as `resize rows 63` then `rows 33`, two SIGWINCHs that jumped the
+      // terminal by a few lines. If the keyboard does not come back (a focus()
+      // without user activation), the fallback ends the restore and pins the
+      // real height.
       // Best-effort: Android only raises the IME for a focus() that carries user
       // activation. The tap that dismisses a selection provides it; the OS Copy
       // callout may not, and then the next tap on the terminal raises it as it
       // always has.
-      if (restore) kbdRaiseRef.current();
+      if (restore) {
+        kbdRaiseRef.current();
+        stopRestore();
+        restoring = true;
+        restoreFallback = window.setTimeout(endRestore, KEYBOARD_RETURN_MS);
+        return;
+      }
+      if (restoring) {
+        // Once settling has begun every event restarts it, wherever it lands.
+        if (restoreSettle !== 0 || Math.abs(vv.height - pinnedH) <= KEYBOARD_GONE_PX) {
+          clearTimeout(restoreSettle);
+          restoreSettle = window.setTimeout(endRestore, RESTORE_SETTLE_MS);
+        }
+        return;
+      }
+      const settled = released || restoreEnded;
+      restoreEnded = false;
+      // A release or a restore over a viewport that ended where it started has
+      // nothing to apply, and a same-size write still re-fits every attached pane.
+      if (settled && pinned && vv.height === pinnedH && vv.offsetTop === pinnedTop) return;
+      pinnedH = vv.height;
+      pinnedTop = vv.offsetTop;
+      pinned = true;
+      root.setProperty('--app-height', `${vv.height}px`);
+      root.setProperty('--app-top', `${vv.offsetTop}px`);
+      registry.focusedApi()?.refit();
     };
     const onVV = () => {
       if (raf) return;
       raf = requestAnimationFrame(apply);
     };
-    // The selection ending is the only signal that a deferred resize can run —
-    // no further viewport event is guaranteed once the keyboard has gone.
+    // A selection holds from the moment it exists, and its end is the only signal
+    // that a held resize can run — no further viewport event is guaranteed once
+    // the keyboard has gone.
     const onSelectionChange = () => {
-      if (deferred && !hasNativeSelection()) onVV();
+      if (hasNativeSelection()) {
+        held = true;
+        intent.selection = true;
+      } else if (held) onVV();
     };
     document.addEventListener('selectionchange', onSelectionChange);
+    // The drawer's close (and a picker's return) runs the same release, carrying
+    // the drawer's record: by the time a frame queued under the hold runs, the
+    // hold is gone and could no longer be asked. The frame reconciles whatever
+    // the viewport is NOW.
+    viewportReleaseRef.current = (kbdWasUp) => {
+      held = true;
+      intent.drawer ||= kbdWasUp;
+      onVV();
+    };
     apply();
     // Passive: the handler only reads geometry + schedules a rAF, never
     // preventDefault — lets the browser scroll without waiting on JS.
@@ -1412,6 +1906,8 @@ export function App() {
     vv.addEventListener('scroll', onVV, { passive: true });
     return () => {
       if (raf) cancelAnimationFrame(raf);
+      stopRestore();
+      viewportReleaseRef.current = () => {};
       document.removeEventListener('selectionchange', onSelectionChange);
       vv.removeEventListener('resize', onVV);
       vv.removeEventListener('scroll', onVV);
@@ -1430,9 +1926,6 @@ export function App() {
     [focusSlotHandler],
   );
 
-  // The mobile drawer opener, stable — passed to panes on mobile.
-  const openDrawerMenu = useCallback(() => setDrawerOpen(true), []);
-
   // Upload and download are rail ACTIONS, not dock views. The desktop topbar
   // that used to hold them is gone — the app had two action bars, one above the
   // terminal and one beside it — and putting them in a panel would turn a
@@ -1450,6 +1943,30 @@ export function App() {
     [guardedOpenPicker, doDownload],
   );
 
+  // The topbar's app menu. Settings is the entry that matters: with
+  // `sidebarRail: 'hidden'` there is no rail, and this is the pointer route to it.
+  const appMenuItems: DropdownMenuItemSpec[] = [
+    {
+      id: 'settings',
+      label: 'Settings',
+      icon: <Icon name="settings" size={14} />,
+      onSelect: openSettings,
+    },
+    {
+      id: 'tips',
+      label: 'Tips',
+      icon: <Icon name="book" size={14} />,
+      onSelect: () => setPanel('tips'),
+    },
+    {
+      id: 'reload',
+      label: 'Reload app',
+      icon: <Icon name="reload" size={14} />,
+      separatorBefore: true,
+      onSelect: () => void guardedReload(),
+    },
+  ];
+
   return (
     <div className={`app${popout ? ' popout' : ''}${mobileActive ? ' mobile' : ''}`}>
       {popout && (
@@ -1458,19 +1975,34 @@ export function App() {
           <span className="spacer" />
           <button
             className="icon-btn"
-            style={{ width: 'auto', padding: '0 10px' }}
+            style={{ width: 'auto', padding: '0 10px', gap: 4 }}
             title="Return this tab to the main window"
             data-testid="popout-return"
             disabled={openerGone}
             onClick={returnToMain}
           >
-            {openerGone ? 'main window closed' : '⇱ return to main'}
+            {openerGone ? (
+              'main window closed'
+            ) : (
+              <>
+                <Icon name="external" />
+                return to main
+              </>
+            )}
           </button>
         </div>
       )}
       {!mobileActive && !popout && (
         <div className="topbar">
-          <span className="topbar-brand">palmux</span>
+          {/* The app menu is where Settings stays one click away with the rail
+              hidden (`sidebarRail: 'hidden'` leaves the keybinding as the only
+              other way back). It replaced the `palmux` wordmark: the name of the
+              app you are already inside. */}
+          <DropdownMenu items={appMenuItems} testidPrefix="app-menu">
+            <IconButton label="palmux menu" data-testid="app-menu-button">
+              <Icon name="menu" size={16} />
+            </IconButton>
+          </DropdownMenu>
           {/* The strip derives a lot from broadcasts (fusion, groups, drop
               marks). A throw in that derivation used to grey the whole app;
               scoped here it costs the strip and leaves the terminals attached,
@@ -1544,7 +2076,7 @@ export function App() {
             onChangeUrl={changeTabUrl}
             onPaneDirty={onPaneDirty}
             onPaneFocus={onPaneFocus}
-            paneMenu={mobileActive ? openDrawerMenu : undefined}
+            paneMenu={mobileActive ? openDrawer : undefined}
             onRatioCommit={(r) => {
               if (activeKey) setRatio(activeKey, r);
             }}
@@ -1564,7 +2096,7 @@ export function App() {
                 onCreate={createTab}
                 onUpdateQuickLinks={updateQuickLinks}
                 onPin={() => createTab({ kind: 'dashboard' })}
-                onMenu={mobileActive ? () => setDrawerOpen(true) : undefined}
+                onMenu={mobileActive ? openDrawer : undefined}
               />
             </div>
           )}
@@ -1608,11 +2140,13 @@ export function App() {
             onView={openDockView}
             actions={railActions}
           >
-            {dockView === 'settings' && <ConfigEditor mode={cfgMode} onMode={setCfgMode} />}
+            {dockView === 'settings' && (
+              <ConfigEditor mode={cfgMode} onMode={setCfgMode} onDirtyChange={onConfigDirty} />
+            )}
             {dockView === 'settings' && cfgMode === 'form' && (
               <SettingsFields
                 settings={settings}
-                onChange={updateSettings}
+                onChange={changeSettings}
                 fontFamilies={fontFamilies}
                 onOpenKeybindings={() => setPanel('keybindings')}
                 onOpenTips={() => setPanel('tips')}
@@ -1620,6 +2154,9 @@ export function App() {
                 onImportTheme={onImportTheme}
                 importingTheme={importingTheme}
                 appVersion={knownVersionRef.current}
+                onReloadApp={guardedReload}
+                onEditConfig={() => setCfgMode('raw')}
+                editConfigRef={editConfigRef}
               />
             )}
             {dockView === 'newtab' && (
@@ -1668,11 +2205,11 @@ export function App() {
           onSwitch={switchSession}
           onCreate={openNewTab}
           onKill={closeTab}
-          onClose={() => setDrawerOpen(false)}
-          onTabMenu={(id) => {
-            setDrawerOpen(false);
-            setSheetTabId(id);
-          }}
+          onClose={closeDrawer}
+          {...drawerTreeProps}
+          // The sheet opens OVER the drawer (it stacks higher), so a rename or a
+          // colour change lands you back in the list you pressed in.
+          onTabMenu={setSheetTabId}
           view={drawerView}
           onView={setDrawerView}
           // Declared once, so the segments are selectable. `viewContent` below
@@ -1689,7 +2226,7 @@ export function App() {
                     quickLinks={settings.quickLinks}
                     onCreate={(spec) => {
                       createTab(spec);
-                      setDrawerOpen(false); // creating navigates; get out of the way
+                      closeDrawer(); // creating navigates; get out of the way
                     }}
                     onUpdateQuickLinks={updateQuickLinks}
                   />
@@ -1703,7 +2240,7 @@ export function App() {
                   <FileTree
                     onOpenFile={(path) => {
                       openFileTab(path);
-                      setDrawerOpen(false);
+                      closeDrawer();
                     }}
                     pins={settings.explorerPins}
                     onPinsChange={(explorerPins) => updateSettings({ explorerPins })}
@@ -1717,7 +2254,7 @@ export function App() {
                     <DictationView
                       onCopy={(text) => void copyText(text).then(() => showToast('Copied'))}
                       onInsert={(text) => {
-                        setDrawerOpen(false);
+                        closeDrawer();
                         const api = registry.focusedApi();
                         if (!api) showToast('Focus a terminal to insert into');
                         else if (!api.paste(text)) showToast('Terminal not connected');
@@ -1736,6 +2273,7 @@ export function App() {
           onImportTheme={onImportTheme}
           importingTheme={importingTheme}
           appVersion={knownVersionRef.current}
+          onReloadApp={guardedReload}
         />
       )}
 
@@ -1775,7 +2313,7 @@ export function App() {
           // Swipe LEFT→RIGHT always raises the keyboard (never toggles — "open
           // it, no matter what"); RIGHT→LEFT pulls in the drawer from the
           // right edge, matching the direction of travel.
-          onSwipe={(dir) => (dir === 'right' ? kbd.raise() : setDrawerOpen(true))}
+          onSwipe={(dir) => (dir === 'right' ? kbd.raise() : openDrawer())}
           onRaiseKeyboard={kbd.raise}
         />
       )}

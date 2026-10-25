@@ -7,6 +7,7 @@
 import * as ToggleGroup from '@radix-ui/react-toggle-group';
 import { useCallback } from 'react';
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react';
+import { consumeGesture } from '../panes/press';
 
 export interface SegmentedOption<T extends string> {
   value: T;
@@ -28,11 +29,13 @@ export interface SegmentedProps<T extends string> {
    * and dismisses the soft keyboard, the exact reason every other drawer control
    * acts on pointerdown + preventDefault.
    *
-   * That preventDefault is also why the selection has to move INTO pointerdown:
-   * on a touch pointer it suppresses the compatibility mouse events, click
-   * included. With a mouse the click still arrives, finds the item already
-   * selected, and Radix reports '' for the toggle-off — which this component
-   * already ignores, so the value is right on both paths.
+   * So the selection moves INTO pointerdown, and that press marks its gesture
+   * (`consumeGesture`, panes/press.ts) the way the drawer's fixed buttons do.
+   * Selecting swaps the drawer's whole body, and the tap's own mousedown and
+   * click would otherwise land on what the new view drew under the finger: the
+   * mousedown moving focus off `#mobile-kbd`, the click pressing the newcomer.
+   * A key, assistive tech or `click()` reaches a segment as a click with no
+   * count, which the mark lets through to Radix's own handler.
    */
   keepFocus?: boolean | undefined;
 }
@@ -76,7 +79,7 @@ export function Segmented<T extends string>({
             ? {
                 onPointerDown: (e: ReactPointerEvent) => {
                   e.preventDefault();
-                  onValueChange(option.value);
+                  consumeGesture(e, () => onValueChange(option.value));
                 },
               }
             : {})}

@@ -11,6 +11,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EditorPane } from './EditorPane';
 import { DEFAULTS } from '../settings/settings';
+import { Icon } from '../ui/icons';
 
 // ── fake monaco ───────────────────────────────────────────────────────────────
 let value = '';
@@ -62,10 +63,18 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+/** The drawn shapes of a registered icon, to compare against what a control
+ *  rendered. Rendered into a detached node so `screen` never sees it. */
+const iconPaths = (name: string): string | undefined => {
+  const host = document.createElement('div');
+  render(<Icon name={name} />, { container: host });
+  return host.querySelector('svg')?.innerHTML;
+};
+
 const renderPane = async () => {
   const onDirtyChange = vi.fn();
   render(<EditorPane tabId="6" active onDirtyChange={onDirtyChange} />);
-  await screen.findByText('✓ saved'); // loader + fetch resolved
+  await screen.findByText('saved'); // loader + fetch resolved
   return { onDirtyChange };
 };
 
@@ -94,9 +103,27 @@ describe('EditorPane', () => {
 
   it('edits flip the dirty indicator and notify the strip', async () => {
     const { onDirtyChange } = await renderPane();
+    // The status mark is an icon, not a ✓/● character: `check` while saved, the
+    // solid `dot` once dirty. The word beside it is the accessible state.
+    const state = screen.getByTestId('editor-save-state');
+    expect(state.querySelector('svg')?.innerHTML).toBe(iconPaths('check'));
     simulateEdit('stored note!');
-    expect(await screen.findByText('● unsaved')).toBeTruthy();
+    expect(await screen.findByText('unsaved')).toBeTruthy();
+    expect(state.querySelector('svg')?.innerHTML).toBe(iconPaths('dot'));
     expect(onDirtyChange).toHaveBeenCalledWith('6', true);
+  });
+
+  // ☰ is the menu icon now. Mobile has no tab strip, so this is the way to the
+  // drawer: it has to keep its name (the icon is aria-hidden) and keep working.
+  it('the menu button is the menu icon, named, and opens the drawer on press', async () => {
+    const onMenu = vi.fn();
+    render(<EditorPane tabId="6" active onDirtyChange={vi.fn()} onMenu={onMenu} />);
+    await screen.findByText('saved');
+    const menu = screen.getByRole('button', { name: 'Open drawer' });
+    expect(menu.textContent).toBe('');
+    expect(menu.querySelector('svg')?.innerHTML).toBe(iconPaths('menu'));
+    fireEvent.pointerDown(menu);
+    expect(onMenu).toHaveBeenCalledTimes(1);
   });
 
   it('Ctrl+S PUTs the buffer, suppresses the browser dialog, and clears dirty', async () => {
@@ -105,7 +132,7 @@ describe('EditorPane', () => {
     const ev = new KeyboardEvent('keydown', { key: 's', ctrlKey: true, cancelable: true });
     fireEvent(window, ev);
     expect(ev.defaultPrevented).toBe(true);
-    expect(await screen.findByText('✓ saved')).toBeTruthy();
+    expect(await screen.findByText('saved')).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledWith(
       '/pane-file?tab=6',
       expect.objectContaining({ method: 'PUT', body: 'changed' }),
@@ -122,7 +149,7 @@ describe('EditorPane', () => {
     );
     simulateEdit('lost?');
     fireEvent(window, new KeyboardEvent('keydown', { key: 's', ctrlKey: true, cancelable: true }));
-    expect(await screen.findByText('● unsaved')).toBeTruthy();
+    expect(await screen.findByText('unsaved')).toBeTruthy();
   });
 
   it('a NON-ok load shows an error and never creates an editable buffer (no clobber)', async () => {
@@ -151,7 +178,7 @@ describe('EditorPane over a file path', () => {
   it('reads the file route and unwraps the JSON envelope', async () => {
     serveFile('on disk');
     render(<EditorPane tabId={FILE} filePath={FILE} active onDirtyChange={vi.fn()} />);
-    await screen.findByText('✓ saved');
+    await screen.findByText('saved');
 
     expect(fetchMock).toHaveBeenCalledWith(`/file?path=${encodeURIComponent(FILE)}`);
     expect(fakeMonaco.editor.create).toHaveBeenCalledWith(
@@ -170,7 +197,7 @@ describe('EditorPane over a file path', () => {
   it('opens a file in the grammar its name implies', async () => {
     serveFile('const x = 1');
     render(<EditorPane tabId="/p/a.ts" filePath="/p/a.ts" active onDirtyChange={vi.fn()} />);
-    await screen.findByText('✓ saved');
+    await screen.findByText('saved');
     expect(fakeMonaco.editor.create).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ language: 'typescript' }),
@@ -180,7 +207,7 @@ describe('EditorPane over a file path', () => {
   it('still falls back to plaintext for a name it does not know', async () => {
     serveFile('binary-ish');
     render(<EditorPane tabId="/p/a.parquet" filePath="/p/a.parquet" active onDirtyChange={vi.fn()} />);
-    await screen.findByText('✓ saved');
+    await screen.findByText('saved');
     expect(fakeMonaco.editor.create).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ language: 'plaintext' }),
@@ -199,11 +226,11 @@ describe('EditorPane over a file path', () => {
         onSaveError={onSaveError}
       />,
     );
-    await screen.findByText('✓ saved');
+    await screen.findByText('saved');
 
     simulateEdit('edited on the phone');
     fireEvent(window, new KeyboardEvent('keydown', { key: 's', ctrlKey: true, cancelable: true }));
-    expect(await screen.findByText('✓ saved')).toBeTruthy();
+    expect(await screen.findByText('saved')).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledWith(
       `/file?path=${encodeURIComponent(FILE)}`,
       expect.objectContaining({ method: 'PUT', body: 'edited on the phone' }),
@@ -226,7 +253,7 @@ describe('EditorPane over a file path', () => {
         onSaveError={onSaveError}
       />,
     );
-    await screen.findByText('✓ saved');
+    await screen.findByText('saved');
 
     fetchMock.mockImplementation(async (_url: string, init?: { method?: string }) =>
       init?.method === 'PUT'
@@ -237,7 +264,7 @@ describe('EditorPane over a file path', () => {
     fireEvent(window, new KeyboardEvent('keydown', { key: 's', ctrlKey: true, cancelable: true }));
 
     await waitFor(() => expect(onSaveError).toHaveBeenLastCalledWith('file is not writable'));
-    expect(screen.getByText('● unsaved')).toBeTruthy();
+    expect(screen.getByText('unsaved')).toBeTruthy();
   });
 
   // Both flags live in the HOST as well, and the host does not remount between
@@ -249,9 +276,9 @@ describe('EditorPane over a file path', () => {
     const onSaveError = vi.fn();
     const props = { active: true, onDirtyChange, onSaveError } as const;
     const view = render(<EditorPane tabId="/p/a.md" filePath="/p/a.md" {...props} />);
-    await screen.findByText('✓ saved');
+    await screen.findByText('saved');
     simulateEdit('dirty now');
-    expect(await screen.findByText('● unsaved')).toBeTruthy();
+    expect(await screen.findByText('unsaved')).toBeTruthy();
 
     onDirtyChange.mockClear();
     onSaveError.mockClear();

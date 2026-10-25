@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { SearchAddon } from '@xterm/addon-search';
+import { Icon } from '../ui/icons';
 
 export interface SearchBarProps {
   search: () => SearchAddon | null;
@@ -50,14 +51,24 @@ export function SearchBar({ search, onClose }: SearchBarProps) {
         }}
         data-testid="term-search-input"
       />
-      <button type="button" onClick={() => find('prev')} title="Previous (Shift+Enter)">
-        ↑
+      <button
+        type="button"
+        onClick={() => find('prev')}
+        title="Previous (Shift+Enter)"
+        aria-label="Previous match"
+      >
+        <Icon name="arrow-up" size={14} />
       </button>
-      <button type="button" onClick={() => find('next')} title="Next (Enter)">
-        ↓
+      <button
+        type="button"
+        onClick={() => find('next')}
+        title="Next (Enter)"
+        aria-label="Next match"
+      >
+        <Icon name="arrow-down" size={14} />
       </button>
-      <button type="button" onClick={onClose} title="Close (Esc)">
-        ✕
+      <button type="button" onClick={onClose} title="Close (Esc)" aria-label="Close search">
+        <Icon name="close" size={14} />
       </button>
     </div>
   );

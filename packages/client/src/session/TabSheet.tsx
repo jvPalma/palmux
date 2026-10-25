@@ -2,14 +2,16 @@
 //
 // Bottom sheet opened by long-pressing a drawer row: rename field, the color
 // palette, and Close. The rename input is a real text field (it may take focus
-// from #mobile-kbd — fine, the sheet is modal); buttons act on pointerdown per
-// the drawer convention.
+// from #mobile-kbd — fine, the sheet is modal); the fixed buttons act on
+// pointerdown per the drawer convention, and on a click too, so Enter, Space and
+// assistive tech reach them (`pressClick`).
 
-import { useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useState } from 'react';
 import type { TabGroup, TabMeta } from '@palmux/shared';
 import { displayTitle, kindIcon, resolveColorSlot, tabColorValue } from './tab-meta';
 import { SwatchRows } from './SessionTabs';
-import { pressMove } from '../panes/press';
+import { press, pressClick, pressMove } from '../panes/press';
+import { Icon } from '../ui/icons';
 
 interface TabSheetProps {
   tab: TabMeta;
@@ -25,11 +27,6 @@ interface TabSheetProps {
 }
 
 const NO_GROUPS: TabGroup[] = [];
-
-const press = (action: () => void) => (e: ReactPointerEvent) => {
-  e.preventDefault();
-  action();
-};
 
 export const TabSheet = ({
   tab,
@@ -55,7 +52,7 @@ export const TabSheet = ({
       <div className="sheet-scrim" data-testid="sheet-scrim" onPointerDown={press(onDismiss)} />
       <div className="tab-sheet" data-testid="tab-sheet">
         <div className="sheet-title">
-          {kindIcon(tab.kind)} {displayTitle(tab)}
+          <Icon name={kindIcon(tab.kind)} /> {displayTitle(tab)}
         </div>
         <input
           className="sheet-input"
@@ -73,7 +70,7 @@ export const TabSheet = ({
         {/* The group list is the only UNBOUNDED thing in this sheet — one row
             per group, on a phone, in fixed chrome with nowhere to grow. It is
             therefore a bounded SCROLLER, and that is why its rows use
-            `pressMove` while the rest of the sheet uses the local `press`: a
+            `pressMove` while the rest of the sheet acts on pointerdown: a
             control inside a scroller cannot fire on pointerdown, because the
             finger that arrived to scroll has already picked whatever was under
             it, and preventDefault on a touch pointerdown cancels the pan
@@ -136,7 +133,7 @@ export const TabSheet = ({
             className={`tab-swatch none${!tabColorValue(tab.color) ? ' selected' : ''}`}
             aria-label="No color"
             data-testid="sheet-color-none"
-            onPointerDown={press(() => onRecolor(tab.id, ''))}
+            {...pressClick(() => onRecolor(tab.id, ''))}
           >
             ∅
           </button>
@@ -145,14 +142,14 @@ export const TabSheet = ({
           <button
             className="sheet-btn danger"
             data-testid="sheet-close-tab"
-            onPointerDown={press(() => {
+            {...pressClick(() => {
               onDismiss();
               onCloseTab(tab.id);
             })}
           >
-            ✕ Close tab
+            <Icon name="close" size={14} /> Close tab
           </button>
-          <button className="sheet-btn" data-testid="sheet-done" onPointerDown={press(commit)}>
+          <button className="sheet-btn" data-testid="sheet-done" {...pressClick(commit)}>
             Done
           </button>
         </div>

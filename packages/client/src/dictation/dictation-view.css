@@ -29,30 +29,33 @@
 
 .dictation-record {
   width: 100%;
-  min-height: 38px;
+  min-height: 40px;
   margin-bottom: 4px;
-  font-size: 12.5px;
+  font-size: var(--fs-2);
 }
 
 .dictation-error {
-  margin: 6px 0 0;
+  margin: var(--sp-2) 0 0;
   font-size: 11px;
   line-height: 1.45;
   color: var(--tab-c-ansi3);
 }
 
-/* A quiet section rule, not a heading. */
+/* A section title: the same small secondary-colour label as a Settings section,
+   a New-tab section and an Explorer root (ui.css `.ui-collapsible-trigger`). It
+   used to be an uppercase, tracked 10px caption — a heading style of its own. */
 .dictation-group {
-  margin: 12px 0 7px;
-  font-size: 10px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+  margin: 12px 0 var(--sp-2);
+  font-size: var(--fs-1);
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
   color: var(--t-subtext);
 }
 
 .dictation-empty {
   margin: 0;
-  font-size: 11.5px;
+  font-size: var(--fs-1);
   color: var(--t-subtext);
 }
 
@@ -62,10 +65,10 @@
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  margin-bottom: 6px;
-  padding: 9px;
+  margin-bottom: var(--sp-2);
+  padding: var(--sp-2);
   border: 1px solid var(--t-surface);
-  border-radius: 8px;
+  border-radius: var(--r-3);
   background: var(--t-base);
   transition: background var(--mo-micro) ease;
 }
@@ -89,7 +92,7 @@
 
 .dictation-card-text {
   display: block;
-  font-size: 11.5px;
+  font-size: var(--fs-1);
   line-height: 1.5;
   color: var(--t-text);
   overflow-wrap: anywhere;
@@ -102,7 +105,7 @@
 .dictation-card-sub {
   display: block;
   margin-top: 2px;
-  font-size: 10px;
+  font-size: var(--fs-1);
   line-height: 1.4;
   color: var(--t-subtext);
 }
@@ -144,11 +147,11 @@
 .rec-toast {
   display: flex;
   align-items: center;
-  gap: 11px;
+  gap: var(--sp-3);
   max-width: calc(100vw - 24px);
-  padding: 10px 13px;
+  padding: var(--sp-3);
   border: 1px solid color-mix(in srgb, var(--tab-c-ansi1) 42%, transparent);
-  border-radius: 11px;
+  border-radius: var(--r-3);
   background: color-mix(in srgb, var(--t-mantle) 94%, var(--t-base));
   box-shadow: 0 12px 28px color-mix(in srgb, var(--t-base) 78%, transparent);
   pointer-events: auto;
@@ -161,7 +164,7 @@
    to keep a level indicator. */
 .rec-toast-compact {
   gap: 8px;
-  padding: 7px 10px;
+  padding: var(--sp-2) var(--sp-3);
 }
 
 .rec-toast-dot {
@@ -191,7 +194,7 @@
 .rec-toast-wave {
   display: flex;
   align-items: flex-end;
-  gap: 3px;
+  gap: 3px; /* scale-ok: gap equals the 3px bar width */
   height: 28px;
 }
 
@@ -202,7 +205,7 @@
 .rec-toast-bar {
   width: 3px;
   height: calc(22% + 78% * var(--rec-level, 0));
-  border-radius: 2px;
+  border-radius: 2px; /* scale-ok: bar is 3px wide, --r-1 would exceed half of it */
   background: var(--t-accent);
 }
 

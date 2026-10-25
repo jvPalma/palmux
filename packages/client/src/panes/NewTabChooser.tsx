@@ -6,7 +6,8 @@
 // `DashboardBody`.
 
 import { DashboardBody, type DashboardBodyProps } from './DashboardBody';
-import { press } from './press';
+import { pressClick } from './press';
+import { Icon } from '../ui/icons';
 
 interface NewTabChooserProps extends DashboardBodyProps {
   /** Dismiss without creating anything (popover); omitted for the last-tab page. */
@@ -27,8 +28,8 @@ export const NewTabChooser = ({ onClose, onPin, onMenu, ...body }: NewTabChooser
   >
     <div className="pane-header">
       {onMenu && (
-        <button className="pane-btn" aria-label="Open drawer" onPointerDown={press(onMenu)}>
-          ☰
+        <button className="pane-btn" aria-label="Open drawer" {...pressClick(onMenu)}>
+          <Icon name="menu" />
         </button>
       )}
       <span className="pane-title">New tab</span>
@@ -38,9 +39,9 @@ export const NewTabChooser = ({ onClose, onPin, onMenu, ...body }: NewTabChooser
           className="pane-btn"
           title="Keep as a tab"
           data-testid="dashboard-pin"
-          onPointerDown={press(onPin)}
+          {...pressClick(onPin)}
         >
-          📌
+          <Icon name="pin" />
         </button>
       )}
       {onClose && (
@@ -48,9 +49,9 @@ export const NewTabChooser = ({ onClose, onPin, onMenu, ...body }: NewTabChooser
           className="pane-btn"
           aria-label="Close"
           data-testid="dashboard-close"
-          onPointerDown={press(onClose)}
+          {...pressClick(onClose)}
         >
-          ✕
+          <Icon name="close" />
         </button>
       )}
     </div>

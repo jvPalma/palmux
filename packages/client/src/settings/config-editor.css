@@ -3,10 +3,10 @@
  * Two blocks:
  * (~/.agent/diagrams/palmux-ui-kit-proposals.html):
  *
- *   Monaco in the dock, inline validation — the panel: the `.dock-head`
- *       (uppercase, wide-tracked, dim title with the Raw/Form toggle pushed
- *       right), the editor filling everything between, and a status bar pinned
- *       to the bottom holding a 7px dot, one line of text, and Save.
+ *   05A Monaco in the dock, inline validation — the panel: a header holding the
+ *       `‹ Settings` back control and the file's title, the editor filling
+ *       everything between, and a status bar pinned to the bottom holding a dot,
+ *       one line of text, and Save.
  *
  *   05B Error state — the SAME bar with the error palette: red dot, red
  *       text, and a 12% red wash across the bar. Not a variant of 05A, the
@@ -20,8 +20,13 @@
  * MOTION: --mo-micro only, on the status bar's colour flip. Nothing animates
  * layout, and the editor host is never transitioned — Monaco owns its own box.
  *
- * The kit provides both controls (Segmented, Button), so nothing here restyles
- * them; the toggle only gets a flex position.
+ * The kit provides both controls (Button twice), so nothing here restyles them;
+ * the back control only takes the control height, like every other control in
+ * Settings. Sizes come from the scale in index.css.
+ *
+ * HIDDEN. Outside Raw the whole component is `hidden`, never unmounted (see
+ * ConfigEditor.tsx): `.config-editor` sets `display`, which outranks the
+ * attribute's own `display: none`, so `[hidden]` is restated below.
  */
 
 .config-editor {
@@ -32,43 +37,52 @@
   background: var(--t-mantle);
 }
 
-/* ── Header (`.dock-head` + `.dock-title`) ───────────────────────────────── */
+.config-editor[hidden] {
+  display: none;
+}
+
+/* ── Header ───────────────────────────────────────────────────────────────────
+   The same shape as the theme browser's sub-view header (settings-view.css): a
+   back control, then the title, which is the sub-view's name — not an uppercase
+   tracked caption. */
 .config-editor-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 9px 10px;
+  gap: var(--sp-2);
+  padding: var(--sp-2);
   border-bottom: 1px solid var(--t-surface);
+}
+
+/* The doubled class beats the kit's `.ui-btn-md` 30px `min-height` on specificity
+   rather than on source order, which a bundler is free to change. */
+.config-editor .config-editor-back {
+  flex: 0 0 auto;
+  gap: var(--sp-1);
+  height: var(--ctl-h);
+  min-height: var(--ctl-h);
+  padding: 0 var(--sp-2) 0 var(--sp-1);
+  border-radius: var(--r-2);
 }
 
 .config-editor-title {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
-  color: var(--t-subtext);
-  font-size: 10.5px;
-  letter-spacing: 0.13em;
+  color: var(--t-text);
+  font-size: var(--fs-3);
+  font-weight: 600;
   text-overflow: ellipsis;
-  text-transform: uppercase;
   white-space: nowrap;
 }
 
-.config-editor-modes {
-  flex: 0 0 auto;
-}
-
 /* ── Body ─────────────────────────────────────────────────────────────────────
-   HIDDEN, not unmounted, in Form mode: destroying the host would take the
-   Monaco model with it and an unsaved edit would not survive a toggle. */
+   The editor host lives in here and is never unmounted: destroying it would take
+   the Monaco model with it and an unsaved edit would not survive Raw → Form. */
 .config-editor-body {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
   min-height: 0;
-}
-
-.config-editor-body[data-off] {
-  display: none;
 }
 
 /* Monaco measures its container, so the container must have a size of its own —
@@ -84,8 +98,8 @@
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
   border-top: 1px solid var(--t-surface);
   background: var(--t-base);
   transition: background-color var(--mo-micro) var(--mo-ease);
@@ -97,8 +111,8 @@
 
 .config-editor-dot {
   flex: 0 0 auto;
-  width: 7px;
-  height: 7px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: var(--t-accent);
   transition: background-color var(--mo-micro) var(--mo-ease);
@@ -113,7 +127,7 @@
   min-width: 0;
   overflow: hidden;
   color: var(--t-subtext);
-  font-size: 10.5px;
+  font-size: var(--fs-1);
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
