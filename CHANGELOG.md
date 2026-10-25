@@ -1,0 +1,135 @@
+# Changelog
+
+All notable changes to palmux are documented here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
+[Semantic Versioning](https://semver.org/).
+
+## [1.1.0] — 2026-10-25
+
+A full UI rework for desktop and mobile, a safer file API, and voice dictation that works with
+more providers. The rework shipped as twelve reviewed batches. Each batch had an independent plan
+review, a build, and a fresh code inspection before it went live.
+
+### Highlights
+
+- **Tabs are pills.** You can tell the active tab, a split and a group apart at a glance.
+- **Settings are grouped cards.** Every control lines up on one column at one height.
+- **A redesigned mobile drawer.** It opens full-height, reorders with long-press drag, and
+  closes with a swipe.
+- **Automatic theme.** Pick one theme for dark mode and one for light, and each device follows
+  its own system setting.
+- **The installed app remembers where you were.** That includes the last tab and the folders you
+  had open in the Explorer.
+- **Safer file operations.** The server no longer trims paths, so deleting `report ` (trailing
+  space) can never delete `report`, and it refuses relative paths outright.
+
+### Added
+
+- **Theme follows the system.** Settings › Theme has a "Fixed | Match system" switch. In Match
+  system you choose a theme for dark and a theme for light, and each device switches live with
+  its own system setting. The tmux and Claude Code theme exports follow a real system switch, or
+  a pick or import for the mode currently on screen.
+- **In-place theme browser.** The Theme row opens a list inside the same dock or drawer. Every
+  theme previews itself in its own palette, and a pick applies live while the list stays open.
+  Import theme now lives at the top of this list.
+- **App menu.** The topbar ends with a menu button, centred above the sidebar rail, holding
+  Settings, Tips and Reload app.
+- **Long-press drag in the mobile drawer.** Hold a row, then drag it to reorder, to join a group
+  (drop on a group header) or to leave one (drop on the area below the list). A long press
+  without moving opens the row menu, and a swipe left reveals Close.
+- **Remembered Explorer state, per device.** The Explorer remembers which root sections (HOME and
+  each pinned folder) and which folders inside them are open. The state survives closing the view,
+  a reload and an app relaunch. HOME opens by itself only the first time on a device.
+- **Last tab survives an app relaunch.** An installed PWA reopens on the tab you were last on.
+  Two open windows still keep independent tabs.
+- **Dictation providers.** Besides Gemini, dictation can use any OpenAI-compatible API (OpenRouter
+  included) or Anthropic for the clean-up pass, with separate models for the audio and text passes.
+- **Boot environment file.** `~/.config/palmux/env` holds `KEY=VALUE` lines loaded at every boot,
+  under systemd too. Config values can refer to them with a `$` prefix, so API keys stay out of
+  `config.json`.
+
+### Changed
+
+- **Tab strip.** Every tab is a bordered pill. The active pill has a raised fill and a ring, and a
+  tab's colour is now a small dot instead of a tint. A group is a framed cluster with a filled
+  chip, and a split pairing is one pill with a split glyph that stays visible when inactive.
+- **Settings panel.** Sections are titled cards with one fixed control column, and every control
+  is the same height: 28px on desktop, 36px on mobile. Long values end in an ellipsis with the full
+  text on hover. Focus rings show for keyboard focus only. Font uses the same select as every other
+  list. Editing `config.json` is a row at the end of the panel.
+- **Mobile drawer.** It covers the full height, leaving a 44px strip to tap closed, over a dimmed
+  scrim. The top row holds Settings (a gear), a Sessions | Explorer | Dictation switcher and Close.
+  Session rows are pills, with the active row raised and ringed, and groups are framed clusters. The
+  drawer keeps the soft keyboard: if it was up when you opened the drawer, it comes back when you
+  close it, and the terminal resizes at most once.
+- **Dock rail.** The order is New tab, Explorer, Dictation, then Upload and Download, with Settings
+  pinned to the bottom. The rail is always shown on desktop.
+- **Dictation history.** Each card has a header line (date and duration on the left, actions on
+  the right) over the transcript at full width. Long transcripts are cut to four lines with a
+  "Show more" button, and the scrubber appears under the text while a clip plays.
+- **One visual scale.** Font sizes, spacing, radii and control heights come from one small set of
+  tokens, enforced by a test. There are no off-scale values left in the client stylesheets.
+- **Icons.** Emoji and text glyphs used as icons are replaced by one SVG icon set with a light,
+  uniform stroke.
+- **Motion.** Menus grow from where you opened them, kit buttons show a pressed state, and list
+  rows fade and collapse their space when they leave instead of jumping.
+
+### Fixed
+
+- **Samsung keyboard.** On the Samsung keyboard, digits were sometimes typed twice. The soft
+  keyboard now tracks committed text correctly.
+- **Text selection.** After a mobile text selection, the keyboard no longer jumps closed and back
+  open.
+- **Drawer gestures.** A tap that redraws the screen under your finger, such as opening Settings
+  or a scrim tap, no longer delivers a second, stray click to whatever appears there.
+- **Keyboard access.** Buttons in the dashboard, the tab sheet and the new-tab chooser now respond
+  to Enter, Space and assistive technology, not only to a pointer.
+- **Focus.** Opening the theme list, the raw config editor or a drawer sub-view no longer loses
+  focus or dismisses the soft keyboard.
+- **Unsaved config.** Leaving Settings with unsaved `config.json` changes, or turning mobile mode
+  on, now asks before discarding them.
+- **Black band.** A black band under the terminal on desktop now paints in the terminal's own
+  background colour.
+- **Theme switch.** Hovering the selected segment of the drawer switcher no longer shows pale text
+  on the accent fill.
+
+### Security
+
+- **File paths are used exactly as given.** `/files/list`, `/files/delete`, `/download`,
+  `/md-file` and `/md-list` no longer trim the path, so an operation on a name that ends in a
+  space never lands on its sibling. Previously, deleting the folder `report ` recursively deleted
+  `report`.
+- **Relative paths are refused.** The server checks that a path is absolute before resolving it.
+  Previously a relative path was resolved against the server's working directory, so a relative
+  delete could remove a directory inside the running checkout.
+
+### Removed
+
+- The "Sidebar rail" option. The desktop rail is always shown, and an old stored value is ignored.
+- The "Dictation history" row in Settings, because the rail's Dictation entry covers it.
+- The `palmux` wordmark in the topbar, replaced by the app menu.
+
+### Upgrade notes
+
+- **Restart the server.** The path-safety fixes are server-side and take effect after a restart
+  (`yarn service:update` or `systemctl --user restart palmux`). A restart ends open terminals,
+  and tmux sessions survive it.
+- **Reload every open palmux window** (phone and desktop, Settings › Reload app) before you turn
+  on Match system. An older window that saves settings would drop the new theme preferences.
+- **Known limits.**
+  - Two windows of one device changing Explorer folders in the same instant can bring back a
+    folder's collapsed or deleted state.
+  - Two devices saving settings in the same instant can leave the tmux and Claude export on the
+    other device's theme until the next system switch.
+
+## [1.0.1]
+
+See the GitHub release for v1.0.1.
+
+## [1.0.0]
+
+Initial release.
+
+[1.1.0]: https://github.com/jvPalma/palmux/releases/tag/v1.1.0
+[1.0.1]: https://github.com/jvPalma/palmux/releases/tag/v1.0.1
+[1.0.0]: https://github.com/jvPalma/palmux/releases/tag/v1.0.0
