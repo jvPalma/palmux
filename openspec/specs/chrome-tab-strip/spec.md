@@ -6,50 +6,6 @@ The desktop tab strip renders in Chrome's visual language, closes only via a con
 
 ## Requirements
 
-### Requirement: Desktop tabs render in Chrome's visual language
-
-The desktop topbar tab strip SHALL render each tab as a button with `min-width: 120px` and a
-**top-only corner radius**, showing: a kind icon (terminal / web / dashboard / editor / markdown) in
-the leading slot, the display title (custom name > OSC title > kind default), and a ✕ close affordance
-on the active tab and on hover. The **active tab SHALL be taller than its inactive neighbours, share
-the content area's background, and carry a top border in its accent color** (its own tab color if set,
-else the theme accent) so it reads as joined to the terminal below it. Inactive tabs SHALL render an
-8% tint of their own color over the strip background (`bg/92`) with the subdued foreground, and SHALL
-sit flush against one another with no gap. A `+` button SHALL sit after the last tab.
-
-Group chips and fused split buttons SHALL adopt the same top-only radius as a single unit — a group's
-members and a fused pairing each keep one shared outer radius rather than one per member — so grouping
-and splitting remain visually distinguishable from a run of ordinary tabs.
-
-#### Scenario: Active tab joins the content
-
-- **WHEN** an uncolored tab is active under a theme with a light accent
-- **THEN** it renders taller than its neighbours, filled with the content-area background, with a top
-  border in the theme accent and a top-only corner radius, at least 120px wide
-
-#### Scenario: Inactive tab is an 8% tint
-
-- **WHEN** a peach-colored tab is inactive
-- **THEN** its button background is an 8% peach tint over the strip background and its text uses
-  the subdued foreground
-
-#### Scenario: Kind icon shown
-
-- **WHEN** a `web` tab and a `terminal` tab are open
-- **THEN** each tab shows its kind's icon in the leading position
-
-#### Scenario: A fused pairing still reads as one button
-
-- **WHEN** two tabs are fused as a split pairing
-- **THEN** the pair carries one shared top-only radius with a seam between the members, not two
-  separate tab shapes
-
-#### Scenario: A group still reads as a block
-
-- **WHEN** a group of three tabs is rendered
-- **THEN** the chip and its members share one outer radius and the group's color remains visible
-  across the whole block
-
 ### Requirement: Closing a tab requires targeting the ✕ and confirms terminals
 
 Clicking a tab's body SHALL switch to it (including the active tab — the current
@@ -69,22 +25,23 @@ no unsaved state it SHALL close immediately.
 
 ### Requirement: Tab strip overflows horizontally
 
-When tabs exceed the available width the strip SHALL keep every tab at or above its 120px minimum
-width (fused split buttons at their 180px minimum) and scroll horizontally; the `+` button and the
-topbar action icons SHALL remain reachable.
+When tabs exceed the available width the strip SHALL keep every pill at or above its minimum width
+(fused split pills at their own minimum) and scroll horizontally; the `+` button and the app menu
+button SHALL remain reachable.
 
 #### Scenario: Many tabs
 
 - **WHEN** 12 tabs are open in a narrow window
-- **THEN** no tab renders below 120px wide, the strip scrolls horizontally, and the active tab is
-  scrolled into view on switch
+- **THEN** no pill renders below its minimum width, the strip scrolls horizontally, and the active
+  pill is scrolled into view on switch
+- **AND** the `+` button and the app menu button stay reachable, the menu button remaining at the end
+  of the bar outside the scrolling strip
 
 ### Requirement: Mobile drawer rows show the same identity
 
-Mobile drawer session rows SHALL display each tab's kind icon, display title, and color consistent
-with the desktop strip, sourced from the same `sessions.tabs` metadata, using the same flat visual
-language: the active row solidly filled with its accent (luminance-flipped ink), inactive rows an
-8% tint of their color.
+Mobile drawer session rows SHALL display each tab's display title and colour consistently with the
+desktop strip, sourced from the same `sessions.tabs` metadata. The colour SHALL appear as the same
+identity dot the strip uses; how a row marks the active tab is defined by `mobile-drawer`.
 
 #### Scenario: Rename on desktop appears on phone
 
@@ -94,6 +51,78 @@ language: the active row solidly filled with its accent (luminance-flipped ink),
 
 #### Scenario: Active drawer row matches desktop treatment
 
-- **WHEN** the drawer opens while a colored tab is active
-- **THEN** that row is solidly filled with the tab's accent color and flipped ink, and the other
-  rows show 8% tints
+- **WHEN** the drawer opens while a coloured tab is active
+- **THEN** that row is marked active without a colour fill (the treatment `mobile-drawer` defines),
+  matching the desktop rule that colour never marks the active tab
+
+#### Scenario: Colour appears as the same dot
+
+- **WHEN** a tab is coloured orange from the desktop
+- **THEN** its strip pill and its drawer row both show an orange dot, and neither is filled orange
+
+### Requirement: Desktop tabs render as pills
+
+Each desktop tab SHALL render as a rounded pill with a subtle 1px border, separated from its
+neighbours by a gap. It shows a colour dot when coloured, a kind icon for non-terminal kinds only,
+the display title, and a ✕ on the active pill and on hover. Pills SHALL grow with their title up to a
+maximum width and share space down to a minimum before the strip scrolls. A `+` button SHALL follow
+the last pill.
+
+#### Scenario: Terminal pill has no kind icon
+
+- **WHEN** a terminal tab and a markdown tab are open
+- **THEN** only the markdown pill shows a kind icon, and both pills carry the same subtle border
+
+#### Scenario: Space is used before truncating
+
+- **WHEN** five tabs fit comfortably in the strip
+- **THEN** each pill shows its full title up to the maximum width instead of truncating at a fixed
+  width
+
+### Requirement: The active pill clears a contrast floor
+
+The active pill SHALL be distinguished by a raised fill plus a ring, and its fill SHALL differ from
+the strip background by at least the theme's surface step. Its title SHALL use full-strength text and
+a heavier weight. Colour SHALL NOT be what marks the active pill.
+
+#### Scenario: Active is the loudest pill
+
+- **WHEN** an uncoloured tab is active next to inactive tabs coloured red and yellow
+- **THEN** the uncoloured active pill is the only raised, ringed pill, and the coloured inactive
+  pills differ from the others only by their dots
+
+### Requirement: The topbar ends with an app menu button
+
+The topbar SHALL end with an icon button as its LAST control, after the tab strip and the `+` button,
+outside the scrolling strip and, except in window-controls-overlay mode, aligned over the dock rail
+column. It SHALL open an app menu offering at least Settings, Tips and Reload app, end-aligned so the
+menu opens inside the window. The `palmux` text wordmark SHALL NOT appear in the topbar.
+
+#### Scenario: The menu is the last control
+
+- **WHEN** the desktop topbar renders
+- **THEN** the app menu button is its last control, after the tab strip and `+`, and the tab strip
+  starts at the bar's left edge
+
+#### Scenario: The button sits over the rail
+
+- **WHEN** the dock rail is shown
+- **THEN** the app menu button shares the centre line of the rail's own buttons
+
+#### Scenario: Window-controls-overlay keeps the menu in the title bar
+
+- **WHEN** the installed app runs in window-controls-overlay mode, where the topbar fills only the
+  title-bar area
+- **THEN** the app menu button is the last control of the title-bar area, beside the native window
+  controls, and is not required to align over the rail
+
+#### Scenario: The menu opens inside the window
+
+- **WHEN** the user activates the app menu button at the window's right edge
+- **THEN** the menu opens with its right edge on the button's right edge and stays fully on screen
+
+#### Scenario: A second route to Settings
+
+- **WHEN** the user chooses Settings from the app menu while the rail is shown
+- **THEN** the Settings view opens in the dock, the view the rail's Settings button and Ctrl+, also
+  open

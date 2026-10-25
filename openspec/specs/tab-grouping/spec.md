@@ -56,29 +56,27 @@ Clients SHALL create a group from a tab, rename/recolor it, move tabs in/out (wi
 
 ### Requirement: The strip renders groups as chips + clusters
 
-On desktop, each group SHALL render a GROUP BUTTON — styled like a tab: flat, squared, full strip
-height, `min-width: 120px` — immediately before its first member, showing the group's name (or a
-compact dot when unnamed) in the group color. A 3px bottom line in the group color SHALL run
-continuously under the group button AND every member tab. The group button SHALL render ACTIVE
-(solid group-color fill, luminance-flipped ink) whenever the active tab is one of its members, and
-as an 8% group-color tint otherwise. A member tab SHALL ALSO keep its own name and color accent
-(the group color/name and the per-tab color/name are independent, both shown — the member's fill/
-tint comes from its own color, the bottom line from the group). Group colors SHALL draw from the
-same 16-slot ANSI palette as tab colors. The group button SHALL offer, via its context menu,
-rename, recolor, ungroup (members stay as plain tabs), and close-all. A tab SHALL be groupable via
-its own context menu ("New group from this tab", and "Add to <group>" for each live group).
+On desktop, each group SHALL render as a FRAMED CLUSTER: a 1px frame in the group color enclosing a
+leading GROUP CHIP and every member pill. The chip shows the group's name (or a compact dot when
+unnamed) on a group-color fill with luminance-flipped ink. The chip's fill SHALL NOT change when a
+member becomes active — the member pill carries the active treatment, never the chip. A member tab
+SHALL ALSO keep its own name and colour dot (the group color/name and the per-tab color/name are
+independent, both shown). Group colors SHALL draw from the same 16-slot ANSI palette as tab colors.
+The group chip SHALL offer, via its context menu, rename, recolor, ungroup (members stay as plain
+tabs), and close-all. A tab SHALL be groupable via its own context menu ("New group from this tab",
+and "Add to <group>" for each live group).
 
 #### Scenario: Group button, line, and per-tab color coexist
 
 - **WHEN** a group "work" (blue) holds a tab that is itself colored red
-- **THEN** a blue tab-shaped "work" button precedes the members, the blue line runs under the
-  button and every member, AND the red tab keeps its own red fill/tint — both colors visible
+- **THEN** a blue frame encloses a blue "work" chip and every member, AND the red tab shows its own
+  red dot — both colors visible
 
 #### Scenario: Group button activates with its member
 
 - **WHEN** a member of "work" becomes the active tab
-- **THEN** the "work" button renders solid blue with flipped ink; activating a non-member returns
-  it to the 8% tint
+- **THEN** that member pill takes the active treatment and the "work" chip keeps exactly the fill it
+  had before
 
 #### Scenario: Create and add from the tab menu
 
@@ -87,13 +85,13 @@ its own context menu ("New group from this tab", and "Add to <group>" for each l
 
 #### Scenario: Ungroup keeps the tabs
 
-- **WHEN** the group button menu's Ungroup is used
-- **THEN** the members remain as ordinary tabs in place (keeping their own colors) and the group
-  button disappears
+- **WHEN** the group chip menu's Ungroup is used
+- **THEN** the members remain as ordinary pills in place (keeping their own colors) and the frame
+  and chip disappear
 
 #### Scenario: Close-all is kind-aware
 
-- **WHEN** the group button menu's Close all is used on a group containing a dirty editor tab
+- **WHEN** the group chip menu's Close all is used on a group containing a dirty editor tab
 - **THEN** the confirmation warns about the unsaved editor (never bulk-kills it silently); on
   accept, every member is closed
 

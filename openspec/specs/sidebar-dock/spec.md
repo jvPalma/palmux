@@ -24,28 +24,6 @@ surfaces. Exactly one view SHALL be active at a time, and the active view SHALL 
 - **WHEN** the dock is showing Settings and the user selects Files
 - **THEN** the dock stays open and swaps its content
 
-### Requirement: The icon rail is a per-device preference
-
-The dock SHALL offer a persistent icon rail listing its views. Its visibility SHALL be controlled by a
-`sidebarRail` preference with values `always` and `hidden`, defaulting to `always` on desktop and
-`hidden` on mobile. `sidebarRail` SHALL be stored **per device** and MUST NOT be added to the synced
-settings keys, because a synced copy reintroduces the cross-machine conflict that per-device
-persistence exists to prevent.
-
-#### Scenario: Rail hidden still reaches every view
-
-- **WHEN** `sidebarRail` is `hidden`
-- **THEN** no rail is rendered, and every view remains reachable from its keyboard shortcut
-  (`settings` is Ctrl+,) and from the command palette
-- **AND** the `sidebarRail` row SHALL state that hiding the rail leaves the keybinding as the only
-  route, because the desktop topbar no longer carries a settings control
-
-#### Scenario: The preference does not travel between machines
-
-- **WHEN** the user sets `sidebarRail` to `hidden` on one device and the synced settings are read on
-  another
-- **THEN** the second device keeps its own value
-
 ### Requirement: Toggling the dock must not storm attached shells
 
 The refit caused by opening, closing or resizing the dock SHALL be deferred and coalesced using the
@@ -75,3 +53,42 @@ offer a control that promotes it to a full tab/pane, leaving the dock free for a
 - **WHEN** the user promotes the Files view
 - **THEN** the file opens as a pane occupying the content area and the dock returns to its previous
   view or closes
+
+### Requirement: The rail orders entries by frequency of use
+
+The desktop rail SHALL list, from top to bottom: New tab, Explorer, Dictation, a separator, Upload,
+Download, and Settings pinned to the bottom of the rail.
+
+#### Scenario: Settings sits at the bottom
+
+- **WHEN** the rail is visible on desktop
+- **THEN** New tab is the topmost entry and Settings is the bottommost, separated from the other
+  entries by free space
+
+### Requirement: The desktop rail is always shown
+
+The dock's icon rail SHALL be rendered whenever the desktop layout is, and no setting SHALL hide it.
+A `sidebarRail` value stored by an earlier version SHALL be parsed and ignored. `sidebarRail` MUST NOT
+be added to the synced settings keys, because a synced copy would put a per-machine value back into
+the tracked settings file.
+
+#### Scenario: A stored hidden value does not remove the rail
+
+- **WHEN** the stored settings carry `sidebarRail: 'hidden'` and the desktop layout is active
+- **THEN** the rail is rendered with every entry, and Explorer, Dictation, Upload and Download are
+  reachable by pointer
+
+#### Scenario: Settings offers no rail option
+
+- **WHEN** the user opens Settings › App on desktop or in the mobile drawer
+- **THEN** no Sidebar rail row is shown
+
+#### Scenario: The retired value does not travel between machines
+
+- **WHEN** a device stores a `sidebarRail` value and the synced settings payload is built
+- **THEN** the payload does not contain `sidebarRail`
+
+#### Scenario: Mobile has no rail
+
+- **WHEN** the mobile layer is active
+- **THEN** no rail is rendered, and the drawer hosts the same surfaces

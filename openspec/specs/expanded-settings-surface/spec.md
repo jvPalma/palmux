@@ -12,12 +12,8 @@ palmux SHALL extend its client settings with the following customization fields 
 including (at least) `vimInputMode`, `middleClickPaste`, `ctrlVPaste`, `ctrlFSearch`,
 `keyboardSelection`, `altDigitPassthrough`, `undoSequence`, and a renderer/antialias preference —
 while continuing to route every synced field through the existing `SYNCED_KEYS` allowlist and server
-broadcast, and continuing to treat the payload as opaque server-side.
-
-It SHALL additionally carry `sidebarRail` (`always` | `hidden`), which controls the side dock's icon
-rail. `sidebarRail` is a **per-device** field: it MUST be excluded from the synced payload, because a
-value that follows the user between a phone and a desktop is wrong on one of them, and a synced copy
-reintroduces the cross-machine write conflict that per-device persistence exists to prevent.
+broadcast, and continuing to treat the payload as opaque server-side. A retired `sidebarRail` value
+SHALL still parse but SHALL control nothing, and SHALL stay out of the synced payload.
 
 #### Scenario: New field syncs cross-device via the allowlist
 
@@ -26,13 +22,14 @@ reintroduces the cross-machine write conflict that per-device persistence exists
 
 #### Scenario: Per-device fields stay per-device
 
-- **WHEN** a field is designated device-local (e.g. font size, mobile mode, sidebar rail)
+- **WHEN** a field is designated device-local (e.g. font size, mobile mode)
 - **THEN** it is excluded from the synced payload and does not leak to other devices
 
 #### Scenario: The rail preference does not reach the synced file
 
-- **WHEN** the user changes `sidebarRail` and the server persists settings
-- **THEN** the synced settings file is unchanged by that write
+- **WHEN** a device still holds a stored `sidebarRail` value and the server persists settings
+- **THEN** the synced settings file is unchanged by that value, and the desktop rail is shown
+  regardless of it
 
 ### Requirement: Unknown/legacy settings degrade safely
 

@@ -36,7 +36,8 @@ eight review decisions (D1–D8) on the same day. This change turns those answer
   - **Theme becomes a button** that opens a theme-list sub-view inside the same dock or drawer.
     Tapping a theme applies it live, so the owner can try themes freely and go back when one fits.
 - **The topbar's `palmux` wordmark becomes an app-menu icon button (D4-C)** with a pointer route to
-  Settings and Tips, so `sidebarRail: hidden` no longer leaves only a keybinding.
+  Settings and Tips. (Batch 12 later moved it to the topbar's END, above the rail, and retired the
+  `sidebarRail` option: the desktop rail is always shown.)
 - **Navigation order follows reach (D5).**
   - Desktop rail: New tab, Explorer, Dictation · Upload, Download · Settings last.
   - Mobile drawer: the most-used views sit nearest the bottom edge, where the thumb is.
@@ -87,8 +88,9 @@ eight review decisions (D1–D8) on the same day. This change turns those answer
   activation. The 3px underline and the solid-on-active chip go.
 - `split-fusion`: the fused button becomes a two-segment pill with a split glyph that stays visible
   while inactive. The focused segment is raised; the solid-fill and dimmed-tint segment colours go.
-- `sidebar-dock`: the rail order is fixed (Settings last), and the app-menu button provides a
-  pointer route to Settings when the rail is hidden.
+- `sidebar-dock`: the rail order is fixed (Settings last), and the rail is always shown on desktop
+  (batch 12 retired the hide option); the app-menu button is a second pointer route to Settings.
+- `expanded-settings-surface`: `sidebarRail` still parses but controls nothing (batch 12).
 - `ui-primitives`: adds the type, spacing, radius and control-height scale with its guard test, the
   single SVG icon set, and the four motion additions within the existing tiers.
 

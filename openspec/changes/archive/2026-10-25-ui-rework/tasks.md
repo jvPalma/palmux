@@ -52,8 +52,9 @@ devices before the next starts.
       zero; verify `ui/scale.test.ts` passes with the new baselines
 - [x] 2.9 Update CLAUDE.md (tab strip, split fusion, group chip, the topbar paragraph) and verify
       no paragraph still describes the Chrome tab shape, the 8% tints or the 3px group line
-- [ ] 2.10 Verify live at 1440×900 on the desktop with 9 tabs, one group and one pairing: the owner
+- [x] 2.10 Verify live at 1440×900 on the desktop with 9 tabs, one group and one pairing: the owner
       can name the active tab, the split and the group at a glance (owner sign-off)
+      **Signed off 2026-10-25:** the owner, using the strip daily since batch 2, asked to archive.
 
 ## 3. Settings panel
 
@@ -181,10 +182,45 @@ devices before the next starts.
 
 ## 9. The Explorer remembers open roots per device (owner follow-up, 2026-10-25)
 
-- [ ] 9.1 Persist the Explorer's open root sections in `localStorage` (per device, never synced),
+- [x] 9.1 Persist the Explorer's open root sections in `localStorage` (per device, never synced),
       open HOME only on a device's first run, and guard the prune against an incomplete root list;
       verify with module and FileTree tests (first run, remount, toggle, pin, boot prune, throwing
       storage) and a reload on loopback
+
+## 10. State that survives a PWA relaunch (owner follow-up, 2026-10-25)
+
+- [x] 10.1 Fall back to a device-wide last tab when a window has no selection of its own; verify with
+      module tests and a relaunch on loopback
+- [x] 10.2 Remember folders expanded inside Explorer roots per device, fetching only visible ones and
+      dropping 404s; verify with FileTree tests and a relaunch on loopback
+
+## 11. Carried: batch 9's Explorer persistence defects (2026-10-25)
+
+- [x] 11.1 Give Explorer paths one canonical identity (`normalizePin`), fetch and poll a folder only
+      when its parent's listing shows it, and stop a canonicalising response from looping the loader;
+      verify with canonicalisation, dormant-record and loop tests and a 5-second request count on
+      loopback
+
+      **Batches 9–10 outcome (2026-10-25).** Deployed together by owner decision after each spent its
+      inspection budget. Known open edge (B10-INSPECT2-01): `normalizePin` trims whitespace, so a
+      path whose segment ends in a space can resolve to a sibling; the server trims list, delete and
+      download paths too. Both go to batch 11 (client + server, needs a restart the owner approves).
+
+## 12. A path is the path: no trimming (2026-10-25, last batch)
+
+- [x] 12.1 Stop the server trimming list, delete, download and markdown paths (blank still rejected);
+      verify with sibling `report` / `report ` tests, including that a delete never touches the sibling
+- [x] 12.2 Stop `normalizePin` trimming and make it idempotent; verify the B10-INSPECT2-01 restore case
+      and the idempotence cases
+
+## 13. Owner's desktop notes before archive (2026-10-25)
+
+- [x] 13.1 Move Import theme into the theme list as its first section
+- [x] 13.2 Add a Match-system theme mode with a dark and a light pick; the server export follows a real
+      scheme change only
+- [x] 13.3 Drop the Sidebar rail and Dictation history rows from Settings › App (rail always shown)
+- [x] 13.4 Make the dictation history card readable (header with date and actions, clamped transcript)
+- [x] 13.5 Move the app menu to the top-right of the topbar, above the rail
 
 ## Workflow follow-up
 
