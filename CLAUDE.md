@@ -66,23 +66,44 @@ exists (iframe/editor state preserved); Monaco is a lazy chunk (`monaco-loader.t
 use downloads none of it.
 
 **The URL is not the session. The app lives at `/`.** Which tab a window shows is BROWSER-LOCAL
-state (`session/window-selection.ts`, `sessionStorage['palmux-window-tab']`), the way VS Code
-remembers an open editor. The id is still identity everywhere it was — `/ws?session=<id>`, the
+state (`session/window-selection.ts`, `sessionStorage['palmux-window-tab']`, plus a device-wide
+fallback in `localStorage['palmux-last-tab']`), the way VS Code remembers an open editor. The id is still identity everywhere it was — `/ws?session=<id>`, the
 registry, `tabs.json`, `/pane-file?tab=` — it just stopped being an ADDRESS. What forced this: the
 address bar can only name ONE thing, and palmux has two that both want it. A `web` pane's ← walks
 the top-level joint history (rule 2 above), which `pushState` on every tab switch shared, so ←
 undid a tab switch instead of a page. There is no arrangement of one stack that serves both, and
 the framed page is the one with no alternative — a pane cannot reach its own history.
-- **`sessionStorage`, not `localStorage`, and the distinction is the whole feature.**
-  `sessionStorage` is per browsing CONTEXT; `localStorage` is per ORIGIN. Two palmux windows on the
-  same host must hold different tabs — that is what having two windows means — and one shared key
-  would make the second window yank the first. Tabs, groups and order stay server state and stay
-  synchronised across every window; only the SELECTION is local. A tab opened in one window
-  therefore appears in the other's strip and does not steal its view.
+- **`sessionStorage` is the window's own selection, `localStorage` is only the fallback, and the
+  distinction is the whole feature.** `sessionStorage` is per browsing CONTEXT; `localStorage` is per
+  ORIGIN. Two palmux windows on the same host must hold different tabs — that is what having two
+  windows means — and a shared key that every window READ would make the second window yank the
+  first. Tabs, groups and order stay server state and stay synchronised across every window; only the
+  SELECTION is local. A tab opened in one window therefore appears in the other's strip and does not
+  steal its view. `sessionStorage` alone has one cost, and an installed PWA pays it on every launch:
+  its window is a browsing context the OS ends whenever it likes (Android kills it freely), so a
+  relaunch had no selection and opened the first tab. So the device's last selected tab is ALSO kept
+  in `localStorage['palmux-last-tab']` (same `{id, kind}`), and `readSelection` returns the window's
+  own value, falling back to it ONLY when the window has none — a fresh window or a relaunched PWA —
+  so an open window is never moved by another. The price, taken on purpose: a second window opened
+  later starts on whatever was selected last anywhere on this device.
+  **Who WRITES the shared key matters as much as who reads it.** App writes it only when this window's
+  resolved selection CHANGES in id or kind (`lastStoredRef`), never on a tab-list or title broadcast:
+  the persist effect re-runs on every `sessions` message because `tabs` is a new array, and a window
+  that merely heard a rename would overwrite the tab another window just chose. The comparison is
+  cleared while the selection resolves to no tab (closed, or created and not yet broadcast, which then
+  writes once it appears) and while the window is on the New-tab page, so an id that is recycled as
+  another kind (close the last terminal `0`, create an editor that reuses it) is stored with its new
+  kind. A reload that comes back on the window's OWN remembered tab is a restore, not a selection:
+  the first-broadcast resolve seeds `lastStoredRef` with it, because the effect otherwise read the
+  reload as a change and copied this window's older tab over a newer choice another window had made
+  since. The seed is skipped while the device holds no usable value, so the boot choice initialises
+  it; `?new=1`, a legacy `/<id>` and a remembered tab that is gone (the window lands elsewhere) all
+  still write. A pop-out writes neither key. `?new=1` and a legacy `/<id>` still outrank any stored value.
 - **The stored value carries the `kind`, not just the id.** Ids are recycled lowest-free, so a
   remembered `2` can come back as a different kind of tab entirely; a kind mismatch is treated as
-  gone. Boot then falls back to the FIRST tab in strip order — not the lowest id, which tab-reorder
-  decoupled long ago — and to the chooser page when there are none.
+  gone, for the window's own value and the device-wide one alike. Boot then falls back to the FIRST
+  tab in strip order — not the lowest id, which tab-reorder decoupled long ago — and to the chooser
+  page when there are none.
 - **The neighbour rule stays in `workspaceController`'s `sessionsBroadcast`**, not in the resolver.
   "The tab I was viewing was closed from another window, move me to its neighbour" needs the
   PREVIOUS strip order, and that broadcast is the only place holding it; at boot there is no
@@ -394,17 +415,21 @@ fails on any rule outside ui.css whose selector ends in `.ui-collapsible-trigger
 `font`, `font-size`, `font-weight`, `font-family`, `letter-spacing`, `text-transform` or `color`.
 `.dock-body` pads `--sp-3`, matching the head's left padding, so a panel's content lines up under
 its title.
-`sidebarRail` (`always`|`hidden`) is **per-device and must never join `SYNCED_KEYS`** — a synced copy
-puts a per-machine value back in the dotfiles-tracked settings.json.
+**The rail is always drawn on desktop, and `sidebarRail` is dead.** It was a per-device preference
+(`always`|`hidden`), and `hidden` left Explorer, Dictation, Upload and Download with no pointer route
+at all, so the Settings row is gone and nothing reads the value for layout: a stored `'hidden'` is
+ignored. The type, the default and the sanitiser stay only so an old settings.json still parses. It
+must still never join `SYNCED_KEYS` — a synced copy puts a per-machine value back in the
+dotfiles-tracked settings.json (`settings.test.ts` pins that).
 **There is exactly ONE action bar, and it is the rail.** Upload and download also
 have keybindings (`uploadFile`/`downloadFile`) and therefore command-palette
-entries — without them `sidebarRail: 'hidden'` left two ACTIONS with no route at
-all, which the old "reopen panels with the keybinding" warning did not disclose
+entries — they date from when the rail could be hidden and that left two ACTIONS with no
+route at all, which the old "reopen panels with the keybinding" warning did not disclose
 because it only thought about views. The desktop topbar used to carry ⬆ Upload,
 ⬇ Download, ? Tips, ⚙ Settings and the ⬍ split-orientation toggle while the rail carried four views
-— two action bars, one above the terminal and one beside it. The topbar is now the app menu button +
-tabs + `[+]` and nothing else. Upload and download became rail ACTIONS (`RailAction` in `DockPanel`,
-rendered behind a `.dock-rail-sep` below the views, no `aria-pressed` because they open
+— two action bars, one above the terminal and one beside it. The topbar is now the tabs + `[+]` and,
+at its end, the app menu button, and nothing else. Upload and download became rail ACTIONS
+(`RailAction` in `DockPanel`, rendered behind a `.dock-rail-sep` below the views, no `aria-pressed` because they open
 nothing) rather than panel rows: both are one-click and a panel would make them three, and this is
 also where the mobile drawer's footer already has them. Tips became a Settings row — of the three it
 is the one nobody reaches for mid-session — and is also an app-menu item (below). The ⬍ toggle moved
@@ -417,19 +442,31 @@ preferences are the thing you reach for least. `DOCK_VIEWS` carries that order (
 Settings leaves the flow through `.dock-rail-pinned { margin-top: auto }` on its OWN button, not
 `justify-content: space-between` on the rail, which would also spread the views and the actions
 apart whenever the rail has spare height. The testids (`dock-rail-<id>`) did not move.
-**The topbar leads with an APP MENU, not a `palmux` wordmark.** A 28px `IconButton`
-(`aria-label="palmux menu"`, `app-menu-button`) opens `ui/DropdownMenu` — the kit's wrapper over
-`@radix-ui/react-dropdown-menu`, a menu opened by a BUTTON the way `ContextMenu` is one opened by a
-right-click or a long press. It reuses `ContextMenuItemSpec` and the `.ui-menu`/`.ui-menu-item`
-classes so the two menus cannot drift, and the one thing it adds is the transform origin, which
-comes from `--radix-dropdown-menu-content-transform-origin` so it grows out of its trigger. Items:
-Settings, Tips, Reload app. The wordmark was the name of the app you are already inside; the button
-takes its place and is also the POINTER route into Settings when `sidebarRail: 'hidden'` removes the
-rail (the keybinding and the command palette still reach the other views, and the "Sidebar rail"
-row's hint says Settings stays in the app menu). Settings runs ONE `openSettings` shared with the
-`settings` keybinding — the dock view on desktop, the drawer view on mobile — so the two routes
-cannot open different things. The pop-out bar is a different element and keeps its `palmux` brand
-text: it has no tabs and no menu.
+**The topbar ENDS with an APP MENU, not a `palmux` wordmark.** A 28px `IconButton`
+(`aria-label="palmux menu"`, `app-menu-button`) is the topbar's LAST control: after the strip and
+`[+]`, outside the scrolling strip so it stays reachable however many pills overflow, and centred
+over the dock rail column. `.topbar .topbar-menu` takes the centre line of the rail's own 28px
+buttons; `--rail-w` (38px, on `.topbar`) is the second copy of `.dock-rail`'s flex-basis literal, the
+margin cancels the bar's right padding (the rail has none), and `App.test.tsx` fails if the two
+drift. **One explicit exception: window-controls-overlay.** An installed PWA in that display mode
+lays the topbar into the title-bar area (the `@media (display-mode: window-controls-overlay)` block
+in `index.css` sets its width to `titlebar-area-x + titlebar-area-width`), which ends where the
+native window controls begin, while the rail still runs to the viewport edge. There the menu sits
+at the END of the title-bar area, beside the native controls, and not over the rail. No WCO
+geometry is built to line it up: the owner's macOS PWA uses a normal title bar, not WCO, so the
+alignment holds where it is used. It opens `ui/DropdownMenu` — the kit's wrapper over `@radix-ui/react-dropdown-menu`, a menu
+opened by a BUTTON the way `ContextMenu` is one opened by a right-click or a long press — and the
+dropdown is END-aligned (`align="end"`): at the window's right edge a start-aligned menu runs off the
+screen. It reuses `ContextMenuItemSpec` and the `.ui-menu`/`.ui-menu-item` classes so the two menus
+cannot drift, and the one thing it adds is the transform origin, which comes from
+`--radix-dropdown-menu-content-transform-origin` so it grows out of its trigger. Items: Settings,
+Tips, Reload app. The wordmark was the name of the app you are already inside; the button takes its
+place (it moved from the start of the bar to the end, over the rail). The rail is always drawn on
+desktop, so the menu is a SECOND pointer route into Settings — the rail's pinned Settings button is
+the first — and not a way back from a hidden rail; Tips and Reload app are reachable here as well as
+from their own Settings rows. Settings runs ONE `openSettings` shared with the `settings`
+keybinding — the dock view on desktop, the drawer view on mobile — so the two routes cannot open
+different things. The pop-out bar is a different element and keeps its `palmux` brand text: it has no tabs and no menu.
 **Split gestures live on the divider.** The rotate handle is `opacity: 0` until
 hover or focus, and `pointer-events: none` with it: it is 20px over a 10px divider,
 so it overhangs the drag strip by 5px on each side and was measured swallowing
@@ -589,7 +626,12 @@ is open is a preference of the screen in front of you, and a synced copy would l
 phone's collapsed HOME close the desktop's. The dock and the drawer mount the same
 `FileTree`, so one device shows one state in both. **A first run opens HOME**: nothing
 stored (or storage unreadable) reads as `null`, HOME is the one open root, and that
-default is stored. With a state stored HOME is open only if the state says so —
+default is stored. The default stays OWED until HOME is known (`homeOwed`), not until
+something is stored: a pinned root toggled while HOME's request is pending or retrying
+used to settle "first run" and leave HOME closed for good. Such a toggle is held in
+memory and written, merged with HOME, when HOME lands — writing it at once would let a
+reload in that window read "HOME collapsed". A pin settles the default (it stores
+exactly `[newRoot]`), and so does a toggle of HOME's own path through a pin equal to it. With a state stored HOME is open only if the state says so —
 `load(null)` no longer forces it — and `[]` is a state too (someone who collapsed
 everything), never a first run. **The stored set is never pruned against the root
 list.** `explorerRoots(root, pins)` is incomplete at boot twice over (HOME is unknown
@@ -598,15 +640,88 @@ a prune keyed to it erased a remembered pinned root whichever of the two arrived
 second, and stored the loss. What is shown is `stored ∩ explorerRoots(root, pins)`,
 recomputed on every render; an entry for a path that is not a root today stays
 dormant, costs nothing and reopens if the root comes back. Writes happen on user
-actions only (a header toggle, a pin) and each stores the FULL current set, dormant
+actions (a header toggle, a pin; a toggle held while HOME is owed lands with HOME) and
+each stores the FULL current set, dormant
 entries included; `pin()` stores exactly `[newRoot]`, which is its design and also
-clears the dormant ones. **Only LIVE open roots load and poll.** An effect expands
-every root in that intersection as it becomes a root — only expanded paths are
-fetched, so a restored section would otherwise be open over no rows — and the 2-minute
-poll iterates the same intersection, so an unpinned root's dormant flag never keeps
-its subtree polling. Folders expanded INSIDE a root are not remembered.
-**Freshness is a POLL, not a watcher** (`POLL_INTERVAL_MS`, 2 min, only for roots
-that are OPEN). An inotify watch per expanded directory is an fd per directory and
+clears the dormant ones. **Only LIVE open roots load and poll, and a root is loaded AS A ROOT.**
+The load effect fetches each live open root directly; `expanded` holds only the folders the USER
+opened, and a root is never put in it. It used to be (each root was seeded into the set as it entered
+the intersection, to get it fetched), and that same set drives the folder row of a pin nested in HOME,
+so a folder collapsed inside HOME came back open on every relaunch whenever it was also pinned as its
+own section. A section lists from `dirs[root]`; a nested pin's folder row follows `expanded` alone,
+and `pin()` no longer adds the new root to it. The 2-minute poll re-reads the same VISIBLE set the load
+effect fetches (`neededDirs`), never every listing cached under an open root: the cache keeps whatever
+was once shown there, so a nested pinned section collapsed while HOME stayed open kept its restored
+subtree polling. A dormant root polls nothing either. The per-root ⟳ is an explicit request and still
+re-reads that root's whole cached subtree.
+**Folders opened INSIDE a root are remembered too, per device, and only the Explorer's own delete
+forgets one.** `localStorage['palmux-explorer-expanded']` holds `{v:1, dirs:[<absolute paths>]}`, oldest
+first (`explorer-open.ts`, with the same forgiving parse and swallowed storage errors), because an
+installed PWA is relaunched from nothing. It is restored into `expanded` at mount and changed only by a
+folder toggle — collapsing removes THAT folder and leaves its stored descendants, so reopening the
+parent brings its open children back — or by a delete. **Every write is ONE change applied to what
+is stored NOW** (`writeExpandedDir`, `forgetDeletedDirs`), never a mount's whole set: two trees can be
+live (the dock and the drawer, two windows), and a delete can finish after the tree that sent it has
+unmounted, so storing one mount's memory erased what another had opened meanwhile. A completed delete
+is also announced to every mounted tree (`subscribeDeletedDirs`), so a tree that mounted mid-delete
+drops the folder from memory too, instead of showing it open. **A stored folder is fetched only when a
+LISTING proves it is on screen** (`neededDirs`, used by the loader AND the poll): it must appear as a
+DIRECTORY entry in its parent's `ready` listing, the parent must itself be on screen or a live open root
+(`stored-open ∩ explorerRoots`), and the folder must be expanded. A record for a folder that was deleted,
+renamed or spelled in a form no listing produces is therefore never fetched and never polled; it stays
+dormant in storage, bounded by the 200 cap, and wakes if a listing ever shows it again. The price is that
+a restore loads one level per round trip, where it used to load every level at once from the paths alone.
+The folders of a collapsed root, a dormant root or a collapsed ancestor stay stored and cost no request
+until they can be seen. **Listings never prune**, because no listing is proof of
+absence: `server/files.ts` answers a transient failure as 404, silently omits an entry whose `lstat`
+failed, and reports a directory symlink whose target `stat` failed as `dir:false`, and fixing that on the
+server would need a restart, which costs every live terminal. The one reliable signal is the Explorer's
+own delete: when `POST /files/delete` reports a path deleted, that path and every stored folder under it
+(by path segment, never by string prefix) are dropped from `expanded` and from storage. The list is
+capped at 200, oldest dropped first on a write, and that cap is what bounds the stale records a folder
+removed elsewhere leaves behind.
+**A path has ONE identity, `normalizePin`, and it is the server's.** `server/files.ts` names every listing
+by the `path.resolve`d path, so `normalizePin` (`explorer-pins.ts`) canonicalises with the same POSIX
+semantics: it collapses `//`, drops `.`, resolves `..` (never above `/`), leaves no trailing slash except
+on `/`, and rejects a path that is not absolute. **Whitespace is significant — it is part of the name.**
+`report ` and `report` are two different folders, so nothing is trimmed: a trailing space inside the last
+segment is kept, and a path that STARTS with whitespace is not absolute and is rejected as `''` rather than
+repaired into one nobody named. Every store goes through it — both Explorer parses, the
+pins (`addPin`/`removePin`/`isPinned`/`explorerRoots`), `writeExpandedDir` and `forgetDeletedDirs` — so a
+pin synced as `/work/./project` is the root `/work/project` and unpins by either spelling. It must be
+IDEMPOTENT (`normalizePin(normalizePin(x)) === normalizePin(x)`, pinned by a test over every short path
+against `path.resolve`): it used to trim, so `/work/report /.` became `/work/report ` and then `/work/report`,
+and a pin, its stored open flag or its expanded child could each resolve to the sibling (B10-INSPECT2-01).
+Before that it trimmed whitespace and trailing slashes only, so a stored `/home/u/.` was requested as such,
+answered under `/home/u`, filed there with the requested key deleted, and the load effect — seeing its own
+key missing — asked again after every answer, for ever. The two typed-path fields follow the same rule: the
+Download prompt and the Markdown… row use `trim()` only to DETECT a blank entry and send the string
+unchanged, and a value holding a line break is refused, never stripped (`notes.md` and `notes.md\n` are
+different files). The Markdown field catches it at the paste event, because a text `<input>` removes CR/LF
+before `onChange` runs; `window.prompt` sanitises its value too, so a path with a line break cannot be
+entered in the Download prompt at all (the Explorer's own download passes the row's path unchanged).
+`FileTree.load` is still defended against a server that disagrees about the path. The route used to TRIM its
+`dir` (it no longer does, see `/files/list` below), so a folder named `report ` was answered with its
+sibling `report`'s listing — which is why the response-path mismatch guard exists, and it stays, because a
+new client can meet a server that has not been restarted yet. That response is filed under the reported
+path ONLY, never copied to the requested key: rows take their paths from the key they are drawn under, so
+the file `report/x` would be drawn as `report /x`, which on disk may be a directory whose Delete is
+recursive. The requested key takes a TERMINAL error instead (`the server listed a different path: <path>`),
+so the load effect never refetches it. HOME, asked for with no `dir`, is the one request whose own key is
+dropped.
+**Known limit: two windows of ONE device changing folder expansion in the same instant.** A write is a
+synchronous read-modify-write on `localStorage`, which has no cross-window locking, so the later write is
+computed from the earlier stored set. It can (a) bring back the record of a folder the other window just
+DELETED — harmless now, a record no listing shows is never fetched; (b) drop the other window's new
+expansion — the user re-expands it; or (c) bring back the record of a folder the other window just
+COLLAPSED while it still exists — that folder REOPENS on the next mount. (c) is a real reversal of a user
+action, accepted because it needs two windows on one device acting within the same read/write gap, and
+the owner's setup is one installed PWA per device. Web Locks were designed and rejected: they make the
+write asynchronous, which opens a remount race, and a tree mounted in another window would still need a
+cross-context delete transport. A controlled interleaving test pins (c) in `explorer-open.test.ts` and
+again end to end in `FileTree.test.tsx`, so a change to the scheme has to decide on purpose.
+**Freshness is a POLL, not a watcher** (`POLL_INTERVAL_MS`, 2 min, only for the
+listings that are VISIBLE). An inotify watch per expanded directory is an fd per directory and
 a message per write — pointed at a build output that is a firehose nobody reads.
 The ⟳ on every root header is the escape hatch and is always visible, never
 hover-only: it is the only way to see a change before the poll.
@@ -623,7 +738,14 @@ bulk selection cannot ride in a query string, answers 200 with PER-PATH outcomes
 sequentially so a directory and its own child in one batch is not a race, and
 removes a symlink as a LINK — following it would empty the directory it points at.
 The refusals (`/`, `$HOME`, any top-level path, checked on the RESOLVED path) stop
-a MISTAKE, not an attacker: the cookie already grants a shell. The confirm names
+a MISTAKE, not an attacker: the cookie already grants a shell. **The path is used exactly as given:**
+`report ` and `report` are two directories, and the route used to trim, so deleting the row `report `
+removed `report`. `trim()` only detects a blank item — a blank item is a per-path failure (`path is
+required`) inside the 200, in a mixed batch too, which `explorer-actions.ts` relies on. And `isAbsolute`
+runs on the RAW item BEFORE `resolve`: `resolve` anchors any string to the server's cwd, so the check used
+to run on a path that was always absolute and `packages/client` deleted that directory of whatever
+checkout the server was started from (B11-01); a relative item is now a per-path `path must be absolute`,
+and the refusals above still run on the resolved path. The confirm names
 the single case, counts the bulk one, and always states that folders go with their
 contents (`explorer-actions.ts`, pure, because a confirm built inline is a string
 nobody tests).
@@ -638,8 +760,8 @@ class `vs-dark`); and syntax highlighting never used the palette at all. Now `ba
 comes from `isLightBg(profile)` and the token rules come from the sixteen ANSI slots
 palmux already resolves — a theme's green IS its string green, which is the mapping a
 terminal colour scheme already implies. **`applyThemeTokens` publishes the profile**,
-so there is ONE owner for "skin the app": three call sites exist (boot, themeId
-change, a `themes` broadcast) and an editor wired to only some of them is the bug
+so there is ONE owner for "skin the app": three call sites exist (boot, a change of
+the resolved theme id, a `themes` broadcast) and an editor wired to only some of them is the bug
 this replaced. The bridge (`setEditorProfile`) lives in a module that must NEVER
 import monaco — a static path from App to the loader would drag the 3.7 MB chunk into
 every terminal-only session. `defineTheme` alone does not repaint a live editor;
@@ -796,7 +918,11 @@ the same shell-trust model as `/download` (NOT confined like `md-list`), directo
 case-insensitive with punctuation significant, unreadable entries skipped rather than fatal, and a
 JSON error status rather than falling through to the SPA shell. An ABSENT `dir` answers with the
 server's HOME — the client cannot know it, and rooting the tree at `/` cost four expands to reach
-anything anyone edits.
+anything anyone edits; a PRESENT but blank `dir` is `400 dir is required`. **The path is used exactly as
+given:** it used to be trimmed, so a request for the folder `report ` was answered with the sibling
+`report`'s listing; `trim()` now only detects blank. `isAbsolute` runs on the RAW input before `resolve`
+(which anchors any string to the server's cwd, so a check after it can never refuse), and a leading space
+is therefore a `400 dir must be absolute`, not a repaired path.
 
 **A file from the Explorer is a TAB, not an overlay.** It used to render into a
 full-width `.file-overlay` across the content area, which made it modal: it
@@ -1528,7 +1654,9 @@ user-facing interaction.
   `terminal/download.ts` + ⬇ rail action (desktop) / drawer item (mobile)): single file streams raw; a glob,
   directory, or multi-match arrives as ONE zip built with node:zlib only (deflate + crc32, no
   deps). Absolute paths are by design — the cookie gate is the boundary, same trust model as the
-  PTY (the shell can already read anything). Caps: 500 files / 256 MB per zip.
+  PTY (the shell can already read anything). Caps: 500 files / 256 MB per zip. The pattern is used
+  exactly as given (`x` and `x ` are two files; it used to be trimmed and served the sibling), with
+  `isAbsolute` on the raw string; a blank pattern is a 400, as is a relative or leading-space one.
 - **Inline images** (`@xterm/addon-image` + `terminal/image-support.ts`, `settings.inlineImages`,
   DEFAULT ON): real pixels in the terminal — **SIXEL** and **iTerm2 IIP**, drawn onto the addon's own
   `xterm-image-layer` canvas above the WebGL one (verified live: `timg -ps` renders in colour with
@@ -1564,7 +1692,11 @@ user-facing interaction.
   `panes/MarkdownPane.tsx` + lazy `panes/markdown-render.ts` = marked→DOMPurify→link/image
   rewriting). `markdown` tab kind; file path in `TabMeta.url` (kind-aware gate: absolute path).
   `md-file` reads any absolute path (shell-trust, 2 MB cap); `md-list` is CONFINED to config
-  `markdownRoots` (realpath prefix, symlink-escape-safe) — browsing is the scoped surface. Relative
+  `markdownRoots` (realpath prefix, symlink-escape-safe) — browsing is the scoped surface. Both use
+  the path exactly as given (`notes.md` and `notes.md ` are two files; they used to trim), with
+  `isAbsolute` on the raw input, and each keeps its own blank rule: `md-file` blank → 400 `path must be
+  absolute`, `md-list` absent OR blank → the roots overview (`trim()` only detects blank). The roots
+  confinement runs on the same untrimmed path it lists. Relative
   `.md` links navigate in-pane (`data-md-path` → `updateTab{url}`); marked/dompurify are their own
   lazy chunks (terminal-only downloads neither).
 **Surviving a restart.** Two mechanisms, for two different deaths.
@@ -1722,6 +1854,26 @@ null once the process is gone, so nothing after the exit could find it.
   would pull a whole clip. Note the panel's timestamps are NOT off: the stamp id is the SERVER's
   local time (UTC here) and the client renders the epoch in the browser's zone, so a `1311` file
   correctly reads 14:11 in a UTC+1 browser.
+  **A dictation card is a HEADER over a TRANSCRIPT** (`dictation/DictationView.tsx`, which BOTH the
+  dock view and the drawer's view render; `DictationHistory.tsx` is a separate modal and was not
+  touched). The header is one line: `date · duration` in secondary text on the left, the actions on
+  the right as compact icon buttons — play/pause, copy, insert, or Transcribe for an audio-only
+  entry. The transcript sits under it at the card's FULL width, without quotes, at body size
+  (`--fs-2`, line-height 1.5) and clamped to four lines with an ellipsis, with a real `Show more` /
+  `Show less` `<button>` (`aria-expanded`, `aria-controls`) when it overflows; the scrubber, while a
+  clip plays, goes under the text. Its length is read on `loadedmetadata` AND `durationchange`,
+  because a MediaRecorder clip reports `duration: Infinity` at first and its real length only later,
+  and the scrubber stays `disabled` until that length is finite and positive: a 0..0 track that took
+  input would only pretend to seek. The transcript used to sit BESIDE the actions, which left a long dictation a
+  ~150px column that wrapped at every other word and ran the card to the height of the dock. Two
+  non-obvious calls. Overflow is MEASURED (`scrollHeight > clientHeight` in a layout effect plus a
+  `ResizeObserver`), never guessed from the length: the answer depends on the card's width (the
+  300px dock, the phone drawer) and on whichever font has loaded. Expanded text has no clamp to
+  measure, so `overflows` keeps its last answer — which is what keeps `Show less` on screen. And the
+  header WRAPS instead of squeezing: with Transcribe in place of copy + insert the pair can run out
+  of room at 300px, so the actions drop under the date (pushed right by their auto margin) rather
+  than breaking the date onto two lines. Cards are `--sp-2` apart and every colour comes from the
+  tokens (the dashed audio-only card uses the theme's own ANSI slot 3).
 - **Settings form** (`settings/SettingsFields.tsx` + `settings/settings-view.css`, with a
   `.settings-form` root in index.css). One field list for BOTH hosts (desktop DOCK, mobile drawer —
   the modal is gone). The look lives in `settings-view.css`, every rule under `.settings-view`, and
@@ -1747,9 +1899,11 @@ null once the process is gone, so nothing after the exit could find it.
   44px at rest (a 28px control + 2 × 8px padding) with the control centred, hint or no hint. The
   hairline between rows takes 1px of the next row's own padding back, because a border is height:
   without that every row after the first was 45px while a Switch row, which has no control to hold
-  it up, stayed 44. A stacked row (Import theme) spans both columns, and a hint too long for the
-  label column is a `note` under the row (`.srow-note`, `grid-column: 1 / -1`) — the sidebar-rail
-  warning in the label column was a ~180px strip of one-word lines.
+  it up, stayed 44. A hint too long for the label column is a `note` under the row (`.srow-note`,
+  `grid-column: 1 / -1`) — the Sidebar rail row's warning in the label column was a ~180px strip of
+  one-word lines; that row is gone and no row passes a `note` today. There is no stacked row either:
+  Import theme, the one that spanned both columns, now lives in the theme browser (see "The theme
+  chooser"), where a URL or an install command gets a full-width line of its own.
   **Every control is `--ctl-h`** (28px; 36px under `:root[data-mobile='true']`), and the kit now
   gets there itself: Button, Input and the Select trigger are `--ctl-h` tall, and a Segmented's
   wrapper is a `--ctl-h` floor over items of `calc(var(--ctl-h) - 6px)` (it adds 2px of padding and a
@@ -1781,7 +1935,9 @@ null once the process is gone, so nothing after the exit could find it.
   **Long values truncate in their control**: the Select, the Theme button and the build string
   (`.srow-value`) are one line, end in an ellipsis and carry the full text as `title`. The Theme
   button's name also rides in its `aria-label` (`Theme: <name>`), because a `<label for>` would
-  otherwise be its whole accessible name and hide the current value.
+  otherwise be its whole accessible name and hide the current value. In Match system the button
+  reads `System · <dark> / <light>` (a slot never chosen reads as the fixed theme) and truncates the
+  same way.
   **Focus rings are `:focus-visible`, and nothing in the settings sheets resets an outline.**
   `.ui-input:focus` used to end in `outline: none` at the same specificity as the kit's ring and
   AFTER it, which erased the keyboard ring — renaming the selectors alone would not have helped. A
@@ -1795,6 +1951,13 @@ null once the process is gone, so nothing after the exit could find it.
   Two rows open something instead of holding a control: Theme opens the in-place theme browser and
   the last App row, Edit config.json, opens the raw config editor (each has its own paragraph:
   "The theme chooser" below, and "`config.json` is edited from a Settings ROW" in the Monaco notes).
+  **The App card is Reload app, Install as app, Latency overlay and, in the dock only, Edit
+  config.json.** It lost two rows: **Sidebar rail** (the rail is always shown, so there is nothing
+  to choose) and **Dictation history** (the rail's Dictation entry opens the same view, so the row
+  was a second door to it; the `onOpenDictationHistory` prop is gone from the form and from both
+  hosts, `App` and `SessionDrawer`). The history modal (`DictationHistory`) is still behind its
+  `dictationHistory` keybinding and command-palette entry. **Import theme left the form too**: the
+  Appearance card holds Theme, Font, Font size, Cursor and Cursor blink.
   `KeybindingsPanel` still uses the bare `.field`
   rules, so those stay. **Reload app** (`settings/app-reload.ts`) is a row, not a nicety: an installed
   PWA has no reload button, and `location.reload()` re-runs against the HTTP cache — a cached
@@ -1834,7 +1997,8 @@ null once the process is gone, so nothing after the exit could find it.
   Tab colors are the theme's OWN 16 ANSI slots: `applyThemeTokens` emits `--tab-c-ansi<N>` +
   a luminance-flipped `--tab-c-ansi<N>-ink` per slot straight from `profile.ansi16` (plus
   `--t-accent-ink`), `color-scheme` on `:root` — called PRE-PAINT in main.tsx (no flash) and on
-  themeId change via an App useLayoutEffect (useTerminal only owns the xterm canvas theme now).
+  a change of the RESOLVED theme id via an App useLayoutEffect (useTerminal only owns the xterm canvas
+  theme now; see "One RESOLVED theme id").
   `TAB_COLORS` (tab-meta.ts) is the 16 `ansi0`–`ansi15` slots; the 12 LEGACY names persisted in old
   tabs.json/groups.json resolve FOREVER via a static name→slot map in `resolveColorSlot` (no data
   rewrite; the server still assigns legacy names as group defaults). On the strip a tab colour is a
@@ -1846,19 +2010,71 @@ null once the process is gone, so nothing after the exit could find it.
 
 **The theme chooser is a list inside the panel, not a `<select>` and not a popup**
 (`settings/ThemeBrowser.tsx` + `theme-preview.ts`). The Theme row is a Button showing the
-current theme's name (one line, ellipsis, the full name as `title`) and a chevron. Pressing it
+current theme's name (one line, ellipsis, the full name as `title`) and a chevron; in Match system
+the label is `System · <dark> / <light>`, with the same truncation and `title`. Pressing it
 swaps the panel's content for the `themes` SUB-VIEW, in place, inside whichever host holds
 Settings: a `‹ Settings` back control (`settings-themes-back`), the title "Theme", then the
-browser. It is the same shape as the drawer's `‹ New tab` sub-surface. It replaced a Radix Select
+browser — the mode switch, an Import section, then the Dark / Light lists. It is the same shape as
+the drawer's `‹ New tab` sub-surface. It replaced a Radix Select
 popup because the owner asked for a full list he can browse "sem sair daquela janela", and a
 300px popup over the dock was the thing being replaced; `ThemePicker.tsx`, its test and
 `theme-picker.css` are deleted (the sheet became `theme-browser.css`, `tp-*` became `tb-*`)
 rather than kept beside it, so there is one list and not two.
-**Picking applies and the list STAYS OPEN.** An entry calls the same `onChange({ themeId })`,
+**Picking applies and the list STAYS OPEN.** In Fixed an entry calls `onChange({ themeId })`,
 which re-skins the app and persists, and the browser does not close: a theme is judged by
 trying two. `‹ Settings` returns to the form, whose row now shows the new name. The current
 entry carries a `check` icon and `aria-current`. Entries are plain buttons, not a listbox — a
 listbox promises arrow-key roving, and the popup that supplied it is gone.
+**The browser has a mode, and every pick is mode-aware.** It opens on a kit `Segmented`
+**Fixed | Match system** (`set-theme-mode`). Match system adds a second one, **For dark | For
+light** (`set-theme-slot`: which scheme a tap fills, starting on the scheme this device is in), and
+a note under it naming both slots' picks and, for the slot that is not on screen, when it will
+show. Settings hold `themeMode` (`fixed`|`system`), `themeDark` and `themeLight`: SYNCED, because
+"dark → X, light → Y" is one preference on every device, and opaque to the server like any synced
+key (`LOCAL_SETTINGS_KEYS` stays `['themeId']`). An empty slot reads as `themeId`. `themePick`
+(`settings.ts`) decides what a pick writes: `themeId` in Fixed, the edited slot in Match system. A
+pick applies live ONLY when its slot is the scheme this device is in; picking the other slot
+persists and changes nothing on screen. A pick for the ACTIVE slot also writes `themeId`
+(`ThemeSubView.pick`): it is an explicit choice of what this device shows, so it moves the server
+export exactly as a Fixed pick does. A pick for the inactive slot does not, and no boot, reconnect
+or broadcast ever does. Switching mode (`themeModeChange`) changes nothing the eye can see: into
+Match system an unchosen slot starts at the current theme, and back to Fixed `themeId` becomes the
+theme that was showing.
+**Import is the browser's own section, and its target is captured at submit.** The paste field
+(`ThemeImport`, `tb-import`) used to sit in the form's Appearance card, two screens from the list
+its result lands in. It is now the Import section above the Dark / Light lists, in the dock and the
+drawer alike, a full-width line rather than a 140px settings row. What it accepts and does is
+unchanged ("Theme import" below); what changed is where the result goes. `onImportTheme(source,
+target)` captures a `ThemeTarget` — `{mode:'fixed'}`, or `{mode:'system', slot}` for the slot being
+edited — when the request is sent, and App holds it in `importTargetRef` (one import at a time: Add
+is disabled while `importingTheme`). `themeImported` carries no correlation id and can land long
+after the user moved on, so `themePick(settings, target, id)` applies it to the CAPTURED target. A
+slot switched after submit still gets the import. ANY mode change after submit SUPERSEDES it: a
+fixed import landing after a switch to Match system must not write `themeId`, which would change the
+export with no scheme change behind it, a slot import landing after a switch to Fixed is not
+selected either, and neither is one landing after Fixed → Match system → Fixed, where the user may
+already have picked a newer theme. Comparing modes at completion cannot see that round trip, so App
+keeps a mode GENERATION (`themeModeGenRef`) that `importTargetRef` captures beside the target. It is
+bumped where a transition is REQUESTED — `updateSettings`, and `applySettings` as each broadcast
+arrives (`themeModeAfter` reads the mode a blob would leave) — not where it renders, because React
+can fold two broadcasts into one render and a round trip would render as no change. A broadcast that
+leaves the mode alone, an older bundle's blob without the key included, is not a transition. The
+theme is still imported and appears in the list (the dir watcher rebroadcasts `themes`); it is just
+not auto-selected. In Match system an import fills its slot, and an import into the ACTIVE slot also
+writes `themeId`, as a pick for that slot does; one into the inactive slot does not.
+**One RESOLVED theme id paints everything.** In Match system each client resolves its theme from
+its OWN `prefers-color-scheme` (`useSystemPrefersDark`, a `useSyncExternalStore` over `matchMedia`:
+right on the first render, live on a `change`). The scheme is the client's and never synced, so a
+phone in light and a desktop in dark each show their own theme from the same settings.
+`resolveThemeId(settings, prefersDark)` returns it, and it is the ONLY id a rendering path reads:
+App's `applyThemeTokens` layout effect (CSS tokens, the `theme-color` meta, Monaco), the re-apply on
+a `themes` broadcast, the diagnostics report, the terminals, and `main.tsx`'s pre-paint, which
+resolves from the stored settings plus `matchMedia` before React mounts (reading `themeId` there
+would flash the dark export on a light-scheme device at every load). The terminals needed no change
+of their own: App hands each pane a `paneSettings` whose `themeId` is the resolved id, so
+`useTerminal` still reads `settings.themeId` from the prop it always had — and a paint path that
+read the persisted value from anywhere else would show the export's theme instead of this device's.
+In Fixed the two ids are equal.
 **One back stack.** `SettingsFields` owns `subView` (`SettingsSubView`, `'themes' | null`) by
 default and takes optional controlled `subView` / `onSubViewChange`. `SessionDrawer` lifts it,
 so its own `‹ Settings` header pops the browser first and leaves Settings only on the second
@@ -1912,6 +2128,34 @@ so one failure can't cost the others. A palette CHANGE (rendered `theme.tmux` di
 stateless, no cache) also re-sources the user's `~/.tmux.conf` via `tmux-reload.ts`, but ONLY if
 that conf references the export (`consumesThemeExport`) — wiring the `source-file` line in IS the
 opt-in, no config key. Claude Code has no equivalent: it reads themes at startup / `/theme` only.
+**In Match system `themeId` is the EXPORT's theme, and one rule writes it.** The server knows only
+`themeId` — at boot, with no browser connected, it is the single theme `theme.sh`, `theme.tmux` and
+the Claude theme are rendered from — so in Match system it stops being what any client paints (see
+"One RESOLVED theme id") and becomes what the export follows. These write it: a system scheme that
+actually CHANGES while the app is open (App's `lastSchemeRef` effect, keyed on the SCHEME rather than
+the resolved id, which also moves on a slot pick or a settings broadcast — neither is a scheme
+change); a pick for the ACTIVE slot; an import that lands in the ACTIVE slot; a pick or an import in
+Fixed; and a switch back to Fixed, which writes the theme that was showing. These do not: a pick or
+an import for the inactive slot, a superseded import (any mode change since it was submitted), a
+switch INTO Match system, boot, a reconnect and a settings broadcast. Boot and reconnect matter most:
+a device that opens in a different scheme from the last writer would otherwise overwrite the export
+on every load, and two devices in different schemes would fight over it. So the export follows the
+most recent real scheme switch or explicit choice.
+**Known limit, accepted: a stale `themeId` can win the export once.** Every settings save sends
+the whole synced snapshot, `themeId` included, and the server replaces it and re-exports. If device
+A writes `themeId` on a scheme change and device B saves an unrelated setting in the milliseconds
+before A's broadcast reaches it, B's stale `themeId` wins the export until the next real scheme
+change. Closing it needs patch semantics on the server — another restart, which ends every
+terminal — for a window one broadcast round trip wide whose only effect is the tmux/Claude palette,
+so it is documented instead.
+**Rollout: older bundles erase the new keys, so reload every window BEFORE switching Match system
+on.** A window still on a bundle from before Match system neither reads nor sends
+`themeMode`/`themeDark`/`themeLight`, and the server replaces the whole settings object on every
+save (`saveSettings(settings)`), so that window's next save of ANYTHING erases them — whenever it
+happens, not only in a race. After a deploy, reload every open palmux window (the phone PWA and
+every desktop: Settings › Reload app) onto the new bundle first. A server-side merge that preserves
+omitted keys would remove the ordering, but it is a server change and a restart for a one-time
+rollout.
 
 **Diff colours come from git-delta, not the palette** (`delta-colors.ts`). The six Claude diff keys
 are read from the user's own delta config via `git config --global --get-regexp '^delta\.'` (git is
@@ -1926,8 +2170,8 @@ answers with the DEFAULT profile for an id it doesn't know and user/emulator the
 palette. `writeThemeExport` calls `ensureResolvable` (re-discovers on a miss) instead of trusting
 call order.
 
-**Theme import** (`theme-import.ts` + `importTheme`/`themeImported` protocol pair). Settings has a
-paste field accepting: the INSTALL COMMAND the Gogh gallery's Copy button gives out
+**Theme import** (`theme-import.ts` + `importTheme`/`themeImported` protocol pair). The theme browser's
+Import section is a paste field accepting: the INSTALL COMMAND the Gogh gallery's Copy button gives out
 (`bash -c "$(wget -qO- https://git.io/vQgMr)" -- "Everforest Light Hard"`), a bare Gogh name
 (`Tokyo Night` → the Gogh raw URL, encoded NOT slugged), a Gogh gallery link (`.../Gogh/#Name`), a
 github.com blob URL (rewritten to raw), or any http(s) URL. A pasted command is NEVER executed and
@@ -1937,7 +2181,8 @@ carries is deliberately ignored because git.io still resolves to the pre-rename 
 newer per-theme form (`.../installs/<name>.sh`) has no `--`, so there the URL IS used.
 The server fetches (256 KB cap, 15s), parses (JSON → Windows-Terminal scheme, else Gogh), and writes
 to `<configDir>/themes/<slug>.{yml,json}` named after the PARSED theme, never the URL. `watchThemes`
-then rebroadcasts `themes` and the client auto-selects the new id. Gogh ships YAML (`themes/*.yml`)
+then rebroadcasts `themes` and the client selects the new id for the target captured at submit
+(see "Import is the browser's own section"). Gogh ships YAML (`themes/*.yml`)
 with `color_01`…`color_16` — **1-indexed**, so `color_01` is ansi0; `parseGoghTheme` (shared) reads
 both that and the `installs/*.sh` form. `watchThemes` MKDIRs the themes dir before watching: it runs
 once at boot, so a dir that first appears on an import would otherwise never be watched at all.

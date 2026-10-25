@@ -3,7 +3,15 @@
 // menu makes easy in a way `rm` does not. There is no trash, so every one of
 // these is the only thing standing between a misclick and lost data.
 
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, symlinkSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  existsSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+} from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -119,5 +127,120 @@ describe('deletePaths', () => {
     expect(await deletePaths('nope')).toEqual({ error: expect.stringContaining('non-empty') });
     const many = Array.from({ length: MAX_DELETE_PATHS + 1 }, (_, i) => `/tmp/x${i}`);
     expect(await deletePaths(many)).toEqual({ error: expect.stringContaining('too many') });
+  });
+});
+
+// ── A path is used exactly as given (batch 11) ────────────────────────────────
+//
+// `report ` and `report` are two different directories. The route used to trim the
+// request and resolve it against the server's cwd, so a Delete on the row `report `
+// removed its sibling `report` — and a RELATIVE request was anchored to wherever the
+// process happened to be started, which made `deletePath('packages/client')` remove a
+// directory of the running checkout. Every request string below ENDS in whitespace
+// (or starts with it, or is relative): a trim changes nothing for a value that merely
+// contains a space in the middle.
+describe('deletePath uses the path exactly as given', () => {
+  const siblings = (): { d: string; plain: string; spaced: string } => {
+    const d = sandbox();
+    const plain = join(d, 'report');
+    const spaced = join(d, 'report ');
+    mkdirSync(plain);
+    mkdirSync(spaced);
+    writeFileSync(join(plain, 'plain.txt'), 'plain');
+    writeFileSync(join(spaced, 'spaced.txt'), 'spaced');
+    return { d, plain, spaced };
+  };
+
+  it('deleting `report ` removes that directory only and leaves `report` intact', async () => {
+    const { plain, spaced } = siblings();
+    const r = await deletePath(spaced);
+    expect(r).toMatchObject({ ok: true, kind: 'directory', entries: 1 });
+    expect(r.path).toBe(spaced);
+    expect(existsSync(spaced)).toBe(false);
+    expect(readFileSync(join(plain, 'plain.txt'), 'utf8')).toBe('plain');
+  });
+
+  it('deleting `report` removes that directory only and leaves `report ` intact', async () => {
+    const { plain, spaced } = siblings();
+    const r = await deletePath(plain);
+    expect(r).toMatchObject({ ok: true, kind: 'directory', entries: 1 });
+    expect(existsSync(plain)).toBe(false);
+    expect(readFileSync(join(spaced, 'spaced.txt'), 'utf8')).toBe('spaced');
+  });
+
+  it('deletes the file `x ` and never its sibling `x`, and the other way round', async () => {
+    const d = sandbox();
+    writeFileSync(join(d, 'x'), 'plain');
+    writeFileSync(join(d, 'x '), 'spaced');
+    expect(await deletePath(join(d, 'x '))).toMatchObject({ ok: true, kind: 'file' });
+    expect(existsSync(join(d, 'x '))).toBe(false);
+    expect(readFileSync(join(d, 'x'), 'utf8')).toBe('plain');
+
+    writeFileSync(join(d, 'x '), 'spaced');
+    expect(await deletePath(join(d, 'x'))).toMatchObject({ ok: true, kind: 'file' });
+    expect(existsSync(join(d, 'x'))).toBe(false);
+    expect(readFileSync(join(d, 'x '), 'utf8')).toBe('spaced');
+  });
+
+  it('reports a trailing-space path that does not exist instead of deleting its sibling', async () => {
+    const d = sandbox();
+    writeFileSync(join(d, 'only'), 'keep');
+    const r = await deletePath(join(d, 'only '));
+    expect(r).toMatchObject({ ok: false, message: 'no such file or directory' });
+    expect(readFileSync(join(d, 'only'), 'utf8')).toBe('keep');
+  });
+
+  // A leading space makes the string relative. Trimming it first used to repair it
+  // into an absolute path and act.
+  it('refuses a path with leading whitespace instead of repairing it', async () => {
+    const d = sandbox();
+    const f = join(d, 'lead.txt');
+    writeFileSync(f, 'keep');
+    const r = await deletePath(` ${f}`);
+    expect(r).toMatchObject({ ok: false, message: 'path must be absolute' });
+    expect(existsSync(f)).toBe(true);
+  });
+
+  // B11-01. `resolve()` turns ANY string into an absolute one under the cwd, so an
+  // `isAbsolute` check that runs after it can never refuse.
+  it('refuses a relative path that names an existing target under the process cwd', async () => {
+    const cwd = sandbox();
+    mkdirSync(join(cwd, 'packages', 'client'), { recursive: true });
+    writeFileSync(join(cwd, 'packages', 'client', 'sentinel'), 'keep');
+    const before = process.cwd();
+    process.chdir(cwd);
+    try {
+      for (const rel of ['packages/client', 'packages', './packages/client', 'packages/../packages']) {
+        // oxlint-disable-next-line no-await-in-loop -- each refusal must land before the next
+        const r = await deletePath(rel);
+        expect(r, rel).toMatchObject({ ok: false, message: 'path must be absolute' });
+        expect(r.path, rel).toBe(rel); // names what was asked, not a path under the cwd
+      }
+    } finally {
+      process.chdir(before);
+    }
+    expect(readFileSync(join(cwd, 'packages', 'client', 'sentinel'), 'utf8')).toBe('keep');
+  });
+
+  it('still answers a blank item as a per-path failure, inside a mixed batch', async () => {
+    const d = sandbox();
+    const good = join(d, 'good.txt');
+    const other = join(d, 'other.txt');
+    writeFileSync(good, 'g');
+    writeFileSync(other, 'o');
+
+    const res = await deletePaths([good, '', '   ', 'relative/x', other]);
+    expect(Array.isArray(res)).toBe(true);
+    const list = res as Awaited<ReturnType<typeof deletePath>>[];
+    expect(list.map((r) => r.ok)).toEqual([true, false, false, false, true]);
+    expect(list.map((r) => !r.ok && r.message)).toEqual([
+      false,
+      'path is required',
+      'path is required',
+      'path must be absolute',
+      false,
+    ]);
+    expect(existsSync(good)).toBe(false);
+    expect(existsSync(other)).toBe(false);
   });
 });

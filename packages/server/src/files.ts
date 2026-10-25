@@ -92,8 +92,14 @@ export async function listDir(dir: string | undefined): Promise<ListDirResult> {
   // client cannot guess a home directory, only the server knows it. An EMPTY
   // string is still an error: that is a caller passing a broken value, not a
   // caller declining to pass one.
-  const p = (dir === undefined ? homedir() : dir).trim();
-  if (!p) return { ok: false, status: 400, message: 'dir is required' };
+  //
+  // The path is used EXACTLY as given. `report ` and `report` are two different
+  // directories, and this used to trim the request, so a listing of the first was
+  // answered with the second's entries. `trim()` only DETECTS a blank value now.
+  // `isAbsolute` runs on the raw input, before `resolve`: `resolve` anchors any
+  // string to the server's cwd, so a check after it could never refuse (B11-01).
+  const p = dir === undefined ? homedir() : dir;
+  if (!p.trim()) return { ok: false, status: 400, message: 'dir is required' };
   if (!isAbsolute(p)) return { ok: false, status: 400, message: 'dir must be absolute' };
   const target = resolve(p);
 
@@ -159,11 +165,18 @@ export type DeleteOutcome = DeleteResult;
  * directory must not empty the directory it points at.
  */
 export async function deletePath(path: unknown): Promise<DeleteOutcome> {
+  // `trim()` only DETECTS a blank item. The path itself is used exactly as given:
+  // `report ` and `report` are two directories, and trimming used to retarget a
+  // delete of the first onto the second.
   if (typeof path !== 'string' || !path.trim()) {
     return { path: String(path ?? ''), ok: false, message: 'path is required' };
   }
-  const p = resolve(path.trim());
-  if (!isAbsolute(p)) return { path: p, ok: false, message: 'path must be absolute' };
+  // On the RAW input, before `resolve`: `resolve` anchors a relative string to the
+  // server's cwd, so a check after it can never refuse, and `packages/client` used to
+  // delete that directory of whatever checkout the server was started from (B11-01).
+  // The failure names what was asked, not a path under the cwd.
+  if (!isAbsolute(path)) return { path, ok: false, message: 'path must be absolute' };
+  const p = resolve(path);
   const refusal = undeletable(p);
   if (refusal) return { path: p, ok: false, message: refusal };
 

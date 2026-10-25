@@ -186,3 +186,107 @@ describe('GET /download (route)', () => {
     expect(missing.statusCode).toBe(404);
   });
 });
+
+// ── A path is used exactly as given (batch 11) ────────────────────────────────
+//
+// `x` and `x ` are two files; the pattern used to be trimmed before it was resolved, so
+// asking for the second served the first. Each request string below ENDS in whitespace.
+describe('resolveDownload uses the pattern exactly as given', () => {
+  let base: string;
+
+  beforeAll(async () => {
+    base = await mkdtemp(join(tmpdir(), 'palmux-dl-exact-'));
+    await writeFile(join(base, 'x'), 'plain\n');
+    await writeFile(join(base, 'x '), 'spaced\n');
+    await writeFile(join(base, 'only'), 'o\n');
+    await mkdir(join(base, 'packages'));
+    await writeFile(join(base, 'packages', 'client'), 'c\n');
+  });
+  afterAll(async () => {
+    await rm(base, { recursive: true, force: true });
+  });
+
+  it('resolves `x ` to the file `x `, and `x` to the file `x`', async () => {
+    expect(await resolveDownload(join(base, 'x '))).toMatchObject({
+      kind: 'file',
+      path: join(base, 'x '),
+      name: 'x ',
+      size: 'spaced\n'.length,
+    });
+    expect(await resolveDownload(join(base, 'x'))).toMatchObject({
+      kind: 'file',
+      path: join(base, 'x'),
+      name: 'x',
+    });
+  });
+
+  it('404s a trailing-space file that does not exist instead of serving its sibling', async () => {
+    expect(await resolveDownload(join(base, 'only '))).toMatchObject({
+      kind: 'error',
+      status: 404,
+    });
+  });
+
+  // Leading whitespace makes the pattern relative; trimming it first used to repair it.
+  it('refuses a pattern with leading whitespace as not absolute', async () => {
+    expect(await resolveDownload(` ${join(base, 'x')}`)).toMatchObject({
+      kind: 'error',
+      status: 400,
+    });
+  });
+
+  it('refuses a relative pattern that exists under the process cwd', async () => {
+    const before = process.cwd();
+    process.chdir(base);
+    try {
+      expect(await resolveDownload('packages/client')).toMatchObject({
+        kind: 'error',
+        status: 400,
+      });
+      expect(await resolveDownload('x ')).toMatchObject({ kind: 'error', status: 400 });
+    } finally {
+      process.chdir(before);
+    }
+  });
+
+  it('keeps its blank contract: a blank pattern is a 400', async () => {
+    for (const blank of ['', ' ', '\t\n  ']) {
+      // oxlint-disable-next-line no-await-in-loop -- independent, order irrelevant
+      expect(await resolveDownload(blank), JSON.stringify(blank)).toMatchObject({
+        kind: 'error',
+        status: 400,
+      });
+    }
+  });
+
+  describe('through GET /download', () => {
+    const secret = 'a'.repeat(64);
+    let app: FastifyInstance;
+    beforeAll(async () => {
+      const cfg: AppConfig = { ...DEFAULT_APP_CONFIG, fontDirs: [], auth: true };
+      app = await createServer(cfg, secret, createSessionRegistry(cfg, memoryTabsStore()));
+    });
+    afterAll(async () => {
+      await app.close();
+    });
+    const get = (path: string) =>
+      app.inject({
+        method: 'GET',
+        url: `/download?path=${encodeURIComponent(path)}`,
+        cookies: { [SESSION_COOKIE]: secret },
+      });
+
+    it('streams the content of `x `, not of `x`', async () => {
+      const spaced = await get(join(base, 'x '));
+      expect(spaced.statusCode).toBe(200);
+      expect(spaced.body).toBe('spaced\n');
+      const plain = await get(join(base, 'x'));
+      expect(plain.body).toBe('plain\n');
+    });
+
+    it('answers a relative or blank path with a 400', async () => {
+      expect((await get('packages/client')).statusCode).toBe(400);
+      expect((await get('   ')).statusCode).toBe(400);
+    });
+  });
+});

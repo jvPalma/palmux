@@ -38,9 +38,13 @@ export type MdFileResult =
 
 /** Read a file for the viewer: absolute path, size-capped, typed by extension. */
 export async function readMdFile(path: string): Promise<MdFileResult> {
-  const p = path.trim();
-  if (!p || !isAbsolute(p)) return { ok: false, status: 400, message: 'path must be absolute' };
-  const target = normalize(p);
+  // Used exactly as given: `notes.md` and `notes.md ` are two files, and trimming
+  // answered the second with the first. `trim()` only DETECTS a blank value, and a
+  // leading space is not absolute, so it is refused rather than repaired.
+  if (!path.trim() || !isAbsolute(path)) {
+    return { ok: false, status: 400, message: 'path must be absolute' };
+  }
+  const target = normalize(path);
   let s;
   try {
     s = await stat(target);
@@ -108,9 +112,11 @@ export async function listMdDir(dir: string | undefined, roots: string[]): Promi
     return { ok: true, listing: { dir: null, root: null, dirs, files: [] } };
   }
 
-  const p = dir.trim();
-  if (!isAbsolute(p)) return { ok: false, status: 400, message: 'dir must be absolute' };
-  const target = normalize(p);
+  // Exactly as given, for the same reason as `readMdFile`: the confinement check below
+  // must run on the very path that gets listed, or `report ` would be vouched for as
+  // `report`. `trim()` above only decided "blank means the overview".
+  if (!isAbsolute(dir)) return { ok: false, status: 400, message: 'dir must be absolute' };
+  const target = normalize(dir);
   let containingRoot: string | null = null;
   for (const root of roots) {
     if (await insideRoot(target, root)) {

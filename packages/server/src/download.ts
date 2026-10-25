@@ -68,8 +68,11 @@ export async function resolveDownload(
   pattern: string,
   maxTotalBytes: number = MAX_ZIP_TOTAL_BYTES,
 ): Promise<DownloadResolution> {
-  const p = pattern.trim();
-  if (!p || !isAbsolute(p)) {
+  // Used exactly as given: `x` and `x ` are two files, and trimming the pattern
+  // served the first for a request for the second. `trim()` only DETECTS a blank.
+  // A leading space is not absolute and is refused, never repaired.
+  const p = pattern;
+  if (!p.trim() || !isAbsolute(p)) {
     return err(400, 'path must be absolute (e.g. /home/user/notes/*.md)');
   }
 

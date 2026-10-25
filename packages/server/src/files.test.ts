@@ -227,3 +227,124 @@ describe('GET /files/list', () => {
     expect((file.json() as { error: string }).error).toBeTruthy();
   });
 });
+
+// ── A path is used exactly as given (batch 11) ────────────────────────────────
+//
+// `report` and `report ` are two directories. The route trimmed the request, so the
+// second was answered with the first's entries, and a RELATIVE dir was anchored to the
+// server's cwd. Every request string here ENDS in whitespace (or starts with it): a
+// trim changes nothing for a value that merely holds a space in the middle.
+describe('listDir uses the path exactly as given', () => {
+  let base: string;
+
+  beforeAll(async () => {
+    base = await mkdtemp(join(tmpdir(), 'palmux-files-exact-'));
+    await mkdir(join(base, 'report'));
+    await mkdir(join(base, 'report '));
+    await writeFile(join(base, 'report', 'plain.txt'), 'plain');
+    await writeFile(join(base, 'report ', 'spaced.txt'), 'spaced');
+    // A dir whose only candidate is the trimmed spelling: asking for the spaced one
+    // must be a 404, never the sibling's listing.
+    await mkdir(join(base, 'only'));
+    await writeFile(join(base, 'only', 'o.txt'), 'o');
+  });
+  afterAll(async () => {
+    await rm(base, { recursive: true, force: true });
+  });
+
+  it('lists `report ` with its own entries and `report` with its own', async () => {
+    const spaced = await listDir(join(base, 'report '));
+    expect(spaced.ok).toBe(true);
+    if (spaced.ok) {
+      expect(spaced.listing.path).toBe(join(base, 'report '));
+      expect(names(spaced.listing)).toEqual(['spaced.txt']);
+    }
+    const plain = await listDir(join(base, 'report'));
+    expect(plain.ok).toBe(true);
+    if (plain.ok) {
+      expect(plain.listing.path).toBe(join(base, 'report'));
+      expect(names(plain.listing)).toEqual(['plain.txt']);
+    }
+  });
+
+  it('404s a trailing-space dir that does not exist instead of listing its sibling', async () => {
+    expect(await listDir(join(base, 'only '))).toMatchObject({ ok: false, status: 404 });
+  });
+
+  it('still canonicalises // . and .. without touching the whitespace', async () => {
+    const res = await listDir(`${base}//report /./x/..`);
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.listing.path).toBe(join(base, 'report '));
+  });
+
+  // Leading whitespace makes the string relative; trimming it first used to repair it.
+  it('refuses a dir with leading whitespace instead of repairing it', async () => {
+    expect(await listDir(` ${base}`)).toMatchObject({
+      ok: false,
+      status: 400,
+      message: 'dir must be absolute',
+    });
+  });
+
+  // B11-01. `resolve()` makes every string absolute under the cwd, so checking after it
+  // never refuses.
+  it('refuses a relative dir that exists under the process cwd', async () => {
+    const before = process.cwd();
+    process.chdir(base);
+    try {
+      expect(await listDir('report')).toMatchObject({
+        ok: false,
+        status: 400,
+        message: 'dir must be absolute',
+      });
+      expect(await listDir('./report ')).toMatchObject({ ok: false, status: 400 });
+    } finally {
+      process.chdir(before);
+    }
+  });
+
+  it('keeps its blank contract: absent is home, present-but-blank is 400', async () => {
+    const absent = await listDir(undefined);
+    expect(absent.ok).toBe(true);
+    if (absent.ok) expect(absent.listing.path).toBe(homedir());
+    for (const blank of ['', ' ', '\t\n  ']) {
+      // oxlint-disable-next-line no-await-in-loop -- independent, order irrelevant
+      expect(await listDir(blank), JSON.stringify(blank)).toMatchObject({
+        ok: false,
+        status: 400,
+        message: 'dir is required',
+      });
+    }
+  });
+
+  describe('through GET /files/list', () => {
+    const secret = 'a'.repeat(64);
+    let app: FastifyInstance;
+    beforeAll(async () => {
+      const cfg: AppConfig = { ...DEFAULT_APP_CONFIG, fontDirs: [], auth: true };
+      app = await createServer(cfg, secret, createSessionRegistry(cfg, memoryTabsStore()));
+    });
+    afterAll(async () => {
+      await app.close();
+    });
+    const get = (dir: string) =>
+      app.inject({
+        url: `/files/list?dir=${encodeURIComponent(dir)}`,
+        cookies: { [SESSION_COOKIE]: secret },
+      });
+
+    it('answers each sibling with its own listing', async () => {
+      const spaced = await get(join(base, 'report '));
+      expect(spaced.statusCode).toBe(200);
+      const body = spaced.json() as DirListing;
+      expect(body.path).toBe(join(base, 'report '));
+      expect(names(body)).toEqual(['spaced.txt']);
+      expect(names((await get(join(base, 'report'))).json() as DirListing)).toEqual(['plain.txt']);
+    });
+
+    it('answers a relative dir with a 400', async () => {
+      const res = await get('report');
+      expect(res.statusCode).toBe(400);
+    });
+  });
+});
