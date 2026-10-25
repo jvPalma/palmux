@@ -580,13 +580,14 @@ updates live (no page refresh). It follows the [Termux extra-keys schema](https:
 
 A key is either a **bare string** (a key name or a single character) or an **object**:
 
-| field     | meaning                                                                                                                                                             |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `key`     | key name (`ESC`, `TAB`, `UP`, `HOME`, `PGUP`, `F1`…) or a single character to send                                                                                  |
-| `display` | label override (cosmetic; decoupled from what is sent)                                                                                                              |
-| `macro`   | a space-separated key sequence sent as one chord (e.g. `"CTRL A CTRL K"`). Modifier tokens apply to the next key                                                    |
-| `popup`   | a key (string or object) sent on **long-press** of this key — shown small in the corner                                                                             |
-| `action`  | a named UI action run on **long-press** instead of a popup (takes precedence). Only `"keyboard"` today — raise/dismiss the soft keyboard. A tap still sends the key |
+| field     | meaning                                                                                                                                                                                       |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `key`     | key name (`ESC`, `TAB`, `UP`, `HOME`, `PGUP`, `F1`…) or a single character to send                                                                                                            |
+| `display` | label override (cosmetic; decoupled from what is sent)                                                                                                                                        |
+| `icon`    | a built-in SVG drawn instead of the label: `switch`, `folder`, `newline`, `mic`, `keyboard`. Also works on a `popup` (its corner hint). An unknown name falls back to `display`               |
+| `macro`   | a space-separated key sequence sent as one chord (e.g. `"CTRL A CTRL K"`). Modifier tokens apply to the next key                                                                              |
+| `popup`   | a key (string or object) sent on **long-press** of this key — shown small in the corner                                                                                                       |
+| `action`  | a named UI action run on **long-press** instead of a popup (takes precedence). `"keyboard"` raises/dismisses the soft keyboard, `"dictate"` starts/stops dictation. A tap still sends the key |
 
 `CTRL` / `ALT` / `SHIFT` are sticky modifiers — **tap** to arm for the next key, **long-press** to
 lock on until tapped off. Example:

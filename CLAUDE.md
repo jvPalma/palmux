@@ -174,8 +174,8 @@ terminals are different PTYs, so slot focus plays no part) + fit + exit overlay 
   don't reload); `SplitDivider` resizes, `SplitDropZones` handles drag-to-split with a
   claimed-half hover PREVIEW (`.split-drop-preview`).
   **Split fusion (supersedes display scoping):** a pairing renders in the strip as ONE fused
-  two-segment button (`buildStrip`'s `fused` items; segments min 90px, focused segment solid,
-  clicking a segment activates+focuses that member) at its first member's position — members are
+  pill (`buildStrip`'s `fused` items; a split glyph then two segments of min 90px, the focused one
+  raised, clicking a segment activates+focuses that member) at its first member's position — members are
   ALWAYS strip-adjacent and share group membership (fuse-time `fuseSync` effect: one
   `groupUpdate`-or-`reorderTabs` moves the partner next to the anchor + adopts its membership; the
   server stays fusion-ignorant). Any number of pairings coexist (a tab in ≤1); only the ACTIVE
@@ -278,7 +278,7 @@ a light theme with a dark-background full-screen app that strip still differs fr
 paints, because it is outside the grid and no program can reach it.
 
 **Component kit + side dock.** `client/src/ui/` is a **Radix-headless** kit
-(Button, IconButton, Input, Switch, Segmented, Tooltip, Collapsible, Dialog) styled entirely from the
+(Button, IconButton, Input, Switch, Segmented, Select, Tooltip, Collapsible, Dialog) styled entirely from the
 eight `--t-*` tokens — deliberately NOT shadcn/ui. shadcn is Radix already dressed in Tailwind, and
 adopting it means adopting Tailwind's colour vocabulary and then teaching it to resolve back to
 `--t-*`: a second source of colour truth with a translation layer between them. What was missing here
@@ -291,6 +291,24 @@ sets it. Depth is base (recessed) / mantle (default) / surface (raised + border)
 feedback, 240ms `cubic-bezier(.2,.9,.3,1)` for surfaces, 380ms + 40ms stagger for first-render lists —
 and NOTHING inside the terminal grid animates, because compositing over the WebGL canvas costs frames
 that read as input latency.
+**Sizes are ONE scale, and a test holds it at zero** (`index.css` `:root`: `--fs-1…4` 11/12/13/15,
+`--sp-1…6` 4/8/12/16/20/24, `--r-1…3` 4/6/10 plus `--r-pill`, `--ctl-h` 28px and 36px under the
+mobile class). `ui/scale.test.ts` reads every client stylesheet as TEXT (parsed with PostCSS) and
+fails on a px literal off the scale in `font-size`/`font`, `padding`, `margin`, `gap`,
+`border-radius` and `height`/`min-height`/`max-height`; `var()`, `calc()`, `%` and `em`/`rem` carry
+no literal and pass. It began as a RATCHET, a per-file baseline of known offenders that could only
+go down, so the rule landed before the cleanup did. `ui/scale-baseline.json` is now `{}`: all 94
+offenders in `index.css`, `ui/ui.css` and `dictation/dictation-view.css` were snapped or opted out,
+so there is nothing left to ratchet. Any off-scale declaration in any sheet fails, and a new
+stylesheet starts clean. A value midway between two steps snaps UP (6 → 8, the owner's 2026-10-24
+pill-gap decision). The way out is a `/* scale-ok: <reason> */` pragma on that one declaration, for
+GEOMETRY and not rhythm (a dot or thumb sized to sit inside another fixed box, a 1px radius on a 2px
+drop line, a scroller's `max-height`), the reason naming the box the value is measured against. The
+test pins the full list of pragma'd declarations and the exempt selectors (`.ek-`, `.extra-keys`,
+`.term-`, `.xterm`, `.md-body`, `.native-sel`, `.sel-handle`, all tuned by hand), so using either
+door is a decision made in that file, and it fails a pragma on a declaration already on the scale.
+The literal scan cannot read `var(--mbtn-h, 30px)`, which is how the kit's heights got round it;
+the kit-height cases close that by resolving every kit control's total box from the sheets.
 `session/DockPanel.tsx` + `dock.css` is the right-side dock that replaces modals: Settings, Files,
 Dictation and the new-tab chooser are all views of it. It is LAYOUT, not an overlay —
 `.content-row` wraps `.content-area` and the dock so the terminal narrows instead of being covered.
@@ -352,6 +370,30 @@ SIGWINCH — measured live at 2 resize frames for 2 split panes, open and close.
 240, the rest 300), which made the terminal jump sideways on every panel switch —
 the dock is layout, not an overlay, so a width change reflows and refits every
 attached shell.
+**The dock has TWO heading levels, and `ui/headings.test.ts` pins them.** The PANEL title
+(`.dock-title`, `dock.css`) is `--fs-4` (15px), weight 650, `--t-text`, `letter-spacing: -0.01em`,
+no uppercase. A SECTION title is the kit's `.ui-collapsible-trigger`: `--fs-1` (11px), weight 600,
+`--t-subtext`, `letter-spacing: 0`, `text-transform: none`. Both used to be uppercase tracked
+captions (the panel title at 10.5px, the sections at 10–11px with 0.06–0.12em), so the panel had
+one heading style at the wrong size and no hierarchy. Every Collapsible is a section, so that one
+rule is the heading of Settings and of the New-tab chooser; the others wear the same style by
+restating it, because they are plain elements and not Collapsibles — the Explorer root header
+(`.ft-sect-trigger`, whose path beside the name steps down by weight 400 and the theme's dim ANSI
+slot), the Dictation history label (`.dictation-group`), the swatch captions
+(`.swatch-row-label`), the theme browser's Dark / Light labels, and `.dash-label`, which nothing
+renders today and is kept in step so a reuse cannot bring the old style back. No
+`text-transform: uppercase` remains in any client stylesheet; a keycap or badge that genuinely
+needs one is named in the test's `ALLOWED` map with the reason, so it is a decision somebody made.
+**A consumer that restates the trigger's type silently wins.** `settings-view.css` (10px / 700 /
+0.12em) and `dashboard.css` (10px / 600 / 0.12em) each carried a rule that out-specified the kit,
+so restyling the kit alone left the old caption on screen in Settings and in New tab. A consumer
+now states LAYOUT only (padding, `min-height`, a hover recolour), and two tests hold that:
+`ui.test.tsx` resolves the effective trigger typography in the Settings and New-tab contexts by
+parsing the sheets in cascade order with ui.css loaded both first and last, and `headings.test.ts`
+fails on any rule outside ui.css whose selector ends in `.ui-collapsible-trigger` and declares
+`font`, `font-size`, `font-weight`, `font-family`, `letter-spacing`, `text-transform` or `color`.
+`.dock-body` pads `--sp-3`, matching the head's left padding, so a panel's content lines up under
+its title.
 `sidebarRail` (`always`|`hidden`) is **per-device and must never join `SYNCED_KEYS`** — a synced copy
 puts a per-machine value back in the dotfiles-tracked settings.json.
 **There is exactly ONE action bar, and it is the rail.** Upload and download also
@@ -360,16 +402,34 @@ entries — without them `sidebarRail: 'hidden'` left two ACTIONS with no route 
 all, which the old "reopen panels with the keybinding" warning did not disclose
 because it only thought about views. The desktop topbar used to carry ⬆ Upload,
 ⬇ Download, ? Tips, ⚙ Settings and the ⬍ split-orientation toggle while the rail carried four views
-— two action bars, one above the terminal and one beside it. The topbar is now `palmux` + tabs +
-`[+]` and nothing else. Upload and download became rail ACTIONS (`RailAction` in `DockPanel`,
-rendered below the four views behind a `.dock-rail-sep`, no `aria-pressed` because they open
+— two action bars, one above the terminal and one beside it. The topbar is now the app menu button +
+tabs + `[+]` and nothing else. Upload and download became rail ACTIONS (`RailAction` in `DockPanel`,
+rendered behind a `.dock-rail-sep` below the views, no `aria-pressed` because they open
 nothing) rather than panel rows: both are one-click and a panel would make them three, and this is
 also where the mobile drawer's footer already has them. Tips became a Settings row — of the three it
-is the one nobody reaches for mid-session. The ⬍ toggle moved onto the SPLIT DIVIDER, which is
-contextual to a split the way the control is; it is `opacity: 0` until the divider is hovered,
-because it floats over the terminal. Consequence to keep in mind: with the topbar ⚙ gone the rail is
-the only POINTER route into Settings, so `sidebarRail: 'hidden'` now leaves the keybinding as the
-only way back and the row says so.
+is the one nobody reaches for mid-session — and is also an app-menu item (below). The ⬍ toggle moved
+onto the SPLIT DIVIDER, which is contextual to a split the way the control is; it is `opacity: 0`
+until the divider is hovered, because it floats over the terminal.
+**The rail is ordered by frequency of use**: New tab, Explorer, Dictation, the separator, Upload,
+Download, and Settings PINNED to the bottom edge — what you open mid-session sits at the top, and
+preferences are the thing you reach for least. `DOCK_VIEWS` carries that order (nothing outside
+`DockPanel.tsx` reads it; the mobile drawer's own `SWITCHER_VIEWS` list is a separate order and untouched).
+Settings leaves the flow through `.dock-rail-pinned { margin-top: auto }` on its OWN button, not
+`justify-content: space-between` on the rail, which would also spread the views and the actions
+apart whenever the rail has spare height. The testids (`dock-rail-<id>`) did not move.
+**The topbar leads with an APP MENU, not a `palmux` wordmark.** A 28px `IconButton`
+(`aria-label="palmux menu"`, `app-menu-button`) opens `ui/DropdownMenu` — the kit's wrapper over
+`@radix-ui/react-dropdown-menu`, a menu opened by a BUTTON the way `ContextMenu` is one opened by a
+right-click or a long press. It reuses `ContextMenuItemSpec` and the `.ui-menu`/`.ui-menu-item`
+classes so the two menus cannot drift, and the one thing it adds is the transform origin, which
+comes from `--radix-dropdown-menu-content-transform-origin` so it grows out of its trigger. Items:
+Settings, Tips, Reload app. The wordmark was the name of the app you are already inside; the button
+takes its place and is also the POINTER route into Settings when `sidebarRail: 'hidden'` removes the
+rail (the keybinding and the command palette still reach the other views, and the "Sidebar rail"
+row's hint says Settings stays in the app menu). Settings runs ONE `openSettings` shared with the
+`settings` keybinding — the dock view on desktop, the drawer view on mobile — so the two routes
+cannot open different things. The pop-out bar is a different element and keeps its `palmux` brand
+text: it has no tabs and no menu.
 **Split gestures live on the divider.** The rotate handle is `opacity: 0` until
 hover or focus, and `pointer-events: none` with it: it is 20px over a 10px divider,
 so it overhangs the drag strip by 5px on each side and was measured swallowing
@@ -398,26 +458,117 @@ running shell and which is unsaved text. All kills go out in one pass — routin
 through `closeTab` would ask per tab and navigate to neighbours that are themselves
 about to close. An item that would close nothing is not rendered.
 
+**The tab context menu is three groups with a hairline between them** (`SessionTabs.tsx`,
+`.tab-menu`): EDIT (Rename), LAYOUT (Split right, Split down, New group from this tab / Add to
+<group>, Remove from group, the colour swatches, Open in new window) and CLOSE (Close, Close other
+tabs, Close tabs to the right), and CLOSE is always last so the one destructive item is never in
+the middle of the others. Every group is non-empty — Rename, the swatches and Close always render
+— so both `tab-menu-sep` separators always have an item on each side, which a test pins even with
+every optional item absent. Every action leads with a 16px kit icon: `pencil`, `split`, the same
+`split` turned a quarter for Split down (a vertical rule between two panes becomes a horizontal
+one between two stacked panes; a transform on a static glyph, not motion), `plus`, `eject` for
+Remove from group, `external`, and `close` for all three close items. An item is `--ctl-h` (28px;
+the task named 30px, which is off the 4px grid), `--fs-3`, `--r-2`, and items are flush — groups
+are told apart by the hairline, not by air — with the inner radius concentric inside the outer
+`--r-3` less the padding. The item rules are scoped under `.tab-menu` because the mobile
+long-press sheet (`TabSheet`) reuses `.tab-menu-item` for its group rows with its own sizing,
+and the group chip's menu (`group-menu`) shares the `.tab-menu` surface and item rule but was
+not regrouped: it has no icons or separators. Behaviour, `data-testid`s, the conditional
+rendering above and the micro-tier entrance from the pointer corner did not change. The menu is
+still hand-positioned and `contextmenu`-only, which is why the Explorer's menu is the Radix
+`ContextMenu` instead.
+
 **Middle-click closes a tab**, plain or one half of a fused pairing; the action is on `auxclick` but
 the `pointerdown` guard is load-bearing, because Chrome starts its autoscroll on middle-mousedown and
 preventing it at auxclick time is already too late.
 
-**The tab strip is Chrome-like**: top-only radius, the active tab 4px taller with the content
-background and an accent top border, a group's chip+members sharing one outer radius (`:has(+ …)`
-finds the last member), a fused pairing sharing one radius with an internal seam.
-**A fused pairing needs FOUR cues, not one**, and it was reported unreadable with one. Both segments
-of an ACTIVE pairing carry a 3px accent tip (that is what says the whole block is the active tab —
-2px was measured invisible against the strip), the focused half takes the content background, full
-text colour, weight 600 and an accent icon, and the unfocused half is a NEUTRAL recess. That last
-one is the actual fix: the unfocused segment used to be filled with its own `--tab-accent` at 14%,
-so a saturated member colour (a red tab) out-shouted the focused half's plain background and the
-pairing read as focused on the wrong side. Catppuccin's base and mantle differ by ~9/255, so the
-background can never be the primary signal here — the tip and the text weight are. The topbar has **no
-bottom border** — `.session-tabs` sets `overflow-x: auto`, which makes overflow-y compute to `auto`,
-so the strip clips its children and no negative margin can reach over a border. Chrome draws no line
-either. `session/tab-strip-css.test.ts` pins the shape, including that every strip child needs an
-explicit height now that the strip aligns to `flex-end` (that change silently collapsed the group chip
-to a 12px sliver).
+**The tab strip is PILLS, not Chrome tabs** (`ui-rework`; the owner's tuned values, snapped to the
+scale). The Chrome shape — top-only radius, a taller active tab on the content background with an
+accent top border, 8% colour tints — was measured unable to tell active, split and grouped tabs
+apart, so it is gone. Every tab is a bordered pill on ONE centre line (`.session-tabs` is
+`align-items: center`; nothing stands taller): a 1px border at 10% text, `--r-2` radius,
+`--ctl-h` height, `--sp-2` between entries, `min-width: 92px` / `max-width: 200px` with
+`flex: 1 1 auto`, so a title shows in full while there is room and the strip scrolls only once every
+pill is at its minimum. The look is defined ONCE, as `--pill-*` custom properties on `.session-tabs, .drawer-sessions`
+(the mobile drawer's rows are the same pills) derived from the eight tokens — a colour literal would not follow a theme change.
+**Active is a fill and a ring, never a colour.** The active pill takes
+`color-mix(surface, text 10.5%)` (fill step 1.5 × 7%), a 1.5px ring at 60% text, full-strength text
+and weight 600. Inactive text is 85% toward mantle with no fill at rest, and hover fills only a pill
+that is NOT active (a fused pill is excluded — its segments are the hover targets). The fill clears
+one surface step off the strip in every built-in theme; `tab-strip-css.test.ts` checks the numbers,
+because the CSS only names a mix, and mixing the surface TOWARD the text moves it away from the
+mantle on a light theme as well as a dark one. A tab's colour is a 7px dot (`.ctab-dot`) before the
+title and nothing else — `--tab-accent` is read by the dot rule alone. Colour used to carry state (a
+fill, a tint, a top border) and a saturated member colour out-shouted the focused half of a fused
+pairing, which is how a pairing came to need four cues. The kind icon renders for non-terminal kinds
+only (`kindIcon`). The active pill differs from the rest in fill, ring and text ONLY — no height,
+padding, margin or border change — or the taller active tab comes back and, on a centred strip, the
+pill shifts a pixel on every switch.
+**The ring and the drop marker share one `box-shadow`**: `.active` sets `--ring`,
+`.drop-before`/`.drop-after`/`.join-armed` set `--mark`, and `.ctab` composes
+`var(--mark), var(--ring)`, so a drag over the active pill shows both without a rule per
+combination. Hovering the middle of a grouped member sets `.drop-before` AND `.join-armed`; both
+write `--mark` at one specificity, so the join rule has to come later and win, or the will-join cue
+the group colour exists for would read as a plain bar.
+**The row is as tall as a framed cluster.** `.session-tabs` has
+`min-height: calc(var(--ctl-h) + 2 * (var(--cluster-pad) + 1px))`, so creating a group does not
+nudge the terminal by the frame and its padding. It also leaves the ring room: `overflow-x: auto`
+makes overflow-y compute to `auto`, so the strip clips whatever a pill draws outside its own box.
+The topbar ends in a **1px `border-bottom` in `--t-surface`**. The old "no bottom border" rule
+existed only so the active Chrome tab could merge into the content below it, and a pill merges with
+nothing. `session/tab-strip-css.test.ts` pins the shape — happy-dom has no layout, so a grep on the
+stylesheet is the only cheap place to catch it — including that every strip child (pill, chip, `+`)
+carries an explicit `--ctl-h` height: the group chip once collapsed to a 12px sliver that read as a
+stray coloured line when the strip stopped stretching its children.
+**A group is a FRAMED CLUSTER.** `.group-cluster` wraps the chip and its visible members (a
+collapsed group's holds only the chip): a 1px `--group-accent` frame, `--r-3` radius,
+`--cluster-pad` (2px) of padding and the same `--sp-2` gap. The chip is ALWAYS filled with
+`--group-accent` and `--group-ink`, and no rule varies it by which tab is active — the
+`member-active` class and everything that read it are gone, because colour must not say "active"
+anywhere on the strip and a chip is a colour. The member pill carries the active treatment and its
+own dot. The 3px group underline and the `:has(+ …)` shared-radius rules went with it; the frame is
+the shared outline. `--group-accent`/`--group-ink` are set inline on the CLUSTER and the chip
+inherits them, so the chip's own CSS declares no default (a default on the chip would shadow the
+inherited value and recolour every chip; the CSS test pins it). The wrapper is PRESENTATIONAL: drop
+indices, `entryIndexByPos` and `entryBefore` are still computed over the flat `strip`, chips are
+still separators rather than entries, and the chip keeps its own DnD.
+**A fused pairing is ONE pill with a glyph and a seam.** It leads with `<Icon name="split">`
+(`fused-glyph-<a>-<b>`) and holds two segments divided by a 1px seam. The glyph and the seam draw
+whether or not the pairing is active, so a pairing never reads as two ordinary tabs. Active: the
+PILL takes the ring over a transparent fill (`.ctab.fused.active`), and the FOCUSED segment
+(`.fused-seg.on`) takes the raised fill, full text and weight 600, while the other segment stays
+unfilled with inactive text. Focus is fill and weight, never a member's colour — the old 3px accent
+tip, accent icon and neutral recess went with the colour fill. Each segment shows its own dot, its
+kind icon when it is not a terminal, and its title, and keeps a 90px minimum. The pill is
+`flex: 0 0 auto` with `overflow: hidden`, so the pair shares one outer radius and the segments
+square off against the seam; hover fills only a segment that is not the focused one.
+**Empty strip space is a drop target, and the gaps are new space.** The 8px gaps and the cluster
+padding did not exist when the strip was flush, and the strip's `onDragOver` treated any target that
+was not `.ctab`/`.group-chip` as the TRAILING area: a tab dropped in a gap appended at the end, and
+a grouped one LEFT its group (`groupUpdate{removeIds}`, which `server.ts` persists).
+`gapBoundary(clientX)` now compares the pointer's x with the rects of the rendered units (`.ctab`,
+plain or fused, and `.group-chip`, in strip order): the boundary is before the first unit whose
+CENTRE is right of the pointer, and trailing only when no unit is. A gap always clears
+`centerJoinRef` and `joinArmedIndex` — joining stays the middle third of a GROUPED pill and never
+happens by landing in space.
+**A boundary before a group carries an ANCHOR, because the entry index cannot name it.** That
+index space excludes chips and collapsed members, so with full order `[a, g1, g2, b, c]` and
+`{g1,g2}` collapsed, "before the chip" and "after it" both resolve to index 1, which is `b`, and a
+tab meant to land before the group landed after it (the bug predates the pills; chip drops had it
+too). `boundaryAt(k)` returns one `DropTarget {index, beforeId?}`. `beforeId` is the group's first
+member in FULL order (`firstMemberId`, collapsed or not), set when the boundary is before a chip or
+between an EXPANDED chip and its first member — a drop there commits the same way and never joins.
+`onReorder(id, index, joinGid?, beforeId?)` and `onMoveGroup(gid, index, beforeId?)` pass it
+through and `App.doReorder`/`moveGroup` let it win over `entries[index]`, but only while it is still
+in the full order; otherwise they fall back to the index, so a stale anchor cannot mis-place the
+drop. A plain reorder is still a 2-arg call. A boundary AFTER a group needs no anchor (that index
+already is the entry after it), and a boundary drop never joins: a member of ANOTHER group dropped
+before a chip keeps `decideGroupDrop`'s existing leave semantics.
+**The preview is the commit.** ONE `DropTarget` in state feeds both the marker and `commitDrop`, so
+they cannot disagree. An anchored boundary puts `drop-before` on that group's `.group-cluster` and
+suppresses the numeric marker, which would have lit the entry AFTER the group while the commit
+landed before it. The trailing `drop-after` goes on the last BLOCK, so a collapsed group at the end
+carries it instead of the pill before it.
 **The Explorer (the dock's file view) has ROOTS, not one tree.** HOME is one
 collapsible section and every pinned folder is another — VS Code's multi-root
 workspace without the workspace file. `explorerPins` is a SYNCED setting, unlike
@@ -429,6 +580,31 @@ working in the thing you just pinned; `explorer-pins.ts` keeps that ordering
 directory it lives IN — not the full path, which needs front-truncation, and the
 `direction: rtl` trick that does that reorders the leading slash (measured:
 `/home/user/work` rendered as `home/user/work/`).
+**Which roots are OPEN is remembered per device, and the stored set is never pruned.**
+`localStorage['palmux-explorer-open']` holds `{v:1, open:[<absolute paths>]}`
+(`explorer-open.ts`; a forgiving parse, and a storage exception is swallowed, so the
+Explorer renders either way). It is LOCAL where `explorerPins` is synced: a pin is a
+path on the server's filesystem and is right on every device, but whether a section
+is open is a preference of the screen in front of you, and a synced copy would let a
+phone's collapsed HOME close the desktop's. The dock and the drawer mount the same
+`FileTree`, so one device shows one state in both. **A first run opens HOME**: nothing
+stored (or storage unreadable) reads as `null`, HOME is the one open root, and that
+default is stored. With a state stored HOME is open only if the state says so —
+`load(null)` no longer forces it — and `[]` is a state too (someone who collapsed
+everything), never a first run. **The stored set is never pruned against the root
+list.** `explorerRoots(root, pins)` is incomplete at boot twice over (HOME is unknown
+until its request lands, and nothing says when the synced pins are authoritative), so
+a prune keyed to it erased a remembered pinned root whichever of the two arrived
+second, and stored the loss. What is shown is `stored ∩ explorerRoots(root, pins)`,
+recomputed on every render; an entry for a path that is not a root today stays
+dormant, costs nothing and reopens if the root comes back. Writes happen on user
+actions only (a header toggle, a pin) and each stores the FULL current set, dormant
+entries included; `pin()` stores exactly `[newRoot]`, which is its design and also
+clears the dormant ones. **Only LIVE open roots load and poll.** An effect expands
+every root in that intersection as it becomes a root — only expanded paths are
+fetched, so a restored section would otherwise be open over no rows — and the 2-minute
+poll iterates the same intersection, so an unpinned root's dormant flag never keeps
+its subtree polling. Folders expanded INSIDE a root are not remembered.
 **Freshness is a POLL, not a watcher** (`POLL_INTERVAL_MS`, 2 min, only for roots
 that are OPEN). An inotify watch per expanded directory is an fd per directory and
 a message per write — pointed at a build output that is a firehose nobody reads.
@@ -536,11 +712,54 @@ so the item sizes to its content and a code block drags the pane past the screen
 
 **The desktop settings-as-JSON modal is gone** (`SettingsEditor` deleted, with its
 `openSettingsJson` keybinding). It edited the CLIENT settings blob while the dock's
-Raw view edits the SERVER's `config.json` — two different documents behind one word,
+Edit config.json editor edits the SERVER's `config.json` — two different documents behind one word,
 which is most of why it was confusing. Nothing is lost: 16 of the 18 client settings
 are in `SettingsFields`, and the two that are not (`quickLinks`, `explorerPins`) have
 their own UI in the dashboard and the Explorer. `Ctrl+,` opens Settings; a persisted
 binding for a removed action is ignored, because `loadBindings` iterates `ACTIONS`.
+
+**`config.json` is edited from a Settings ROW, not from a mode toggle at the top of the panel.**
+`ConfigEditor` (`settings/ConfigEditor.tsx`, Monaco over `GET`/`PUT /config-file`) used to render
+a "CONFIG.JSON  Raw | Form" Segmented above the form — jargon at the top of the panel.
+`SettingsFields` now takes an optional `onEditConfig`, and when a host passes it the App
+card ends in an **Edit config.json** row (`LinkRow`, `edit-config`, a chevron at the control
+column's edge) that `App` wires to `setCfgMode('raw')`. Only the DESKTOP DOCK passes it: the
+editor lives in the dock and the drawer has no room for one. In Raw the editor's header is a
+`‹ Settings` control (`config-back`, `onMode('form')`) and the title `config.json` (the file's
+path is its `title`); the Segmented is gone. `mode` is still `'raw' | 'form'`, but it is state
+now, not a control.
+**In Form the component renders nothing VISIBLE and stays MOUNTED, hidden — it is never
+unmounted and never `return null`.** Monaco is created once, as the file arrives, into the host
+element, and returns early when there is no host; a component that rendered nothing in Form
+would have no host at that moment and would never get an editor, so the first Raw would open
+onto an empty box (`App` starts in Form). Keeping the same host mounted is also what lets
+unsaved text, the cursor and the undo stack survive Raw → Form → Raw, and its dirty state
+(`onDirtyChange`) reaches `guardedReload`, so a Reload with unsaved config text asks first even
+while the Form view hides the editor. Two consequences. `.config-editor` sets `display`, which
+outranks the attribute's own `display: none`, so the stylesheet restates `.config-editor[hidden]`.
+And a host that is hidden gets no resize events: the dock creates the editor while Form is
+showing, so the host measures 0 at create time and takes the WIDE gutter defaults — the width
+observer re-measures it, and Raw calls `layout()` as it comes back into view.
+Focus follows the swap, because Form hides the editor and the Edit config.json row goes out with
+the form it sat in: entering Raw moves focus to `config-back`, and returning moves it to the row
+that opened the editor (App's `editConfigRef`, the form coming back NEW), each only when focus was
+LOST (on `<body>` or inside a `[hidden]` subtree; `focusLost`). It is never taken from a text field.
+Leaving Settings for another dock view does unmount the editor (`App` renders it only while Settings
+is the dock view), and the buffer goes with it, so a DIRTY buffer asks first. `openDockView` is the
+only writer of `dockView`, which makes it the one door out of Settings (another rail view, the rail
+toggle, the dock's close button, a keybinding, a row inside the form): with `configDirtyRef` set it
+asks `window.confirm('Discard unsaved changes to config.json?')`, the counterpart of
+`guardedReload`'s. OK clears the flag and proceeds; Cancel stays on Settings and switches to Raw, so
+the text it protects is on screen even if it was hiding behind Form. A clean editor switches
+silently. The other thing that removes the dock, and with it the editor, is an explicit
+`mobileMode` change that turns the mobile layer on; `changeSettings` (App's `onChange` for the
+dock's `SettingsFields`) asks the same question BEFORE the change is applied or persisted, and
+Cancel leaves the setting and the editor alone. **One path is not guarded, by limit and not by
+oversight:** `mobileMode: 'auto'` re-resolves from the device on every render (`isMobileDevice`: a
+coarse pointer, touch points), so a desktop that starts reporting one flips the layer with no user
+action to ask against, and the editor still unmounts. `onDirtyChange` reports `false` once it has.
+Keeping the editor mounted across dock views is not done: it would load Monaco for every desktop
+session, which terminal-only use must never pay.
 
 **Monaco carries ~23 monarch GRAMMARS, not one.** Tokenizers are a few KB each and
 run on the main thread; the 7 MB the loader's comment warns about is the language
@@ -645,7 +864,7 @@ never cached (it belongs to a tmux server palmux does not manage), scrolls, and 
 8 entries — a real host had 26. tmux missing entirely (`ENOENT`) hides the section; a tmux with no
 server running is a working tmux with an empty list, and the `＋ New` row still starts one.
 
-**Tab groups (Chrome-like).** A group is `{id, name?, color}` (`session/tab-groups.ts` +
+**Tab groups.** A group is `{id, name?, color}` (`session/tab-groups.ts` +
 `shared/protocol.ts` `TabGroup`; ids match `isGroupId` `/^g[0-9a-z]{5,12}$/`, minted server-side via
 `crypto.randomBytes`). Each tab carries at most one `groupId`; the model is **server-authoritative**
 — the registry (`server.ts`) keeps members **contiguous** in strip order via `normalizeOrder` (a
@@ -655,8 +874,9 @@ join/leave go through `groupUpdate{addIds|removeIds, order}` (membership THEN or
 atomically); a plain move stays `reorderTabs`. Persistence is additive + rollback-safe: per-tab
 `groupId` in `tabs.json` (old parser ignores it) and group metadata in a NEW `groups.json` sidecar
 (`tabs-store.ts` `createGroupsStore`); restore drops a `groupId` whose group is gone. Group color +
-name are **independent** of per-tab color/name — a member shows both (a `--group-accent`
-underline/wash under the per-tab `--tab-accent` top stripe). Creation is single-tab (menu: "New group
+name are **independent** of per-tab color/name — a member shows both (the cluster's
+`--group-accent` frame and chip around the member's own `--tab-accent` dot; see the strip above).
+Creation is single-tab (menu: "New group
 from this tab" / "Add to <group>"; group-of-one is valid and grown by dragging a tab onto a member's
 **center**; drag a member fully OUT to leave; drag the chip to move the whole block —
 `application/x-palmux-group`, its own payload, never sets `dragTabId`). Collapse is per-device view
@@ -667,51 +887,319 @@ auto-expands whenever the active tab is a collapsed member — NOT in `selectTab
 re-tile / boot / close-nav / reconcile all `setSessionId` directly and bypass it. Close-all is one
 KIND-AWARE confirm (names the terminal kill count, warns on dirty editor members). The mobile drawer
 (`SessionDrawer.tsx`) renders groups as tappable headers sharing the same collapse set. The drawer
-lives on the RIGHT edge, is sized entirely off `--mbtn-h` (30px, the extra-keys key height — the
-mobile touch-target reference), and is the mobile container for the SAME four surfaces the desktop
-dock rail hosts (sessions · settings · files · dictation), switched by a kit `Segmented` wearing the
-rail's own icons. Settings are drawer items rather than a modal (`settings/SettingsFields.tsx` holds
-the field list, shared with the dock).
-Two things about that header. **Availability is DECLARED (`hostedViews`), never inferred from
+lives on the RIGHT edge and covers the full HEIGHT (still bounded by `--app-top`/`--app-height`) and
+all but a 44px scrim strip on the left (`width: calc(100% - var(--drawer-strip))`). 44px is the
+touch-target floor, and the strip hit-tests as the scrim with the keyboard up or down, so a thumb can
+always reach the terminal side to close it. The scrim is token-coloured (`--t-base` at 72%, the kit
+Dialog overlay's mix) and is inert while closed; scrim and slide run on `--mo-surface` in and the
+shorter `--mo-micro` out, and reduced motion drops both transitions. The drawer is the mobile
+container for the SAME four surfaces the desktop dock rail hosts (sessions · settings · files ·
+dictation), ordered for the THUMB, bottom → top: the footer, the bottom-anchored session list, and
+at the very TOP ONE row — a Settings gear, the view switcher, Close (owner decision, 2026-10-25: he
+does not want the switcher at the bottom). The switcher is a kit `Segmented` over THREE segments
+(Sessions · Explorer · Dictation) wearing the rail's own icons; Settings is the gear beside it and not
+a fourth segment, because a segment for it as well would be two entries for one place. The top row
+exists only at the drawer's ROOT: Settings and the new-tab chooser are sub-surfaces whose `‹` back
+header is the top control there, a row above it would push the way back down the screen, and the
+switcher goes with the row — Explorer or Dictation is one back press from Settings, the depth the
+chooser already has. In the row the unselected icons wear `--pill-text` (the strip's inactive text),
+not the kit's `--t-subtext`, which read as disabled on the drawer's mantle; the selected segment
+restates `--t-accent-ink` on the accent fill in its hover and press states, because the kit's
+`.ui-seg-item:not(:disabled):hover` out-specifies its own selected rule and put pale text on the
+accent. Both are scoped to the drawer (`drawer-views.css`), so every other Segmented keeps the kit's
+colours. The strip and the list declare `--pill-text`, so `.drawer-top` declares it too (index.css);
+`SessionDrawer.test.tsx` holds that value equal to the strip's and resolves the cascade with ui.css
+loaded first and last.
+Settings are drawer items rather than a modal (`settings/SettingsFields.tsx` holds the field list,
+shared with the dock).
+**Drawer controls are sized off `--ctl-h`** (28px on desktop, 36px under the mobile class), the step
+the kit and Settings use, and NOT off `--mbtn-h`, and the KIT reads it itself. Button, IconButton,
+Input, the Collapsible trigger and a Segmented item used to read `var(--mbtn-h, 30px)` (the
+extra-keys key height with a 30px fallback, off the scale, and a function value the literal scale
+guard cannot see), so a chooser, Explorer or Dictation hosted in the drawer came out 6px shorter than
+every row the drawer draws itself. The drawer corrected that with rules of its own (`.drawer .ui-btn`,
+`.ui-input`, `.ui-select-trigger` and `.ui-icon-btn` overridden to `--ctl-h`) and a
+`.drawer { --mbtn-h: 30px }` pin so the controls it did not resize kept their size. Both are
+DELETED: the kit's Button, IconButton, Input, Select trigger and Collapsible trigger are `--ctl-h`
+and each small variant is `calc(var(--ctl-h) - var(--sp-1))` (24px on desktop), so one rule serves
+the drawer, the dock, a pane header and a dialog, and a drawer override would only be a second place
+to keep in step. A Segmented is the same in result and different in shape: its wrapper adds 2px of
+padding and a 1px border a side, so the wrapper takes the `--ctl-h` floor (the OUTER box is the
+control height) and an item `calc(var(--ctl-h) - 6px)`. The visible cost is deliberate: kit controls
+on a phone OUTSIDE the drawer grow from 30px to the 36px touch target, and on desktop they shrink
+2px to 28px. `--mbtn-h` is now declared nowhere and nothing reads it (the extra-keys bar sizes its
+own keys); `ui/scale.test.ts` fails a declaration or a read in any stylesheet outside the
+`.ek-`/`.extra-keys` exemption, and resolves the TOTAL box of every kit control from the sheets (kit
+alone, inside `.drawer`, in `FilePane`'s header; 28px and 36px; `ui.css` loaded first and last).
+`SessionDrawer.test.tsx` pins the drawer half: no drawer rule resizes a kit control, and `.drawer`
+pins no `--mbtn-h`.
+Two things about the switcher. **Availability is DECLARED (`hostedViews`), never inferred from
 `viewContent`**: files and dictation have no body of their own, the host supplies one, and a host can
 only supply it for the view that is ALREADY selected — so inferring left both permanently disabled
 and unreachable. And the Segmented takes `keepFocus`, because Radix selects on CLICK and a click
 focuses the segment, which blurs `#mobile-kbd` and dismisses the soft keyboard — the exact reason
-every other control in here acts on pointerdown + `preventDefault`. That preventDefault is also why
-the selection moves INTO pointerdown: on a touch pointer it suppresses the compatibility click. With
-a mouse the click still arrives, finds the item selected, and Radix reports `''` for the toggle-off,
-which `Segmented` already ignores — so both paths land on the right value.
+every other control in here acts on pointerdown + `preventDefault`. That is also why the selection
+moves INTO pointerdown, and that press marks its gesture (`consumeGesture`, below): selecting swaps
+the drawer's whole body, so the tap's own mousedown and click would land on what the new view drew
+under the finger. The mark swallows them for a touch pointer and a mouse alike. A key, assistive
+tech or `click()` reaches a segment as a click with no count, which the mark lets through to Radix's
+own handler; the item that is already selected reports `''` for the toggle-off there, which
+`Segmented` already ignores.
 The session LIST is bottom-anchored
-(`margin-top: auto`) so the most-tapped surface sits in thumb reach. There is **no brand row and no
-second ⚙**: a `palmux` wordmark + settings icon sat under the segmented header until that header
-existed, at which point it was a duplicate control plus the name of the app you are already inside.
-`+ New tab` opens the chooser as a sub-surface of this list (`‹ New tab` back header over
-`DashboardBody`) and does NOT close the drawer — closing it to float the chooser elsewhere is what
-this replaced. `DashboardBody` is written for the dock, so the drawer re-scopes its metrics the way
-`.drawer-settings-body .settings-form` already does: its 10px padding goes (in here it was the FOURTH
-nesting level, and a tmux name lost 38 of the drawer's 300px before its first glyph), and its 40vh
+(`margin-top: auto`) so the most-tapped surface sits in thumb reach. There is **no brand row**: a
+`palmux` wordmark + settings icon used to have a row of their own, a duplicate control plus the name
+of the app you are already inside. The one Settings entry is the gear at the left of the top row.
+`+ New tab` is the list's TAIL box (`.drawer-tail`; the same box that turns into the root drop area
+while a row is lifted, below) and opens the chooser as a sub-surface of this list
+(`‹ New tab` back header over `DashboardBody`) and does NOT close the drawer — closing it to float
+the chooser elsewhere is what this replaced. `DashboardBody` is written for the dock, so the drawer
+re-scopes its metrics the way `.drawer-settings-body .settings-form` already does: its 10px padding
+goes (in here it was the FOURTH nesting level, and in the old 300px drawer a tmux name lost 38px of
+it before its first glyph), and its 40vh
 `.dash-list-scroll` cap is lifted, because a list that scrolls inside the drawer's own scroller is
 two scrollbars competing for one flick — that alone took the visible tmux rows from 10 to 23.
 **A control inside a scroller cannot fire on pointerdown.** The drawer's convention is pointer
-events, never `onClick`, so that using it does not blur `#mobile-kbd` and dismiss the soft keyboard —
-and the original form (`press`: pointerdown + `preventDefault`) breaks a list in two independent
-ways. The action runs the moment the finger LANDS, so a finger arriving to scroll has already picked
-whatever was under it; and `preventDefault` on a touch pointerdown cancels the browser's pan, so the
-list could not have scrolled anyway. Measured on the drawer's chooser: touching a tmux row to scroll
-opened that session and closed the drawer. `panes/press.ts` therefore has two forms —
-`press`/`pressKbd` for FIXED chrome (the footer, the scrim, the back headers) and
-`pressMove`/`pressKbdMove` for anything in a list: activate on pointer UP, only within 10px of where
-the finger landed, never `preventDefault` a touch pointerdown, and restore `#mobile-kbd` focus on
-activation (the touch path lets focus reach the control, which is the price of letting it pan). A
-mouse cannot pan, so there the original preventDefault stays. The drawer's own rows use the same
-shape inline (`rowDown`/`rowMove`/`rowUp`), where the slop also cancels the long-press sheet. A row is
-`{kind icon} {number chip} {title} [✕]`: the chip is `--mbtn-h` wide (the ✕ cell's size), painted in
-the tab color and holding the TAB NUMBER — the id is the URL path. It renders on every row (an
-uncolored tab falls back to the theme accent) and INVERTS on the active row (`--tab-ink` fill,
-`--tab-accent` digits) because an accent chip on the active row's solid accent fill is invisible. The
-footer is a 2-column gapless grid of equal cells — ⬆ Upload · ⬇ Download · 🔉 Dictate · 🖼 Images
+events, never the pointer's own `click`, so that using it does not blur `#mobile-kbd` and dismiss
+the soft keyboard — and the original form (`press`: pointerdown + `preventDefault`) breaks a list in
+two independent ways. The action runs the moment the finger LANDS, so a finger arriving to scroll has
+already picked whatever was under it; and `preventDefault` on a touch pointerdown cancels the
+browser's pan, so the list could not have scrolled anyway. Measured on the drawer's chooser: touching
+a tmux row to scroll opened that session and closed the drawer. `panes/press.ts` therefore has two
+forms — `press`/`pressKbd` for FIXED chrome (the scrim) and `pressMove`/`pressKbdMove` for anything
+in a list: activate on pointer UP, only within 10px of where the finger landed, never
+`preventDefault` a touch pointerdown, and restore `#mobile-kbd` focus on activation (the touch path
+lets focus reach the control, which is the price of letting it pan). A mouse cannot pan, so there the
+original preventDefault stays. `pressMove` answers a CLICK too, and acts on every click that reaches
+it: Enter, Space, assistive tech, `element.click()` and the click a `<label>` forwards to its control
+all activate exactly once, and `detail` plays no part in telling them apart (a forwarded click
+carries a count) because a pointer press's own click never gets there (the mark, below). The one
+click it skips ends a drag that went past the slop and was released on the same element, which a
+mouse still turns into a click. It `preventDefault`s the click it acts on, so a `<label>` built on it
+cannot forward a second activation to its control. `pressKbdMove` adds Enter and Space for an element
+that is NOT a `<button>`: a `<button>` turns both into a click of its own, so acting on the keydown
+as well was a double activation, and whether `preventDefault` on that keydown cancels the click
+differs by engine, so nothing relies on it. The settings round trip (the Theme row, its `<label>`
+through `Row`'s `onLabelPress`, every theme entry, the dock's `‹ Settings`) uses `pressMove` for the
+same reason: a real press focuses a button natively before its click, and `carriesFocus` read that
+as focus inside the panel and carried it into the list, which dismissed the soft keyboard. A fixed
+BUTTON (the footer cells, the back headers, the top Settings and Close, the TabSheet's buttons, the
+chooser's three and the dashboard's Open drawer) uses `pressClick`, a third export that is `press`
+plus a `click` handler, so Enter, Space and an assistive-tech click reach it too — a focusable
+button that ignored them would work for some users only — while a pointer press's own trailing click
+is not a second activation.
+**Every helper that acts on a pointer marks that GESTURE first** (`consumeGesture`, exported for
+`Segmented` and for the drawer's row machine): `press`, `pressClick`, `pressMove` on activation,
+Segmented's `keepFocus` pointerdown, and a row's tap or its hold released in place, which opens the
+row menu. The action usually redraws the spot under the finger, and the browser hit-tests the rest of
+the tap only after the release, so the gesture's own mousedown, mouseup and click land on whatever
+the action put there: the scrim's tap on the terminal under it (under mouse reporting that is a click
+report to tmux, which can change the focused pane), a chooser row's tap on the view it opened. One
+capture listener on the document takes them all, wherever they land. It takes the compatibility
+mousedown and mouseup as well as the click, not only the click: a touch can deliver its mousedown
+AFTER pointerup, and a mousedown moves focus, so putting `#mobile-kbd` back at pointerup was undone a
+moment later. The mousedown is `preventDefault`ed (which cancels that focus move) and stopped; a
+POINTERDOWN is never touched, so the mark cannot stop a list from panning. The mark is armed BEFORE
+the action runs, so whatever the action redraws is covered, and it stays live until the pointer has
+been released AND the action has returned; `CLICK_TAIL_MS` (1s) counts from the later of the two. A
+pointerdown action returns long before a held finger lifts, and a pointerup action can block — the
+swipe Close reaches `window.confirm` inside `App.closeTab` — and the click it held back is delivered
+after the answer and still swallowed. Mouse events and clicks with `detail === 0` always pass: a key,
+assistive tech and `element.click()` produce them, and the upload and download actions call `click()`
+on a file input or a link inside this very gesture. A new pointerdown, a pointercancel or a keydown
+clears the mark. A scroll, a drag, a cancel and a press `endIfGone` ended acted on nothing, so they
+mark nothing and their click still reaches the row. The drawer's own rows are not `pressMove`: they
+are the pointer state machine below, where the slop also cancels the long-press, and they call
+`consumeGesture` themselves in `up` on the two paths that act.
+**A row is `{dot} {kind icon} {title} {number}`.** The dot is the tab colour (`--tab-accent`; a
+neutral `--t-subtext` dot when the tab is uncoloured), and the kind icon appears for NON-terminal tabs
+only — a terminal's kind is the prompt every row would repeat. The number is the TAB ID as secondary
+text (`--fs-1`, `--t-subtext`, right-aligned): the id is still how you name a tab, but it is not what
+the row is about. The numbered colour chip (it inverted on the active row), the per-row `❯` and the
+always-visible ✕ cell are GONE; closing is the swipe-left action below.
+**A row is a PILL, the desktop strip's own, and the two share one set of tokens.** `--pill-border`,
+`--pill-fill`, `--pill-ring`, `--pill-text`, `--pill-hover` and `--cluster-pad` are declared ONCE, on
+`.session-tabs, .drawer-sessions` (they lived on `.session-tabs` alone), unchanged in value, so the list
+cannot drift from the strip; `tab-strip-css.test.ts` and `SessionDrawer.test.tsx` read that one rule and
+the drawer's row rules restate no colour mix. `.drawer-session` takes the 1px `--pill-border`, `--r-2`,
+`--pill-text` at weight 500 and stays `--ctl-h` tall; at rest its background is the drawer's own
+`--t-mantle`, which reads as "no fill" and keeps it OPAQUE over the Close waiting behind it. The ACTIVE row
+is `--pill-fill`, the `--pill-ring`, `--t-text` and weight 600, and is never filled with the tab colour,
+so a red tab's red lives in its dot and nowhere else; the old 3px `--t-accent` left edge is gone. The ring
+is OUTSET (1.5px) and `.drawer-leaf-inner` clips, so its room is the clip's side padding
+(`--cluster-pad`, 2px) and the row's own vertical margin (half of `--sp-1` each side: two rows are 4px
+apart, and the pitch on mobile went 38px → 40px), both INSIDE the clip. The vertical room is never padding
+on the clip: that would hold a leaving leaf open at `0fr`, and the row below would jump when it unmounted.
+The ring and a lifted row's shadow are two layers of one `box-shadow` (`--ring`, `--lift`), as on the
+strip's pill, so a lifted active row keeps its ring.
+**A group is a framed cluster, assembled from per-leaf segments.** The header is the CHIP: filled
+`--group-accent` with `--group-ink` over it (caret, label and count declare no colour of their own), and no
+dot, which would be the colour of its own ground. It is still a button with the same `data-testid`,
+`aria-expanded`, tap-to-collapse and long-press/drag handling, and `member-active` no longer changes it, as
+on the desktop. The two colours are set inline on EVERY leaf of the group, header and members, from
+`tabColorValue`/`tabColorInk` (the desktop chip's helpers), with `--t-accent`/`--t-accent-ink` as the
+fallback on `.drawer-leaf`. The frame is one continuous 1px `--group-accent` line with `--r-3` corners and
+`--cluster-pad` inside, but the rows are flat leaves, so each draws its own piece: `frameClasses` marks a
+leaf `group-first` (the header), `group-mid` or `group-last` (a folded header is both), and the segment is
+drawn on the LEAF, NEVER on `.drawer-row`. A drag translates and scales the row, so a segment on it travels
+with the finger and leaves a hole in the frame, where the leaf keeps holding the slot. Not on
+`.drawer-leaf-inner` either, although it is as stationary: it is the grid item, and while its track runs
+between `1fr` and `0fr` the leaf's height is fr × content and the item's is fr × THAT, so for the length of
+every enter and leave a border on the item stops short of the slot and the frame opens between the rows
+either side (measured on a 40px row at half way: leaf 20px, item 10px; the first build drew them on the
+item and the gap was in the screenshot). Every leaf carries a 1px transparent side lane, so a member pill and
+a plain pill share an edge and the frame is what sticks out. Positions come from the rows that are NOT
+leaving, and a leaving row is one of two things. TRAILING, with nothing of its group left below it (the last
+member closing, every member of a fold): it draws nothing and `group-last` has already moved up, because a
+bottom edge on it would ride up with its shrinking slot, fading, while the new last row draws its own.
+INTERIOR, with rows of its group left above and below (a first or middle member closing): it takes
+`group-bridge`, the two SIDES only (a top or bottom border would hold its slot open), so the frame stays
+unbroken between the rows either side while the slot shrinks; and the fade is the ROW's, not the leaf's,
+because a leaf fade would take the sides with it. An ENTERING row is not special-cased: its segments fade in
+with its leaf over the same micro tier. A group has no menu and no Close, and its
+header keeps the section-title type.
+**Row gestures are one press at a time, on pointer events — there is no HTML5 `draggable`.**
+`draggable` would compete with the list's pan and with the long-press menu, and the pointer path
+behaves the same whether or not Chrome for Android starts an HTML5 drag. That was decided WITHOUT the
+device (adb was down), so the S26 spike that would show HTML5 drag working is still owed; the tree
+MODEL below is shared by either input layer, so only this layer would change. A press is `pressed`;
+held 450ms (`LONG_PRESS_MS`) inside the 10px slop it is `armed` (`navigator.vibrate?.(8)`). From
+`armed`, a release without moving opens the row's menu (`onTabMenu` → `TabSheet`: rename, colour,
+group membership, close; the terminal close keeps its confirm), and moving past the slop starts a
+DRAG. Moving past the slop BEFORE arming is a scroll or a swipe — never a menu, never a drag. A plain
+tap still switches tab and closes the drawer. The menu does NOT close the drawer: the sheet opens
+over it, so a rename or a colour change lands you back in the list you pressed in.
+**Pointer capture does not take the gesture from the browser's pan.** Capture changes where events
+are delivered; it does not stop native scrolling, so a vertical move after the hold would start a pan
+and end the gesture in `pointercancel` instead of a drag. ONE non-passive `touchmove` listener on the
+list root (registered by hand — React's `onTouchMove` is passive and cannot `preventDefault`) cancels
+the touch ONLY while the press is `armed` or `dragging`, reading the phase from a ref, so a move
+before arming still pans natively and a touch pointerdown is still never prevented. ASSUMED, not
+measured: Chrome holds the pan within its touch slop, so the first post-arm `touchmove` is still
+cancelable; `e.cancelable` guards the call, and a miss would show as a drag that ends in
+`pointercancel`. A drag takes pointer capture on the list, lifts the row on `transform` alone (plus
+the list's scroll since the press, or an edge auto-scroll would leave the row behind the finger),
+scrolls the list when the finger is within 40px of its top or bottom edge, and draws the drop it
+resolves: a 2px accent line on a row edge, or a ring around a group header for "join". A release on a
+refused drop cancels and nothing moves.
+**Swipe left reveals Close.** A dominantly horizontal move left of more than 32px before arming
+slides the row aside on `transform` (micro tier) over a Close button waiting behind it
+(`.drawer-row-close`, `visibility: hidden` until revealed so it is neither tabbable nor read out).
+Tapping it calls `onKill`, which is `App.closeTab`, so the terminal confirm and the dirty-editor
+discard confirm still apply. It hides again on any press that is not on it (a press on ANOTHER row
+only puts the open one back and does not also switch tabs or start a long-press), on a scroll, and
+when the drawer closes — which is what makes a swipe right, a tap elsewhere and a scroll "hide". The
+keyboard route is ArrowLeft on a focused row (reveals Close and moves focus onto it) and ArrowRight
+back; an Enter, Space or assistive-tech click reaches a row as a `click` with `detail === 0` (a
+pointer press's own trailing click carries a count).
+**Drops go through a pure tree model and two App commits.** `session/drawer-tree.ts` ports the DGSL
+design system's TreeView model: nodes are `t:<id>` and `g:<gid>`, a group sits at its first member and
+holds its members in full order, and `dropAt` splits a TAB row in halves (before/after) and a GROUP
+header in quarters (top before, bottom after, the middle half inside). `accepts(nodes, dragged, drop)`
+refuses a drop on itself, a group into its own members, a group inside a group (one level only),
+anything inside a tab, a group beside a member of a group, the place the node already holds, and a
+node or target no longer in the tree (a drag outlives other windows' edits). `resolveDrop` returns
+the full order, already through the shared `normalizeOrder` so the optimistic order equals what the
+server will broadcast, plus at most one membership change; moving from group A to B returns only
+`addTo: B` because the server's `groupUpdate` steals the tab, and `removeFrom` is set only when the
+tab leaves for the top level. A tab dropped before/after a group HEADER lands as a top-level node
+beside that whole block. A permanent ROOT drop area exists below the last row — the `+ New tab` box,
+which reads "Drop here to ungroup" while a row is lifted — because with every tab grouped no other
+top-level target exists. `App.moveTabInTree(id, drop)` sends `groupUpdate {id, addIds|removeIds,
+order}` when membership changes and `reorderTabs(order)` otherwise; `moveGroupInTree(gid, drop)` is
+always one `reorderTabs`. Both apply the same order optimistically and send NOTHING for a refused,
+stale or no-op drop. They sit beside `doReorder`/`moveGroup` and do not replace the desktop paths;
+no server change was needed.
+**An optimistic drop is applied to the list React holds, never rebuilt from the drop's order.** A
+drop is resolved against `tabsRef` and then applied inside a functional `setTabs` updater to `prev`,
+which need not be the list it was resolved against: a `sessions` broadcast whose `setTabs` is queued
+and not yet rendered can hold a tab the resolved order never named, and an updater that rebuilt the
+list from `order` alone dropped that tab locally, while the server, already at that order, sent no
+broadcast to put it back. Three things changed. The `sessions` handler moves `tabsRef` and
+`groupsRef` to the new broadcast synchronously on EVERY broadcast, right AFTER the close-navigation
+decision (`dispatch({ type: 'sessionsBroadcast' })`), because that is the one reader that needs the
+PREVIOUS list. **A render never writes either ref**: only what changes the lists does (that handler,
+the four drop commits, the split fuse sync). A pointer event renders before a queued broadcast does,
+and the render-time `tabsRef.current = tabs` that used to sit beside them copied the OLDER list back,
+so a drop right after went out without the tab the broadcast brought. A new `setTabs` therefore has
+to write `tabsRef` first. And a module-level `applyDrop` applies a drop the way the server applies a `groupUpdate` and
+then a `reorderTabs`: membership first and CONDITIONALLY (an add moves the tab into the group,
+stealing it from any other; a removal acts only on a tab still in that group, so a tab another
+window moved from G to H is not pulled out of H by a stale "leave G"), then the forgiving permutation
+(unknown ids dropped, tabs the order never named kept in their prior relative order), then
+`normalizeOrder`. Each commit also writes `tabsRef` at once, so a second drop before the next render
+resolves against the first. `doReorder` and `moveGroup` had the same defect and go through
+`applyDrop` too, and so does the fuse sync that moves a split's partner next to its anchor.
+**Rows leave on the micro tier and enter on the stagger.** `ui/useLeavingItems.ts` keeps a removed
+item rendered, `data-phase='leaving'`, for `--mo-micro` (read from the token, 140ms fallback, none
+under reduced motion), then drops it. Each row sits in a `.drawer-leaf` that animates its OWN
+occupied space — the kit Collapsible's `grid-template-rows: 1fr ↔ 0fr` — together with opacity:
+fading the row alone and unmounting it after made every row below jump by its height at the end,
+and collapsing the space with the fade lets them glide up. They are transitions, not keyframes, so
+an interrupted change (a tab closed as its group folds) retargets. A list's FIRST fill is
+`data-enter='stagger'` (`--mo-enter` plus a capped `--mo-stagger` step per row); rows inserted later
+are `micro`, and a removal undone in time never replays the stagger. "First fill" is the first time
+the list holds anything, not the first render: on a plain `/` or `?new=1` boot the selection waits
+for the tab list, so the drawer mounts empty and fills on the first broadcast; a legacy `/<id>`
+boot names its tab first, so the drawer's first fill is the one row it draws for that `current`
+and the broadcast's other rows arrive on `micro`. The drawer is closed at boot either way, so no
+stagger is ever seen there. The Explorer's rows use the same hook (`panes/FileTree.tsx`, where a
+delete is the common exit), and there a listing already on screen STAYS on screen while it re-reads
+— otherwise a delete's re-read of the parent would turn every sibling into a leave and a re-enter.
+**The drawer holds the layout still, and never touches the keyboard.** The viewport effect's
+`deferred` flag used to mean "a native selection holds the layout"; it now means "the layout is
+held", set by a live selection OR an open drawer. The drawer's state reaches the effect through
+`drawerHoldRef`, so the effect does not re-subscribe (which would drop `--app-height`).
+`openDrawer()` records `kbdWasUp` — `#mobile-kbd` focused AND the pinned height more than
+`KEYBOARD_GONE_PX` below `screen.height` — at the only moment it can be read: once the drawer takes a
+tap Android may dismiss the IME without blurring anything, and from then on "was it up?" has no
+answer. The drawer NEVER blurs `#mobile-kbd` itself (blurring and re-focusing around it was rejected:
+you type, open the drawer to upload a screenshot, and keep typing). While held, viewport events
+change nothing — no `--app-height` write, no refit, no resize reaching any PTY — but the hold never
+blocks the FIRST pin, because mobile mode can come back on while the drawer is still open.
+`closeDrawer()` is the ONE way out and every close path uses it (scrim, the root Close, choosing or
+creating a tab, opening a file from the Explorer, dictation's Insert, every footer action): a path
+that skipped it would strand the terminal at the keyboard-up height. It runs the selection's release
+path — if `kbdWasUp`, re-raise FIRST (`kbdRaiseRef`), keep the keyboard-up height, and leave the
+layout RESTORING until the keyboard is back, which costs at most one resize per PTY; a drawer opened
+over a DOWN keyboard never raises however far the viewport grows, and re-pins at once.
+**A restore is a pending state, and its end is a settle rule.** While the layout is restoring,
+viewport events write NOTHING (no `--app-height`, no refit) and leave the `KEYBOARD_RETURN_MS`
+(600ms) fallback armed. Before that, ANY viewport event ran `apply` again, cancelled the fallback and
+pinned the grown height, and the IME's arrival then changed it a second time; the shape that cost it
+was pinned 500px → the drawer closes at 844px → a scroll at 844px → the keyboard back at 500px, which
+is two height writes and two resizes per PTY. Crossing back under the keyboard-presence threshold is
+not completion either: an IME animates through intermediate heights (844 → 580 → 500), and
+committing the first of them is the same second resize. So completion is a SETTLE rule: once the
+viewport is within `KEYBOARD_GONE_PX` of the pinned height, a `RESTORE_SETTLE_MS` (150ms) timer
+starts and EVERY later viewport event restarts it. When it fires, the final geometry is committed
+ONCE, and not at all when it equals the geometry already pinned (844 → 580 → 500 against a pin of 500
+writes nothing; a keyboard of a different height, 844 → 580 → 480, writes 480 once). The fallback
+is the upper bound: when the keyboard never returns (a `focus()` without user activation) it fires
+first and commits the real geometry once. A hold taken meanwhile, a new selection or the drawer
+reopening, cancels both timers and takes over, and its own release decides afresh whether there is
+anything to restore.
+**A native picker keeps the hold until it comes back, and elapsed time never releases it.** Upload
+and Images open an OS picker that can take the IME with it where the page cannot see it, so hiding
+the drawer is separate from releasing the hold: `closeDrawer({ holdUntil: 'picker' })` hides it and
+keeps the hold and the saved `kbdWasUp`. The hold is taken only when a picker ACTUALLY opened, so
+the whole launch chain answers a boolean (`PaneApi.openPicker`/`openImagePicker`,
+`DrawerActions.uploadFile`/`uploadImages`, App's guarded wrappers — which only toast on an editor,
+markdown or web tab) and the drawer calls the action FIRST, then `closeDrawer` with or without the
+picker hold. The release comes from `useFileUpload` (`armReturn`): the input's `change`, its
+`cancel` (Chrome fires it on a dismissed file input), or a `focus` back on `window` while
+`document.visibilityState === 'visible'`, the last followed by one tick plus 300ms
+(`PICKER_RETURN_GRACE_MS`) for a late `change` to arrive first, after which it counts as a cancel.
+`onReturn` fires once; a focus while hidden does nothing; a second launch settles the first; an
+unmount settles a pending one. There is NO timeout, deliberately: browsing files or taking a photo
+takes minutes and the terminal's row count must not change meanwhile. While a picker hold is on, the
+`KEYBOARD_RETURN_MS` fallback never starts (the release path arms it, and a hold defers that path),
+and reopening the drawer takes the hold back from a pending picker.
+The footer is a 2-column gapless grid of equal cells — ⬆ Upload · ⬇ Download · 🔉 Dictate · 🖼 Images
 (the sides ⚙ and 🎤 left behind are NOT reshuffled — the thumb knows where those two live). The ⌨
 Keyboard cell is GONE (long-press ESC and the bar's left→right swipe both raise it); 🖼 Images took its slot.
+It is the bottom of the thumb-ordered stack, under the session list, and every cell closes the drawer
+through `closeDrawer()`. Cells use `pressClick`, so a press's trailing click is not a second
+activation: Dictate is a toggle, and acting twice would start and stop it in one tap.
 The remote-mic bridge (browser mic → server PipeWire: 🎤 cell, `/ws-mic`, `server/mic.ts`,
 `client/mic/`, the `micBridge` keybinding) is REMOVED — it never worked as intended.
 
@@ -1016,7 +1504,7 @@ user-facing interaction.
   uploads STRICTLY in sequence and each path is typed as it lands (space-separated), so the pick
   order is the type order — parallel POSTs would let a small file overtake a large one. The two
   differ only in `accept`, which is the whole point: Chrome on Android builds its chooser from that
-  list, and an EMPTY accept matches image AND video supertypes, so ⬆ Upload (any file, topbar
+  list, and an EMPTY accept matches image AND video supertypes, so ⬆ Upload (any file, rail action
   desktop / drawer mobile) always asks "photo / video / file?" first. 🖼 Images (drawer, mobile)
   sets `accept="image/*"`, which passes Chromium's `isSupportedPhotoPickerTypes` and opens the
   system photo picker directly — the price is that it takes images only. There is no accept value
@@ -1037,7 +1525,7 @@ user-facing interaction.
   Sessions live in a shared `SessionRegistry` (server.ts) so the HTTP route and WS bridge see the
   same PTYs.
 - **File download** (`server/download.ts` + `GET /download?path=<abs|glob>`, client
-  `terminal/download.ts` + ⬇ topbar button / drawer item): single file streams raw; a glob,
+  `terminal/download.ts` + ⬇ rail action (desktop) / drawer item (mobile)): single file streams raw; a glob,
   directory, or multi-match arrives as ONE zip built with node:zlib only (deflate + crc32, no
   deps). Absolute paths are by design — the cookie gate is the boundary, same trust model as the
   PTY (the shell can already read anything). Caps: 500 files / 256 MB per zip.
@@ -1234,12 +1722,79 @@ null once the process is gone, so nothing after the exit could find it.
   would pull a whole clip. Note the panel's timestamps are NOT off: the stamp id is the SERVER's
   local time (UTC here) and the client renders the epoch in the browser's zone, so a `1311` file
   correctly reads 14:11 in a UTC+1 browser.
-- **Settings form** (`settings/SettingsFields.tsx` + `.settings-form` in index.css). One `.settings-form`
-  wrapper owns row metrics, controls and section rhythm for BOTH hosts (desktop DOCK, mobile drawer —
-  the modal is gone); a host only sets the gutter and `--set-control` (how wide a control may grow).
-  Rows are grouped under
-  Appearance / Terminal / Keys / App as kit `Collapsible`s — a flat list of fifteen gave the eye
-  nothing to land on — and the controls come from the kit (`Switch`, `Segmented`, `Input`).
+- **Settings form** (`settings/SettingsFields.tsx` + `settings/settings-view.css`, with a
+  `.settings-form` root in index.css). One field list for BOTH hosts (desktop DOCK, mobile drawer —
+  the modal is gone). The look lives in `settings-view.css`, every rule under `.settings-view`, and
+  its root rule is the compound `.settings-view.settings-form` so it beats index.css's block whatever
+  order the bundler emits the two in. What stays in index.css is what a HOST reaches before that
+  sheet loads: the control column (`--set-control`, 140px; the drawer overrides it to 55%) and the
+  `--fs-2` type size.
+  **Sections are titled cards.** Appearance / Terminal / Keys / App are kit `Collapsible`s — a flat
+  list of fifteen gave the eye nothing to land on — and a section's rows sit in ONE `.set-card`
+  (`--t-base` on the mantle panel, a 1px `--t-surface` border, `--r-3`) with a hairline between
+  rows: depth is the kit's three levels, never a shadow. The title is the kit's small
+  secondary-colour label (see "The dock has TWO heading levels"), so the panel title and a section
+  title are two distinct levels. The gap under a title is the card's MARGIN, not padding on the
+  collapsible's inner box: that box is what the 0fr → 1fr collapse squeezes, and padding there
+  leaves a residue no row height can collapse into.
+  **A row is a label column and ONE fixed control column.** `.srow` is a grid of
+  `minmax(0, 1fr) var(--set-control)`: the label (+ a `.srow-sub` hint line) on the left, the
+  control on the right at the same width in every row, so every control shares both edges.
+  Text-like controls (Select, number Input, Segmented, the Theme button, text Buttons) fill the
+  column; a Switch and a `LinkRow` chevron sit at its right edge. The column is 140px because
+  132px clipped the cursor Segmented to "Blo… / Underli… / B…": its labels need ~101px of text,
+  which is also why a settings Segmented item takes 2px of padding, not the kit's 10px. A row is
+  44px at rest (a 28px control + 2 × 8px padding) with the control centred, hint or no hint. The
+  hairline between rows takes 1px of the next row's own padding back, because a border is height:
+  without that every row after the first was 45px while a Switch row, which has no control to hold
+  it up, stayed 44. A stacked row (Import theme) spans both columns, and a hint too long for the
+  label column is a `note` under the row (`.srow-note`, `grid-column: 1 / -1`) — the sidebar-rail
+  warning in the label column was a ~180px strip of one-word lines.
+  **Every control is `--ctl-h`** (28px; 36px under `:root[data-mobile='true']`), and the kit now
+  gets there itself: Button, Input and the Select trigger are `--ctl-h` tall, and a Segmented's
+  wrapper is a `--ctl-h` floor over items of `calc(var(--ctl-h) - 6px)` (it adds 2px of padding and a
+  1px border a side). That was not so while the kit read `--mbtn-h`: its Button and Input carried a
+  30px `min-height` that setting `height` alone could not beat, so the form overrode `min-height` on
+  Button, Input and the Select trigger and sized the Segmented's OUTER box and then its items. Only
+  `height` is left of that: an exact box on Button, Input and the Segmented's wrapper, where the kit
+  sets a `min-height` floor. Everything else in Settings that matched the kit (the floors, the
+  `--r-2` corners, the Select trigger's height, the section header's floor) is gone, and
+  `ui/scale.test.ts` fails a rule outside the kit that restates the kit's own height or corner for
+  a control. What still differs on a Segmented item is its 2px of padding, not the kit's `--sp-3`,
+  and its ellipsis. The Switch keeps its 42×24 look
+  and gets a hit area `--ctl-h` tall from an absolutely positioned `::before`, so the row's layout
+  does not move. Measured in Chromium on a
+  static render of the built CSS: Input, Select, Theme button, Segmented and Button are 28px at
+  1440 and 36px at 390, with identical left and right edges. `SettingsFields.test.tsx` resolves the
+  control heights from the stylesheets (and `ui.test.tsx` the Select trigger's), because happy-dom
+  has no layout.
+  **No native `<select>` is left.** Font is the kit `Select` (`ui/Select.tsx`, Radix Select): a
+  `--ctl-h` trigger on the recessed level with the label on ONE line — a value longer than its box
+  ends in an ellipsis and the whole of it is the trigger's `title` — and a popup that is `.ui-menu`,
+  the context menu's own surface, entering on the micro tier from
+  `--radix-select-content-transform-origin` (the context menu's variable resolves to nothing there
+  and the popup would grow from its middle). A native one cannot take the kit's trigger or chevron,
+  and a phone draws it as a full-screen picker. Radix reserves `''` for "no selection", so an
+  option's value is never `''` (`fontOptionsFor` leaves an empty current font out). It also drops
+  `className` on `Select.Value`, so the label is styled through `[data-ui-select-value]`; a
+  `[data-radix-select-value]` selector matches nothing, because Radix sets no such attribute.
+  **Long values truncate in their control**: the Select, the Theme button and the build string
+  (`.srow-value`) are one line, end in an ellipsis and carry the full text as `title`. The Theme
+  button's name also rides in its `aria-label` (`Theme: <name>`), because a `<label for>` would
+  otherwise be its whole accessible name and hide the current value.
+  **Focus rings are `:focus-visible`, and nothing in the settings sheets resets an outline.**
+  `.ui-input:focus` used to end in `outline: none` at the same specificity as the kit's ring and
+  AFTER it, which erased the keyboard ring — renaming the selectors alone would not have helped. A
+  stylesheet test now fails on any rule that can cancel the ring of `.ui-btn`, `.ui-input`,
+  `.ui-collapsible-trigger` or `.ui-select-trigger`. An EDITABLE input (Scrollback, Font size,
+  Import theme) is the exception: Chromium matches `:focus-visible` on a focused text field
+  whatever focused it, because the caret needs an indicator, and fighting that takes hand-rolled
+  input-modality tracking that weakens keyboard and AT focus for no gain. So the native ring shows
+  on any focus there, with the border change as a second cue, while a mouse click on a section
+  header, a Button, a Segmented item, the Theme button or the Select leaves no ring.
+  Two rows open something instead of holding a control: Theme opens the in-place theme browser and
+  the last App row, Edit config.json, opens the raw config editor (each has its own paragraph:
+  "The theme chooser" below, and "`config.json` is edited from a Settings ROW" in the Monaco notes).
   `KeybindingsPanel` still uses the bare `.field`
   rules, so those stay. **Reload app** (`settings/app-reload.ts`) is a row, not a nicety: an installed
   PWA has no reload button, and `location.reload()` re-runs against the HTTP cache — a cached
@@ -1248,6 +1803,19 @@ null once the process is gone, so nothing after the exit could find it.
   worker, re-fetches the document with `cache: 'reload'` (credentialed — the app is cookie-gated and
   an anonymous revalidation would cache a 401), then reloads; every step is best-effort and it
   ALWAYS reloads. The row shows the server build the client last saw.
+  **Both routes to it go through `guardedReload`** (App.tsx): the row in BOTH Settings hosts (dock
+  and drawer), via the `onReloadApp` prop (a host that passes nothing falls back to the bare
+  `reloadApp`), and the topbar app menu's Reload app. `reloadApp` reloads unconditionally, and an
+  editor whose save was refused keeps its text only in the buffer; `dirtyRef` is the one place that
+  knows, so a bare reload destroyed it without a word. It counts dirty tabs of `kind === 'editor'`
+  and asks `window.confirm('<n> editor tabs have unsaved changes. Reload and discard them?')`
+  ("tab has" for one), the counterpart of the close-tab discard confirm; with none dirty it reloads
+  without asking. It
+  returns `Promise<boolean>` — `true` as soon as the reload is CONFIRMED, not when it ends (`reloadApp`
+  sweeps caches and re-fetches the document before it navigates, and the row has to show
+  "Reloading…" through that wait), `false` on cancel. `ReloadRow` goes busy only on `true` and
+  resets on `false` or a throw: setting it first left a cancelled reload on a disabled "Reloading…"
+  with nothing reloading, and the only way out was remounting Settings.
   **Install as app** (`settings/pwa-install.ts`) sits directly under it and is a REPLAY, not an
   install: a page cannot install itself, so the only lever is Chromium's `beforeinstallprompt`, whose
   `prompt()` is honoured only inside a user gesture. The capture therefore runs from `main.tsx` —
@@ -1269,29 +1837,56 @@ null once the process is gone, so nothing after the exit could find it.
   themeId change via an App useLayoutEffect (useTerminal only owns the xterm canvas theme now).
   `TAB_COLORS` (tab-meta.ts) is the 16 `ansi0`–`ansi15` slots; the 12 LEGACY names persisted in old
   tabs.json/groups.json resolve FOREVER via a static name→slot map in `resolveColorSlot` (no data
-  rewrite; the server still assigns legacy names as group defaults). The strip is FLAT: active tab =
-  solid `--tab-accent` fill + `--tab-ink`, inactive = 8% tint; the picker is two labeled rows
-  (normal/bright) of theme-resolved swatches; groups are tab-shaped buttons with a 3px bottom line
-  under button + members, solid-filled while a member is active. (`deriveAccents` still exists in
-  shared for other consumers but the client no longer emits its 12 vars.)
+  rewrite; the server still assigns legacy names as group defaults). On the strip a tab colour is a
+  7px dot and never marks the active pill (the pill's own fill and ring do); the picker is two
+  labeled rows (normal/bright) of theme-resolved swatches; a group colour is the 1px frame of its
+  cluster plus the always-filled chip (`--group-accent` / `--group-ink`), unchanged by which member
+  is active. (`deriveAccents` still exists in shared for other consumers but the client no longer
+  emits its 12 vars.)
 
-**The theme picker is not a `<select>`** (`settings/ThemePicker.tsx` +
-`theme-preview.ts`, Radix Select). An option list of NAMES cannot tell you
-whether a theme's red survives its own background, so every option paints itself
-in ITS OWN palette — the theme's `bg` as the fill, its `fg` for the title, its
-`cursor` as a block where a terminal would leave one, and two lines of fake shell
-covering slots 2–6, 8 and 9–14. This is the one place in the app where colour does
-NOT come from the eight `--t-*` tokens: every swatch colour is an inline style
-computed from the profile, because a swatch obeying the current theme would show
-you the current theme sixteen times. The chrome around them still uses the tokens,
-and `theme-picker.css` holds no colour literal.
-Options are grouped **Dark / Light** (`isLightBg`) and never reordered inside a
-group — the registry's order keeps each family's variants together.
-`MAX_PREVIEW_CHARS` is **32, measured not estimated**: the first version used an
-em-width guess of 40, overflowed the 300px popup by 36px, and replaced the last
-two tokens with an ellipsis — which in a colour sample silently hides the slots it
-exists to show. The highlight is a RING, not a fill, for the same reason: a
-background would be painted over by the swatch's own.
+**The theme chooser is a list inside the panel, not a `<select>` and not a popup**
+(`settings/ThemeBrowser.tsx` + `theme-preview.ts`). The Theme row is a Button showing the
+current theme's name (one line, ellipsis, the full name as `title`) and a chevron. Pressing it
+swaps the panel's content for the `themes` SUB-VIEW, in place, inside whichever host holds
+Settings: a `‹ Settings` back control (`settings-themes-back`), the title "Theme", then the
+browser. It is the same shape as the drawer's `‹ New tab` sub-surface. It replaced a Radix Select
+popup because the owner asked for a full list he can browse "sem sair daquela janela", and a
+300px popup over the dock was the thing being replaced; `ThemePicker.tsx`, its test and
+`theme-picker.css` are deleted (the sheet became `theme-browser.css`, `tp-*` became `tb-*`)
+rather than kept beside it, so there is one list and not two.
+**Picking applies and the list STAYS OPEN.** An entry calls the same `onChange({ themeId })`,
+which re-skins the app and persists, and the browser does not close: a theme is judged by
+trying two. `‹ Settings` returns to the form, whose row now shows the new name. The current
+entry carries a `check` icon and `aria-current`. Entries are plain buttons, not a listbox — a
+listbox promises arrow-key roving, and the popup that supplied it is gone.
+**One back stack.** `SettingsFields` owns `subView` (`SettingsSubView`, `'themes' | null`) by
+default and takes optional controlled `subView` / `onSubViewChange`. `SessionDrawer` lifts it,
+so its own `‹ Settings` header pops the browser first and leaves Settings only on the second
+press; with the state inside the form that header could only ever leave, and a phone lost the
+whole panel to step back from one list. The drawer drops the sub-view in a layout effect
+whenever the view is not Settings, so a view changed by a controlled host cannot bring a stale
+one back. In the drawer the sub-view's own back control is hidden by CSS (the header is that
+control, and two stacked read as the same button twice); in the dock it stays.
+An option list of NAMES cannot tell you whether a theme's red survives its own background, so
+every entry paints itself in ITS OWN palette — the theme's `bg` as the fill, its `fg` for the
+title, its `cursor` as a block where a terminal would leave one (it does not blink: twenty
+blinking cursors in a list is a strobe), and two lines of fake shell covering slots 2–6, 8 and
+9–14. This is the one place in the app where colour does NOT come from the eight `--t-*`
+tokens: every swatch colour is an inline style computed from the profile, because a swatch
+obeying the current theme would show you the current theme sixteen times. The chrome around
+them still uses the tokens, and `theme-browser.css` holds no colour literal.
+Entries are grouped **Dark / Light** (`isLightBg`) and never reordered inside a group — the
+registry's order keeps each family's variants together; the group label wears the section-title
+size, weight and colour. `MAX_PREVIEW_CHARS` is **32, measured not estimated**: the first
+version used an em-width guess of 40, overflowed the 300px popup by 36px, and replaced the last
+two tokens with an ellipsis — which in a colour sample silently hides the slots it exists to
+show. That measurement is of the popup, at its type size; the list is never wider than the
+300px dock, so the cap still bounds a line, but it was not re-measured at the entry's current
+`--fs-1` type. The highlight is a RING, not a fill, for the same reason: the swatch owns the
+fill, and a background on the entry would be painted over by the theme's own. In a list the
+ring has two jobs — a thin accent border under the pointer, and a doubled one (border plus a 1px
+inset shadow) on the current entry — so "hovered" and "current" never read as the same state,
+and a keyboard ring sits at a negative offset because the entry clips its own overflow.
 
 **Theme export (palmux → everything else).** `server/theme-export.ts` resolves `settings.themeId` to
 the full palette and regenerates, on boot AND on every theme change: `<configDir>/theme.sh`
