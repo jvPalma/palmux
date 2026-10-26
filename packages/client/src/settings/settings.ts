@@ -1,14 +1,15 @@
 // ── Client settings model ─────────────────────────────────────────────────────
 //
 // Rendering settings live in localStorage and are mirrored to the server (so
-// they follow you across browsers) — except `mobileMode` and `fontSize`, which
-// are per-device and stay local: zoom is device-specific (a phone pinch must
-// not resize the terminal on your desktop). The server stores the synced subset
-// as an opaque blob.
+// they follow you across browsers) — except `mobileMode`, `fontSize` and
+// `codeFontSize`, which are per-device and stay local: zoom is device-specific (a
+// phone pinch must not resize the terminal on your desktop, and the diff size a
+// phone reads at is not the one a monitor does). The server stores the synced
+// subset as an opaque blob.
 
-import type { JsonObject } from '@palmux/shared';
+import { isScmAlgorithm, type JsonObject, type ScmAlgorithm } from '@palmux/shared';
 import { DEFAULT_THEME_ID } from './themes';
-import { parsePins } from '../panes/explorer-pins';
+import { normalizePin, parsePins } from '../panes/explorer-pins';
 
 export type MobileModePref = 'auto' | 'on' | 'off';
 /** Kept only so an old settings.json still parses: the desktop rail is always
@@ -22,6 +23,8 @@ export type ThemeSlot = 'dark' | 'light';
  *  an answer that lands after the user changed mode can tell it was superseded. */
 export type ThemeTarget = { mode: 'fixed' } | { mode: 'system'; slot: ThemeSlot };
 export type CursorStyle = 'block' | 'underline' | 'bar';
+/** How a review lays a diff out: by the pane's width (`auto`), or forced. */
+export type ScmLayoutPref = 'auto' | 'split' | 'unified';
 
 // A type alias (not interface) so it stays assignable to JsonValue for the
 // server-synced settings blob.
@@ -30,6 +33,10 @@ export type QuickLink = { name: string; url: string };
 export interface ClientSettings {
   /** Per-device, local-only: terminal zoom (pinch/±). Never synced to the server. */
   fontSize: number;
+  /** Per-device, local-only: the size of CODE (the review's lines and the editor),
+   *  apart from the terminal's. null = never set: the editor then follows the
+   *  terminal and the review keeps its own default size. Never synced. */
+  codeFontSize: number | null;
   fontFamily: string;
   /** The picked theme in `fixed` mode. In `system` mode it is only what the
    *  server exports (tmux, delta, Claude): this client writes it when its own
@@ -55,6 +62,24 @@ export interface ClientSettings {
    * same list is correct on every device pointed at the same palmux.
    */
   explorerPins: string[];
+  /**
+   * Source Control projects: absolute work-tree tops on the SERVER, canonical
+   * (`normalizePin`). SYNCED for the same reason as `explorerPins`: the paths are
+   * on the server, so one list is right on every device pointed at it.
+   */
+  scmRepos: string[];
+  /** Per-device, local-only: the project this device reads. '' = none chosen. */
+  scmActiveRepo: string;
+  /** Per-device, local-only: diff layout. */
+  scmLayout: ScmLayoutPref;
+  /** Per-device, local-only: the diff algorithm git computes hunks with. */
+  scmAlgorithm: ScmAlgorithm;
+  /** Per-device, local-only: wrap long lines in a unified diff. null = follow the
+   *  width rule (wrap when the pane is narrow). */
+  scmWrap: boolean | null;
+  /** Per-device, local-only: list each Source Control group as a folder tree (true) or
+   *  as one flat list. Never synced: how a screen likes to read a list is the screen's. */
+  scmTree: boolean;
   /** Intercept plain Ctrl+V as paste. Default OFF so vim/readline aren't broken. */
   ctrlVPaste: boolean;
   /** Intercept plain Ctrl+F as scrollback search. Default OFF. */
@@ -95,6 +120,7 @@ export const FONT_PRESETS: { label: string; value: string }[] = [
 
 export const DEFAULTS: ClientSettings = {
   fontSize: 14,
+  codeFontSize: null,
   fontFamily: DEFAULT_FONT_STACK,
   themeId: DEFAULT_THEME_ID,
   themeMode: 'fixed',
@@ -107,6 +133,12 @@ export const DEFAULTS: ClientSettings = {
   sidebarRail: 'always',
   quickLinks: [],
   explorerPins: [],
+  scmRepos: [],
+  scmActiveRepo: '',
+  scmLayout: 'auto',
+  scmAlgorithm: 'histogram',
+  scmWrap: null,
+  scmTree: true,
   ctrlVPaste: false,
   ctrlFSearch: false,
   keyboardSelection: false,
@@ -123,8 +155,9 @@ export const DEFAULTS: ClientSettings = {
 const STORAGE_KEY = 'palmux-settings';
 
 // Fields mirrored to the server. Per-device concerns (mobileMode, fontSize,
-// sidebarRail) are deliberately excluded so they never roam across devices.
-// `sidebarRail` in particular must never be added here: a synced copy would put
+// codeFontSize, sidebarRail) are deliberately excluded so they never roam across
+// devices. `sidebarRail` and `codeFontSize` in particular must never be added
+// here: a synced copy would put
 // a per-machine value back into the dotfiles-tracked settings.json that
 // settings.local.json exists to keep it out of. `themeId` is the odd
 // one out: it IS synced, because the server reads it at boot to regenerate the
@@ -132,8 +165,9 @@ const STORAGE_KEY = 'palmux-settings';
 // then persists it per-machine, to settings.local.json. See LOCAL_SETTINGS_KEYS
 // in server/config.ts. The three new theme keys are plain synced settings:
 // "dark -> X, light -> Y" is the same preference on every device. A client on an
-// older bundle neither reads nor sends them, and the server replaces the whole
-// object on every save, so such a client's next save erases them.
+// older bundle neither reads nor sends them, and the server shallow-merges every
+// save over what it stored, so such a client's next save leaves them (and
+// `scmRepos`) alone; only a key a save actually carries replaces its stored value.
 const SYNCED_KEYS = [
   'fontFamily',
   'themeId',
@@ -145,6 +179,7 @@ const SYNCED_KEYS = [
   'cursorStyle',
   'quickLinks',
   'explorerPins',
+  'scmRepos',
   'ctrlVPaste',
   'ctrlFSearch',
   'keyboardSelection',
@@ -212,7 +247,11 @@ export function mergeServerSettings(local: ClientSettings, server: JsonObject): 
 export function sanitize(s: ClientSettings): ClientSettings {
   return {
     ...s,
-    fontSize: clamp(Math.round(s.fontSize) || DEFAULTS.fontSize, 6, 48),
+    fontSize: clampFontSize(Math.round(s.fontSize) || DEFAULTS.fontSize),
+    codeFontSize:
+      typeof s.codeFontSize === 'number' && Number.isFinite(s.codeFontSize)
+        ? clampFontSize(Math.round(s.codeFontSize))
+        : null,
     scrollback: clamp(Math.round(s.scrollback) || DEFAULTS.scrollback, 0, 100000),
     cursorStyle: (['block', 'underline', 'bar'] as const).includes(s.cursorStyle)
       ? s.cursorStyle
@@ -240,12 +279,37 @@ export function sanitize(s: ClientSettings): ClientSettings {
           .map((l) => ({ name: l.name, url: l.url }))
       : [],
     explorerPins: parsePins(s.explorerPins),
+    scmRepos: parsePins(s.scmRepos),
+    scmActiveRepo: typeof s.scmActiveRepo === 'string' ? normalizePin(s.scmActiveRepo) : '',
+    scmLayout: (['auto', 'split', 'unified'] as const).includes(s.scmLayout)
+      ? s.scmLayout
+      : DEFAULTS.scmLayout,
+    scmAlgorithm: isScmAlgorithm(s.scmAlgorithm) ? s.scmAlgorithm : DEFAULTS.scmAlgorithm,
+    scmWrap: typeof s.scmWrap === 'boolean' ? s.scmWrap : null,
+    scmTree: typeof s.scmTree === 'boolean' ? s.scmTree : DEFAULTS.scmTree,
   };
 }
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(n, hi));
 }
+
+/** The range a font size may take, for the terminal and for code alike. */
+export const FONT_SIZE_MIN = 6;
+export const FONT_SIZE_MAX = 48;
+
+export const clampFontSize = (n: number): number => clamp(n, FONT_SIZE_MIN, FONT_SIZE_MAX);
+
+/** The editor reads a touch larger than the terminal it follows until a code size is set. */
+const EDITOR_FONT_OFFSET = 1;
+
+/**
+ * The Monaco editor's font size. Once a code size is set it is that size and a change
+ * of the terminal's no longer moves the editor; until then it is the terminal's plus
+ * the offset it always had, so nothing jumped when the code size was added.
+ */
+export const editorFontSize = (s: Pick<ClientSettings, 'fontSize' | 'codeFontSize'>): number =>
+  s.codeFontSize ?? s.fontSize + EDITOR_FONT_OFFSET;
 
 /** True for any touch-capable device (coarse pointer or reported touch points). */
 export function isMobileDevice(): boolean {

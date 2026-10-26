@@ -5,12 +5,14 @@
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, sep } from 'node:path';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, createEvent, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { parse } from 'postcss';
 import { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TabGroup, TabMeta } from '@palmux/shared';
+import { DOCK_VIEWS } from './DockPanel';
 import { SessionDrawer } from './SessionDrawer';
 import { tabColorInk, tabColorValue } from './tab-meta';
 import { TabSheet } from './TabSheet';
@@ -368,7 +370,7 @@ describe('pill rows: the stylesheet', () => {
     expect(rest.get('border')).toBe('1px solid var(--pill-border)');
     expect(rest.get('border-radius')).toBe('var(--r-2)');
     expect(rest.get('color')).toBe('var(--pill-text)');
-    expect(rest.get('min-height')).toBe('var(--ctl-h)');
+    expect(rest.get('min-height')).toBe('var(--drawer-row-h)');
     // Opaque, because the swipe's Close waits behind it; the drawer's own ground, so no fill shows.
     expect(rest.get('background')).toBe('var(--t-mantle)');
     expect(declsOf(INDEX_CSS, '.drawer').get('background')).toBe('var(--t-mantle)');
@@ -1522,10 +1524,11 @@ describe('header', () => {
   // beside a visible name, so it needs no aria-label of its own. Settings is the
   // button above the list, with the same icon.
   it("the view switcher draws the rail's icons beside each view's name", () => {
-    renderDrawer({ hostedViews: ['files', 'dictation'] });
+    renderDrawer({ hostedViews: ['files', 'scm', 'dictation'] });
     for (const [view, icon, name] of [
       ['sessions', 'sessions', 'Sessions'],
       ['files', 'folder', 'Explorer'],
+      ['scm', 'git-branch', 'Source Control'],
       ['dictation', 'mic', 'Dictation'],
     ] as const) {
       const item = screen.getByTestId(`drawer-view-${view}`);
@@ -1554,12 +1557,15 @@ describe('view switching', () => {
 
   it('disables a hosted view the host has not declared', () => {
     renderDrawer();
-    expect(options()).toEqual({ sessions: true, files: false, dictation: false });
+    expect(options()).toEqual({ sessions: true, files: false, scm: false, dictation: false });
   });
 
   it('enables a declared hosted view even before any body exists', () => {
     renderDrawer({ hostedViews: ['files', 'dictation'] });
-    expect(options()).toMatchObject({ files: true, dictation: true });
+    expect(options()).toMatchObject({ files: true, scm: false, dictation: true });
+    cleanup();
+    renderDrawer({ hostedViews: ['scm'] });
+    expect(options()).toEqual({ sessions: true, files: false, scm: true, dictation: false });
   });
 
   // The full round trip the old rule made impossible: select → host reacts →
@@ -1869,11 +1875,11 @@ describe('a press’s own click, landing on what the press put under the finger'
 
 // ── Thumb-reach layout ────────────────────────────────────────────────────────
 // Bottom to top: the footer, the bottom-anchored list, and at the very top one row:
-// the Settings gear, the switcher, Close.
+// the switcher and, at its right end, the Settings gear. There is no Close control.
 describe('reach order', () => {
   const FOLLOWING = Node.DOCUMENT_POSITION_FOLLOWING;
 
-  it('puts Settings first in the tab order, then the switcher and Close, the footer last', () => {
+  it('puts the switcher first in the tab order, then the gear, the footer last, and no Close', () => {
     renderDrawer();
     const nav = screen.getByTestId('drawer');
     const focusable = [...nav.querySelectorAll<HTMLElement>('button, [tabindex]')].filter(
@@ -1881,16 +1887,17 @@ describe('reach order', () => {
     );
     const settings = screen.getByTestId('drawer-settings');
     const switcher = screen.getByTestId('drawer-view');
-    const close = screen.getByTestId('drawer-close');
-    expect(focusable[0]).toBe(settings);
+    expect(screen.queryByTestId('drawer-close')).toBeNull();
     expect(focusable).toContain(switcher);
-    expect(focusable).toContain(close);
+    expect(focusable).toContain(settings);
+    expect(focusable.indexOf(switcher.querySelector('button')!)).toBeLessThan(
+      focusable.indexOf(settings),
+    );
     const list = nav.querySelector('.drawer-sessions')!;
     const footer = nav.querySelector('.drawer-footer')!;
-    // Gear, switcher, Close, then the list, then the footer: the DOM is the tab order.
-    expect(settings.compareDocumentPosition(switcher) & FOLLOWING).toBeTruthy();
-    expect(switcher.compareDocumentPosition(close) & FOLLOWING).toBeTruthy();
-    expect(close.compareDocumentPosition(list) & FOLLOWING).toBeTruthy();
+    // Switcher, gear, then the list, then the footer: the DOM is the tab order.
+    expect(switcher.compareDocumentPosition(settings) & FOLLOWING).toBeTruthy();
+    expect(settings.compareDocumentPosition(list) & FOLLOWING).toBeTruthy();
     expect(list.compareDocumentPosition(footer) & FOLLOWING).toBeTruthy();
     expect(footer.nextElementSibling).toBeNull();
   });
@@ -1899,12 +1906,13 @@ describe('reach order', () => {
     expect(declsOf(INDEX_CSS, '.drawer-sessions').get('margin-top')).toBe('auto');
   });
 
-  it('offers the switcher Sessions, Explorer and Dictation, and not Settings', () => {
-    renderDrawer({ hostedViews: ['files', 'dictation'] });
+  it('offers the switcher Sessions, Explorer, Source Control and Dictation, and not Settings', () => {
+    renderDrawer({ hostedViews: ['files', 'scm', 'dictation'] });
     const items = [...screen.getByTestId('drawer-view').querySelectorAll('button')];
     expect(items.map((i) => i.dataset['testid'])).toEqual([
       'drawer-view-sessions',
       'drawer-view-files',
+      'drawer-view-scm',
       'drawer-view-dictation',
     ]);
   });
@@ -1921,7 +1929,6 @@ describe('reach order', () => {
     expect(screen.queryByTestId('drawer-settings')).not.toBeNull();
     view.rerender(<SessionDrawer {...baseProps()} view="settings" />);
     expect(screen.queryByTestId('drawer-settings')).toBeNull();
-    expect(screen.queryByTestId('drawer-close')).toBeNull();
     expect(settingsBack()).toBeTruthy();
     view.rerender(<SessionDrawer {...baseProps()} newTabContent={<div />} />);
     expect(screen.queryByTestId('drawer-settings')).toBeNull();
@@ -1944,18 +1951,18 @@ describe('reach order', () => {
 
 // ── The view switcher lives in the top row ────────────────────────────────────
 // Owner decision (2026-10-25): it does not sit at the bottom. At the root views the
-// top row is ONE line, gear · switcher · close, and the two sub-surfaces, which have a
-// back header for their top control, draw no switcher at all.
+// top row is ONE line, switcher · gear (2026-10-26: no close control, the gear takes its
+// place at the right end), and the two sub-surfaces, which have a back header for their
+// top control, draw no switcher at all.
 describe('the view switcher in the top row', () => {
   const FOLLOWING = Node.DOCUMENT_POSITION_FOLLOWING;
 
-  it('draws the top row as the gear, the switcher, then Close, in that order', () => {
+  it('draws the top row as the switcher, then the gear at its right end, and nothing else', () => {
     renderDrawer({ hostedViews: ['files', 'dictation'] });
     const top = document.querySelector('.drawer-top')!;
     expect([...top.children]).toEqual([
-      screen.getByTestId('drawer-settings'),
       screen.getByTestId('drawer-view'),
-      screen.getByTestId('drawer-close'),
+      screen.getByTestId('drawer-settings'),
     ]);
   });
 
@@ -2007,6 +2014,214 @@ describe('the view switcher in the top row', () => {
     tap(screen.getByTestId('drawer-settings'));
     tap(settingsBack());
     expect(screen.getByTestId('drawer-view').closest('.drawer-top')).not.toBeNull();
+  });
+});
+
+// ── Source Control, the fourth segment ────────────────────────────────────────
+// Choosing it shows the same body the dock hosts. The host supplies it (the segment is
+// declared in `hostedViews`, like Explorer and Dictation), and choosing a file there
+// is the host's `closeDrawer()` then the review: that half is App.test.tsx's.
+describe('the Source Control segment', () => {
+  const body = <div data-testid="host-scm" />;
+
+  it('sits where the dock rail puts it: after Explorer, before Dictation', () => {
+    renderDrawer({ hostedViews: ['files', 'scm', 'dictation'] });
+    const drawn = [...screen.getByTestId('drawer-view').querySelectorAll('button')].map((b) =>
+      b.dataset['testid']!.replace('drawer-view-', ''),
+    );
+    // The rail's own order, minus what the drawer has no segment for (New tab is the
+    // session list's tail, Settings is the gear).
+    const rail = DOCK_VIEWS.map((v) => v.id).filter((id) => id !== 'newtab' && id !== 'settings');
+    expect(drawn).toEqual(['sessions', ...rail]);
+  });
+
+  it('is the rail’s icon and name, with the name for assistive tech only', () => {
+    renderDrawer({ hostedViews: ['scm'] });
+    const item = screen.getByTestId('drawer-view-scm');
+    expect(item.querySelector('svg')?.innerHTML).toBe(iconPaths('git-branch'));
+    expect(item).toHaveAccessibleName('Source Control');
+    expect(item.querySelector('.drawer-view-name')).toHaveTextContent('Source Control');
+  });
+
+  it('is disabled unless the host declares it, and a declared one needs no body to be chosen', () => {
+    renderDrawer();
+    expect(screen.getByTestId('drawer-view-scm')).toBeDisabled();
+    cleanup();
+    renderDrawer({ hostedViews: ['scm'] });
+    expect(screen.getByTestId('drawer-view-scm')).not.toBeDisabled();
+  });
+
+  it('reports the choice, and shows the host’s body once the view is selected', () => {
+    const onView = vi.fn();
+    const view = render(
+      <SessionDrawer {...baseProps({ hostedViews: ['scm'], onView })} view="sessions" />,
+    );
+    fireEvent.click(screen.getByTestId('drawer-view-scm'));
+    expect(onView).toHaveBeenCalledWith('scm');
+    expect(screen.queryByTestId('host-scm')).toBeNull();
+
+    view.rerender(
+      <SessionDrawer
+        {...baseProps({ hostedViews: ['scm'], onView })}
+        view="scm"
+        viewContent={body}
+      />,
+    );
+    expect(screen.getByTestId('host-scm')).toBeTruthy();
+    expect(
+      screen.getByTestId('host-scm').closest('[data-testid="drawer-view-body"]'),
+    ).not.toBeNull();
+    expect(screen.getByTestId('drawer-view-scm')).toHaveAttribute('data-state', 'on');
+    // The session list is still mounted (its rows keep their state), but not shown.
+    expect(screen.getByTestId('drawer-session-0').closest('.drawer-sessions')).toHaveAttribute(
+      'hidden',
+    );
+  });
+
+  it('keeps the top row, the switcher and the gear, over its body: it is a root view, not a sub-surface', () => {
+    render(
+      <SessionDrawer {...baseProps({ hostedViews: ['scm'] })} view="scm" viewContent={body} />,
+    );
+    const top = document.querySelector('.drawer-top')!;
+    expect([...top.children]).toEqual([
+      screen.getByTestId('drawer-view'),
+      screen.getByTestId('drawer-settings'),
+    ]);
+    expect(screen.queryByTestId('drawer-settings-back')).toBeNull();
+    expect(screen.queryByTestId('drawer-newtab-back')).toBeNull();
+  });
+
+  it('is wrapped in a boundary: a throw in the view costs the panel, not the drawer', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const Broken = () => {
+      throw new Error('scm blew up');
+    };
+    render(
+      <SessionDrawer
+        {...baseProps({ hostedViews: ['scm'] })}
+        view="scm"
+        viewContent={<Broken />}
+      />,
+    );
+    expect(screen.getByTestId('error-boundary')).toHaveTextContent('Source Control failed');
+    expect(screen.getByTestId('drawer-view')).toBeTruthy();
+    vi.restoreAllMocks();
+  });
+
+  // Four segments and both side controls must fit one 390px row with every segment
+  // still a thumb wide. happy-dom has no layout, so the row is measured the way the
+  // browser will lay it out: from the stylesheets' own numbers.
+  describe('the top row on a 390px phone', () => {
+    const PHONE = 390;
+    const varsOf = (css: string, selector: string): Map<string, string> => {
+      const found = new Map<string, string>();
+      parse(css).walkRules((rule) => {
+        if (rule.selector.replace(/\s+/g, ' ').trim() !== selector) return;
+        rule.walkDecls((d) => {
+          if (d.prop.startsWith('--')) found.set(d.prop, d.value.trim());
+        });
+      });
+      return found;
+    };
+    const root = varsOf(INDEX_CSS, ':root');
+    const phone = varsOf(INDEX_CSS, ":root[data-mobile='true']");
+    const drawer = varsOf(INDEX_CSS, '.drawer');
+    /** A length written as `Npx` or `var(--x)` of one, read as the phone sees it. */
+    const px = (value: string | undefined): number => {
+      const text = (value ?? '').trim();
+      const name = /^var\((--[a-z0-9-]+)\)$/.exec(text)?.[1];
+      if (name) return px(phone.get(name) ?? root.get(name) ?? drawer.get(name));
+      const n = /^(-?[\d.]+)px$/.exec(text)?.[1];
+      if (n === undefined) throw new Error(`cannot resolve ${value}`);
+      return Number(n);
+    };
+    /** The space-separated tokens of a value, parentheses kept whole. */
+    const tokensOf = (value: string): string[] => {
+      const tokens: string[] = [];
+      let depth = 0;
+      let current = '';
+      for (const ch of value.trim()) {
+        if (ch === '(') depth += 1;
+        if (ch === ')') depth -= 1;
+        if (/\s/.test(ch) && depth === 0) {
+          if (current) tokens.push(current);
+          current = '';
+        } else current += ch;
+      }
+      if (current) tokens.push(current);
+      return tokens;
+    };
+    /** The horizontal padding of a rule: the second token of a 3-value shorthand, the first of a 1-value one. */
+    const sidePadding = (value: string): number => {
+      const tokens = tokensOf(value);
+      return px(tokens.length === 1 ? tokens[0] : tokens[1]);
+    };
+
+    const row = () => {
+      const nav = declsOf(INDEX_CSS, '.drawer');
+      const top = declsOf(VIEWS_CSS, '.drawer-top');
+      const seg = declsOf(UI_CSS, '.ui-seg');
+      const icon = declsOf(UI_CSS, '.ui-icon-btn');
+      const strip = px(drawer.get('--drawer-strip'));
+      const border = px(tokensOf(nav.get('border-left')!)[0]); // the drawer's own left hairline
+      const content = PHONE - strip - border - 2 * sidePadding(nav.get('padding')!);
+      const buttons = px(icon.get('width')); // the gear: there is no Close beside the switcher
+      const gaps = px(top.get('gap'));
+      const wrapper = content - buttons - gaps;
+      const chrome = 2 * px(seg.get('padding')) + 2; // the wrapper's padding and 1px border a side
+      const between = 3 * px(seg.get('gap'));
+      return { content, wrapper, item: (wrapper - chrome - between) / 4 };
+    };
+
+    it('shares the room the gear leaves among the four segments', () => {
+      const switcher = declsOf(VIEWS_CSS, '.drawer-views-seg.ui-seg');
+      expect(switcher.get('flex')).toBe('1 1 0');
+      expect(switcher.get('min-width')).toBe('0');
+      const items = declsOf(VIEWS_CSS, '.drawer-views-seg .ui-seg-item');
+      expect(items.get('flex')).toBe('1 1 0');
+      expect(items.get('min-width')).toBe('0');
+      // No padding: headroom for a narrower phone (the kit's 12px would still fit at 390px, below).
+      expect(items.get('padding')).toBe('0');
+    });
+
+    it('leaves every segment a thumb wide, and room for its 15px icon', () => {
+      const { content, wrapper, item } = row();
+      // Measured in Chromium at 390px: the row 329, the switcher 285, each segment 68.3.
+      expect(content).toBe(329); // 390 − the 44px scrim strip − 1px border − 2 × 8px of padding
+      expect(wrapper).toBe(285); // minus the one 36px gear and its 8px gap
+      expect(item).toBeCloseTo(68.25, 5);
+      expect(item).toBeGreaterThanOrEqual(44); // the touch-target floor the strip is held to
+      expect(item).toBeGreaterThan(15 + 2 * 4);
+    });
+
+    it('draws no visible word: each name is clipped away, so nothing can be truncated', () => {
+      const name = declsOf(VIEWS_CSS, '.drawer-view-name');
+      expect(name.get('position')).toBe('absolute');
+      expect(name.get('width')).toBe('1px');
+      expect(name.get('clip-path')).toBe('inset(50%)');
+      renderDrawer({ hostedViews: ['files', 'scm', 'dictation'] });
+      const items = [...screen.getByTestId('drawer-view').querySelectorAll('button')];
+      expect(items).toHaveLength(4);
+      for (const item of items) expect(item.querySelectorAll('svg')).toHaveLength(1);
+      // Nothing in the row clips or ellipsises what it holds.
+      for (const rule of [
+        '.drawer-top',
+        '.drawer-views-seg.ui-seg',
+        '.drawer-views-seg .ui-seg-item',
+      ]) {
+        const held = declsOf(VIEWS_CSS, rule);
+        expect(held.get('text-overflow'), rule).toBeUndefined();
+        expect(held.get('overflow'), rule).toBeUndefined();
+      }
+    });
+
+    it('fits four segments even at the kit’s own padding: the restated 0 is room, not need', () => {
+      // A kit item carries `--sp-3` (12px) either side: 24px of padding plus the 15px
+      // icon is 39px, still under the 68.3px share. The drawer's 0 is headroom for a
+      // narrower phone, not what makes four fit at 390px.
+      const kit = px(declsOf(UI_CSS, '.ui-seg-item').get('padding')!.split(' ')[1]);
+      expect(2 * kit + 15).toBeLessThan(row().item);
+    });
   });
 });
 
@@ -2227,16 +2442,9 @@ describe('the top switcher, as it cascades', () => {
   });
 });
 
-// ── The top buttons ───────────────────────────────────────────────────────────
-describe('the top buttons', () => {
-  it('Close closes through onClose, with no request attached', () => {
-    const p = renderDrawer();
-    fireEvent.pointerDown(screen.getByTestId('drawer-close'));
-    expect(p.onClose).toHaveBeenCalledTimes(1);
-    expect(p.onClose).toHaveBeenCalledWith();
-  });
-
-  it('Settings names itself and opens the settings view', () => {
+// ── The gear, and closing without a Close control ────────────────────────────
+describe('the gear', () => {
+  it('names itself and opens the settings view', () => {
     renderDrawer();
     const button = screen.getByRole('button', { name: 'Settings' });
     expect(button).toBe(screen.getByTestId('drawer-settings'));
@@ -2245,29 +2453,19 @@ describe('the top buttons', () => {
     expect(inSettings()).toBe(true);
   });
 
-  // Both are focusable buttons, so Enter, Space and an assistive-tech click reach
-  // them as well; a pointer press (down, up, then its click) acts once.
-  describe('as buttons', () => {
+  // A focusable button, so Enter, Space and an assistive-tech click reach it as well; a
+  // pointer press (down, up, then its click) acts once.
+  describe('as a button', () => {
     beforeEach(() => vi.useRealTimers());
 
-    it.each([
-      ['Enter', '{Enter}'],
-      ['Space', ' '],
-    ])('Close acts once on %s', async (_, key) => {
-      const p = renderDrawer();
-      screen.getByTestId('drawer-close').focus();
-      await user().keyboard(key);
-      expect(p.onClose).toHaveBeenCalledTimes(1);
-    });
-
-    it('Settings acts on Enter', async () => {
+    it('acts on Enter', async () => {
       renderDrawer();
       screen.getByTestId('drawer-settings').focus();
       await user().keyboard('{Enter}');
       expect(inSettings()).toBe(true);
     });
 
-    it('Settings acts on Space, and on a click with no pointer press before it', async () => {
+    it('acts on Space, and on a click with no pointer press before it', async () => {
       renderDrawer();
       screen.getByTestId('drawer-settings').focus();
       await user().keyboard(' ');
@@ -2277,17 +2475,116 @@ describe('the top buttons', () => {
       act(() => screen.getByTestId('drawer-settings').click());
       expect(inSettings()).toBe(true);
     });
+  });
+});
 
-    it('Close acts once for a click with no pointer press before it, and once for a real press', () => {
+// Owner decision (2026-10-26): no close control in the top row, the gear takes its place.
+// The drawer still closes through the scrim strip, a swipe and every action that leaves
+// it (those are tested where they are), and Escape from inside it is the way a keyboard
+// or assistive tech gets out: a button was the only keyboard-reachable close it had.
+describe('closing without a close control', () => {
+  it('draws no close button, by test id or by name', () => {
+    renderDrawer({ hostedViews: ['files'] });
+    expect(screen.queryByTestId('drawer-close')).toBeNull();
+    expect(screen.queryByRole('button', { name: /close drawer/i })).toBeNull();
+    // The only "Close" left is a row's own, behind it until a swipe-left reveals it.
+    const named = [...screen.getByTestId('drawer').querySelectorAll('button')].filter((b) =>
+      /close/i.test(b.getAttribute('aria-label') ?? b.textContent ?? ''),
+    );
+    expect(named.length).toBeGreaterThan(0);
+    expect(named.every((b) => b.hasAttribute('data-swipe-close'))).toBe(true);
+  });
+
+  it('closes on Escape from a control inside the drawer, with no request attached', () => {
+    const p = renderDrawer();
+    fireEvent.keyDown(screen.getByTestId('drawer-settings'), { key: 'Escape' });
+    expect(p.onClose).toHaveBeenCalledTimes(1);
+    expect(p.onClose).toHaveBeenCalledWith();
+  });
+
+  it.each([
+    ['a session row', () => screen.getByTestId('drawer-session-1')],
+    ['a switcher segment', () => screen.getByTestId('drawer-view-sessions')],
+    ['a footer action', () => screen.getByTestId('drawer-upload')],
+    ['the drawer itself', () => screen.getByTestId('drawer')],
+  ])('closes on Escape from %s', (_, target) => {
+    const p = renderDrawer();
+    fireEvent.keyDown(target(), { key: 'Escape' });
+    expect(p.onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes from Settings, a sub-surface with no top row', () => {
+    const p = renderDrawer();
+    tap(screen.getByTestId('drawer-settings'));
+    expect(inSettings()).toBe(true);
+    fireEvent.keyDown(settingsBack(), { key: 'Escape' });
+    expect(p.onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes on a real Escape key press with focus on a control inside', async () => {
+    vi.useRealTimers();
+    const p = renderDrawer();
+    screen.getByTestId('drawer-settings').focus();
+    await user().keyboard('{Escape}');
+    expect(p.onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('takes no other key', () => {
+    const p = renderDrawer();
+    for (const key of ['Enter', 'q', 'Tab', 'Backspace']) {
+      fireEvent.keyDown(screen.getByTestId('drawer-settings'), { key });
+    }
+    expect(p.onClose).not.toHaveBeenCalled();
+  });
+
+  // The drawer leaves #mobile-kbd focused, so a key typed while it is open still belongs
+  // to the shell: a document-level handler would take the Escape meant for it.
+  it('leaves an Escape typed on the soft keyboard to the shell', () => {
+    const kbd = document.createElement('textarea');
+    kbd.id = 'mobile-kbd';
+    document.body.append(kbd);
+    try {
+      kbd.focus();
       const p = renderDrawer();
-      const close = screen.getByTestId('drawer-close');
-      act(() => close.click());
-      expect(p.onClose).toHaveBeenCalledTimes(1);
-      fireEvent.pointerDown(close);
-      fireEvent.pointerUp(close);
-      fireEvent.click(close, { detail: 1 });
-      expect(p.onClose).toHaveBeenCalledTimes(2);
+      fireEvent.keyDown(kbd, { key: 'Escape' });
+      fireEvent.keyDown(document, { key: 'Escape' });
+      expect(p.onClose).not.toHaveBeenCalled();
+    } finally {
+      kbd.remove();
+    }
+  });
+
+  it('leaves an Escape that something inside already took', () => {
+    const p = renderDrawer();
+    const gear = screen.getByTestId('drawer-settings');
+    const escape = createEvent.keyDown(gear, { key: 'Escape' });
+    escape.preventDefault();
+    fireEvent(gear, escape);
+    expect(p.onClose).not.toHaveBeenCalled();
+  });
+
+  it('leaves an Escape in a text field to the field', () => {
+    const p = renderDrawer({
+      newTabContent: <input data-testid="chooser-field" />,
+      onNewTabBack: vi.fn(),
     });
+    fireEvent.keyDown(screen.getByTestId('chooser-field'), { key: 'Escape' });
+    expect(p.onClose).not.toHaveBeenCalled();
+  });
+
+  it('does not hear an event that React bubbled from outside the nav (a portal)', () => {
+    const p = renderDrawer({
+      newTabContent: createPortal(<button data-testid="portalled">x</button>, document.body),
+      onNewTabBack: vi.fn(),
+    });
+    fireEvent.keyDown(screen.getByTestId('portalled'), { key: 'Escape' });
+    expect(p.onClose).not.toHaveBeenCalled();
+  });
+
+  it('does nothing while the drawer is closed', () => {
+    const p = renderDrawer({ open: false });
+    fireEvent.keyDown(screen.getByTestId('drawer-settings'), { key: 'Escape' });
+    expect(p.onClose).not.toHaveBeenCalled();
   });
 });
 
@@ -2411,7 +2708,7 @@ describe('the scrim', () => {
 });
 
 // The drawer never blurs `#mobile-kbd` itself, so a keyboard that was up when it
-// opened is still up when it closes: the scrim, the top buttons, the footer and the
+// opened is still up when it closes: the scrim, the gear, the footer and the
 // switcher take their press with the default prevented, which is what keeps focus.
 // (A control inside the scrolling list does not, on touch: that would cancel the pan.)
 describe('the soft keyboard', () => {
@@ -2426,7 +2723,6 @@ describe('the soft keyboard', () => {
 
   it.each([
     'drawer-scrim',
-    'drawer-close',
     'drawer-settings',
     'drawer-upload',
     'drawer-download',
@@ -2474,7 +2770,11 @@ describe('the soft keyboard through a whole press', () => {
   type Props = ReturnType<typeof baseProps>;
   const CONTROLS: [string, () => Over, (p: Props) => void][] = [
     ['drawer-scrim', () => ({}), (p) => expect(p.onClose).toHaveBeenCalledTimes(1)],
-    ['drawer-close', () => ({}), (p) => expect(p.onClose).toHaveBeenCalledTimes(1)],
+    [
+      'drawer-settings',
+      () => ({}),
+      () => expect(screen.queryByTestId('drawer-settings-body')).not.toBeNull(),
+    ],
     ['drawer-upload', () => ({}), (p) => expect(p.actions.uploadFile).toHaveBeenCalledTimes(1)],
     ['drawer-download', () => ({}), (p) => expect(p.actions.downloadFile).toHaveBeenCalledTimes(1)],
     ['drawer-dictate', () => ({}), (p) => expect(p.actions.dictate).toHaveBeenCalledTimes(1)],
@@ -2631,7 +2931,7 @@ describe('the drawer stylesheet', () => {
     );
     expect(declsOf(INDEX_CSS, '.drawer-tail').get('position')).toBe('relative');
     // The tail is as tall as `+ New tab`, which is as tall as a row.
-    expect(declsOf(INDEX_CSS, '.drawer-new').get('min-height')).toBe('var(--ctl-h)');
+    expect(declsOf(INDEX_CSS, '.drawer-new').get('min-height')).toBe('var(--drawer-row-h)');
     expect(declsOf(INDEX_CSS, '.drawer-new').get('min-height')).toBe(
       declsOf(INDEX_CSS, '.drawer-session').get('min-height'),
     );
@@ -2774,19 +3074,78 @@ describe('kit controls hosted in the drawer', () => {
     });
   });
 
-  it('gives every control the drawer draws itself the control height', () => {
-    for (const selector of [
-      '.drawer-session',
-      '.drawer-group',
-      '.drawer-new',
-      '.drawer-action',
-      '.drawer-back',
-    ]) {
+  it('gives every control the drawer draws itself the control height, and a list row one step less', () => {
+    for (const selector of ['.drawer-action', '.drawer-back']) {
       expect(declsOf(INDEX_CSS, selector).get('min-height'), selector).toBe('var(--ctl-h)');
+    }
+    // A session, a group header and `+ New tab` are one list: one row height, below.
+    for (const selector of ['.drawer-session', '.drawer-group', '.drawer-new']) {
+      expect(declsOf(INDEX_CSS, selector).get('min-height'), selector).toBe('var(--drawer-row-h)');
     }
     // The switcher takes the kit's own height (its OUTER box is --ctl-h), so the
     // drawer restates none: a full --ctl-h item made the box 6px too tall.
     expect(declsOf(VIEWS_CSS, '.drawer-views-seg .ui-seg-item').get('min-height')).toBeUndefined();
+  });
+});
+
+// ── Compact lists on a phone ──────────────────────────────────────────────────
+// The owner (2026-10-26) found the session rows too big, in height and in text, beside
+// the footer and the extra-keys bar, whose density he called right. happy-dom has no
+// layout, so the sizes are resolved from the stylesheets the way a browser would.
+describe('the drawer lists are compact on a phone', () => {
+  /** The first declaration of `prop` under a selector. */
+  const declared = (selector: string, prop: string): string => {
+    const value = declsOf(INDEX_CSS, selector).get(prop);
+    if (value === undefined) throw new Error(`${selector} declares no ${prop}`);
+    return value;
+  };
+  const scale = (name: string): number => {
+    const value = new RegExp(`${name}:\\s*(\\d+)px`).exec(INDEX_CSS)?.[1];
+    if (value === undefined) throw new Error(`no ${name}`);
+    return Number(value);
+  };
+  const MOBILE_CTL = Number(
+    /:root\[data-mobile='true'\]\s*{[^}]*--ctl-h:\s*(\d+)px/.exec(INDEX_CSS)?.[1],
+  );
+
+  it('declares the list row once, one step below the control height', () => {
+    expect(declared('.drawer', '--drawer-row-h')).toBe('calc(var(--ctl-h) - var(--sp-1))');
+    // On a phone that is 32px: at most the extra-keys bar's own 33px key.
+    expect(MOBILE_CTL).toBe(36);
+    const row = MOBILE_CTL - scale('--sp-1');
+    expect(row).toBe(32);
+    const key = Number(/\.ek-key\s*{[^}]*min-height:\s*(\d+)px/.exec(INDEX_CSS)?.[1]);
+    expect(row).toBeLessThanOrEqual(key);
+  });
+
+  it('draws a session row and a group header at that height, and nothing taller', () => {
+    for (const selector of ['.drawer-session', '.drawer-group']) {
+      expect(declared(selector, 'min-height'), selector).toBe('var(--drawer-row-h)');
+      expect(declsOf(INDEX_CSS, selector).get('height'), selector).toBeUndefined();
+      expect(declsOf(INDEX_CSS, selector).get('padding'), selector).toBe('0 var(--sp-2)');
+    }
+  });
+
+  it('sets a row’s title at the body size, the footer’s, not the larger --fs-3', () => {
+    expect(declared('.drawer-session', 'font-size')).toBe('var(--fs-2)');
+    expect(declared('.drawer-action', 'font')).toMatch(/var\(--fs-2\)/);
+    // At most 13px, which is what the contract names: --fs-2 is 12px.
+    expect(scale('--fs-2')).toBeLessThanOrEqual(13);
+    // The number beside it and the group header are the small step, as before.
+    expect(declared('.drawer-num', 'font-size')).toBe('var(--fs-1)');
+    expect(declared('.drawer-group', 'font-size')).toBe('var(--fs-1)');
+  });
+
+  it('keeps the list pitch at the row plus the two halves of the row gap', () => {
+    // Each leaf is the row and `margin-block: var(--sp-1) / 2` either side: 36px a row
+    // on a phone (measured in Chromium at 390px: 36.25 with the group's frame), so seven
+    // sessions take 252px where they took 280px.
+    expect(declared('.drawer-row', 'margin-block')).toBe('calc(var(--sp-1) / 2)');
+    expect(MOBILE_CTL - scale('--sp-1') + scale('--sp-1')).toBe(36);
+  });
+
+  it('leaves the footer’s cells, the one density the owner called right, as they were', () => {
+    expect(declared('.drawer-action', 'min-height')).toBe('var(--ctl-h)');
   });
 });
 

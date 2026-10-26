@@ -16,10 +16,10 @@ describe('KeybindingsPanel', () => {
 
     fireEvent.click(btn);
     expect(btn.textContent).toBe('press keys…');
-    fireEvent.keyDown(window, { key: 'n', ctrlKey: true, altKey: true });
+    fireEvent.keyDown(window, { key: 'y', ctrlKey: true, altKey: true });
 
-    expect(btn.textContent).toBe('Ctrl+Alt+N');
-    expect(loadBindings().newTab).toEqual({ key: 'n', ctrl: true, alt: true });
+    expect(btn.textContent).toBe('Ctrl+Alt+Y');
+    expect(loadBindings().newTab).toEqual({ key: 'y', ctrl: true, alt: true });
   });
 
   it('reports a conflict and does not apply it', () => {

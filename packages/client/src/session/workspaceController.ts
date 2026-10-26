@@ -49,7 +49,16 @@ export type WorkspaceEvent =
   | { type: 'dropSplit'; id: string; side: 'left' | 'right' | 'top' | 'bottom' }
   | { type: 'dropSlot'; id: string; slot: SlotId }
   | { type: 'eject'; keep?: SlotId | undefined }
-  | { type: 'tabCreated'; id: string }
+  | {
+      type: 'tabCreated';
+      id: string;
+      /**
+       * What the create this acknowledges asked for, when the client knows. A
+       * `review` create is idempotent on the server, so its answer may name a tab
+       * that already existed: see the `tabCreated` case.
+       */
+      expected?: { kind: TabKind; url: string } | undefined;
+    }
   /** A `sessions` broadcast — only the close-navigation decision (App applies the
    *  rest). `tabs` is the NEW list; `ctx.tabs` is the OLD one. */
   | { type: 'sessionsBroadcast'; tabs: TabMeta[] };
@@ -204,10 +213,25 @@ export function decide(event: WorkspaceEvent, ctx: WorkspaceCtx): WorkspaceEffec
     case 'tabCreated': {
       // A server-assigned id colliding with a pairing member means that member is
       // stale (died while away) — dissolve that pairing instead of focusing a ghost.
-      const out: WorkspaceEffect[] = [];
+      //
+      // Except when the answer is for a tab this window already holds. A review
+      // create is idempotent in the server registry (another window opened the same
+      // group first), so the id it answers may be a live review that this window has
+      // since put in a split: the same kind and url as what was asked for, in a slot
+      // of that kind. That is the tab itself and not a ghost, so the split stays and
+      // the view moves to the member's slot, exactly as selecting it would.
+      const out: WorkspaceEffect[] = [{ type: 'chooserPage', value: false }];
       const p = pairingOf(ctx.pairings, event.id);
-      if (p) out.push({ type: 'dissolveP', key: p.a.tabId });
-      out.push({ type: 'chooserPage', value: false });
+      const slot = p ? memberSlot(p, event.id) : null;
+      const live = ctx.tabs.find((t) => t.id === event.id);
+      const isLiveTab =
+        event.expected !== undefined &&
+        live?.kind === event.expected.kind &&
+        live.url === event.expected.url &&
+        slot !== null &&
+        p?.[slot].kind === event.expected.kind;
+      if (p && slot && isLiveTab) out.push({ type: 'focusSlotP', key: p.a.tabId, slot });
+      else if (p) out.unshift({ type: 'dissolveP', key: p.a.tabId });
       out.push({ type: 'navigate', id: event.id });
       return out;
     }

@@ -64,6 +64,11 @@ const PLANNED = [
   'rotate-row',
   'rotate-col',
   'dashboard',
+  // source-control-review: the rail and drawer entry, the review's actions
+  // (Reviewed, Unstage / Undo, previous and next file) and its comment marks.
+  'git-branch',
+  'undo',
+  'comment',
 ];
 
 // The solid glyphs: status marks that must not read as outlines. Everything else is
@@ -94,6 +99,21 @@ describe('the registry', () => {
   it('is what extra-keys.json accepts as `icon`', () => {
     expect(KEY_ICON_NAMES).toBe(ICON_NAMES);
     expect(keyNamedIcon).toBe(namedIcon);
+  });
+});
+
+describe('the source-control glyphs', () => {
+  const NEW_GLYPHS = ['git-branch', 'undo', 'comment'];
+
+  it.each(NEW_GLYPHS)('%s is drawn and is not another icon’s shape', (name) => {
+    const own = shapes(name);
+    expect(own).toBeTruthy();
+    const twins = ICON_NAMES.filter((other) => other !== name && shapes(other) === own);
+    expect(twins).toEqual([]);
+  });
+
+  it('keeps Undo apart from Back, the hook arrow that means "up a level"', () => {
+    expect(shapes('undo')).not.toBe(shapes('back'));
   });
 });
 
@@ -236,12 +256,12 @@ describe('rendered consumers', () => {
         ]}
       />,
     );
-    // Four views + two actions + the open view's close button.
+    // Five views + two actions + the open view's close button.
     const buttons = [
       ...screen.getByTestId('dock-rail').querySelectorAll('button'),
       screen.getByTestId('dock-close'),
     ];
-    expect(buttons).toHaveLength(7);
+    expect(buttons).toHaveLength(8);
     for (const button of buttons) {
       const svg = button.querySelector('svg');
       expect(svg, button.getAttribute('aria-label') ?? '').not.toBeNull();
@@ -266,6 +286,7 @@ describe('rendered consumers', () => {
       ['dock-rail-settings', 'settings'],
       ['dock-rail-newtab', 'plus'],
       ['dock-rail-files', 'folder'],
+      ['dock-rail-scm', 'git-branch'],
       ['dock-rail-dictation', 'mic'],
       ['dock-rail-upload', 'upload'],
       ['dock-rail-download', 'download'],
@@ -329,6 +350,7 @@ describe('the shared registry is what the chrome asks for', () => {
       settings: 'settings',
       newtab: 'plus',
       files: 'folder',
+      scm: 'git-branch',
       dictation: 'mic',
       upload: 'upload',
       download: 'download',
@@ -345,7 +367,15 @@ describe('the shared registry is what the chrome asks for', () => {
   });
 
   it('every kind draws a registered icon, and they are all different', () => {
-    expect(TAB_KINDS.map(kindIcon)).toEqual(['terminal', 'globe', 'dashboard', 'pencil', 'book']);
+    // The original five are pinned. `review` came with source-control-review and its
+    // glyph is the tab-meta owner's choice, so it is held only to the two checks below.
+    expect(TAB_KINDS.filter((kind) => kind !== 'review').map(kindIcon)).toEqual([
+      'terminal',
+      'globe',
+      'dashboard',
+      'pencil',
+      'book',
+    ]);
     for (const kind of TAB_KINDS) expect(ICON_NAMES).toContain(kindIcon(kind));
     expect(new Set(TAB_KINDS.map((kind) => shapes(kindIcon(kind)))).size).toBe(TAB_KINDS.length);
   });

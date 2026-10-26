@@ -20,7 +20,7 @@ export const TIPS: Tip[] = [
     category: 'Mobile',
     title: 'Sessions drawer',
     description:
-      'The extra-keys bar is always there on mobile, whatever the tab is — it is how you reach everything else. Swipe RIGHT→LEFT across it to pull the drawer in from the right edge. It covers the screen except a dimmed strip on the left: tap the strip, or the ✕ button at the top, to get back to the terminal. The drawer is laid out for your thumb. Upload, Download, Dictate and Images sit at the bottom, a three-icon switcher (Sessions, Explorer, Dictation) just above them, your tabs above that, and Settings — the control you need least — at the very top. All of it opens as drawer views, never a modal stacked over the terminal. From the session list, + New tab opens the chooser in place of the list (‹ New tab goes back); a tmux session, a URL or a note all start from there.',
+      'A bar with the drawer swipe is always there on mobile, whatever the tab is — the extra-keys bar, or the review bar while a review is open — because it is how you reach everything else. Swipe RIGHT→LEFT across it to pull the drawer in from the right edge. It covers the screen except a dimmed strip on the left: tap the strip, or the ✕ button at the top, to get back to the terminal. The drawer is laid out for your thumb. Upload, Download, Dictate and Images sit at the bottom and your tabs above them. At the very top is one row: Settings (the control you need least), a four-icon switcher (Sessions, Explorer, Source Control, Dictation) and the ✕. All of it opens as drawer views, never a modal stacked over the terminal. From the session list, + New tab opens the chooser in place of the list (‹ New tab goes back); a tmux session, a URL or a note all start from there.',
   },
   {
     category: 'Mobile',
@@ -44,13 +44,19 @@ export const TIPS: Tip[] = [
     category: 'Mobile',
     title: 'Settings at the top of the drawer',
     description:
-      'Settings is the gear button at the top of the drawer, next to the close button. It sits as far from your thumb as the drawer allows, because you reach for it least. Tap it to open the settings list; ‹ Settings goes back. The Explorer and Dictation views are the icons in the switcher above the footer.',
+      'Settings is the gear button at the top of the drawer, next to the close button. It sits as far from your thumb as the drawer allows, because you reach for it least. Tap it to open the settings list; ‹ Settings goes back. The Explorer, Source Control and Dictation views are the icons of the switcher between the gear and the close button.',
   },
   {
     category: 'Mobile',
     title: 'The drawer and the soft keyboard',
     description:
       'Opening the drawer never dismisses the keyboard, and the terminal keeps its size while the drawer is open, even if Android hides the keyboard meanwhile. Close the drawer and the keyboard comes back if it was up when you opened it, with at most one resize. Upload and Images keep the terminal still until the file picker returns, however long you take in it.',
+  },
+  {
+    category: 'Mobile',
+    title: 'The review bar',
+    description:
+      'While a review is the active tab, the review bar takes the extra-keys bar’s place, with no terminal keys on it: Files opens the drawer on Source Control, ↑ and ↓ go to the previous and next file, and Reviewed stages the file exactly as you saw it (Unstage in a Staged review), with an Undo toast. Swipe RIGHT→LEFT across it to open the drawer, as on the extra-keys bar, and LEFT→RIGHT to go back to the tab you opened the review from (the first terminal if that tab is gone), where the extra keys return. A button acts when you lift your finger, so a swipe that starts on Reviewed opens the drawer and stages nothing.',
   },
   {
     category: 'Mobile',
@@ -327,6 +333,47 @@ export const TIPS: Tip[] = [
     description: 'Copy a support bundle to the clipboard.',
     action: 'diagnostics',
   },
+  // ── Review (live shortcuts, and what the review does) ───────────────────────
+  {
+    category: 'Review',
+    title: 'Open Source Control',
+    description:
+      'Opens the Source Control panel from any tab: the branch icon on the rail. The Ctrl+Alt+G chord is not VS Code’s Ctrl+Shift+G, which is Copy last output here.',
+    action: 'openSourceControl',
+  },
+  {
+    category: 'Review',
+    title: 'Next change',
+    description:
+      'While a review is the focused tab, jumps to the next change; hold Shift for the previous one. At a file’s last change it goes on to the next file’s first, fetching that file first if it has not loaded. A file with nothing to show line by line (binary, too large, a mode change) counts as one change at its header.',
+    action: 'scmNextChange',
+  },
+  {
+    category: 'Review',
+    title: 'Next file',
+    description:
+      'Moves to the next file of the review; hold Shift for the previous one. From inside a file, previous goes to the start of that file first. These are letters rather than F7 because GNOME takes Alt+F7 before the browser sees it.',
+    action: 'scmNextFile',
+  },
+  {
+    category: 'Review',
+    title: 'Reviewed',
+    description:
+      'In a Changes review, Reviewed stages the file exactly as you saw it, then moves to the next file; in a Staged review the same key unstages it. A toast offers Undo for six seconds and puts the index entry back exactly as it was, unless something else has changed it since. A second Reviewed inside those six seconds keeps the first one’s Undo: the toast counts them (Staged 2 files) and one Undo takes them all back, newest first, and stops, saying how far it got, at the first one something else has changed. If the file changed on disk after you saw it, the newer change stays under Changes, unseen. A file palmux cannot snapshot (too large, or converted by a git filter) cannot be reviewed from here, and its button says why.',
+    action: 'scmReviewed',
+  },
+  {
+    category: 'Review',
+    title: 'Comment on lines',
+    description:
+      'Click a line number, drag across several, or shift-click to widen the range; on a phone tap one number, then tap the last line of the range. With a keyboard, Tab to a line number and press Enter or Space to pick it, and Shift+Enter or Shift+Space to widen the range. Comment opens an editor under the lines, Esc cancels it, and an unsaved draft survives scrolling away and back. Comments live on the server, outside the repository; they follow their code when the file changes and are listed as outdated, with the code they were about, when it is gone. A comment on a file that is too large or converted by git is listed as not shown instead, since palmux never read the file and nothing says its code left. If another window deletes the comment you are editing, your text stays with Save as new and Discard. Copy comments in Source Control puts all of them on the clipboard as one markdown document, marking the outdated and the not shown ones.',
+  },
+  {
+    category: 'Review',
+    title: 'Code size',
+    description:
+      'The review’s view menu (the gear in the review’s bar on a phone; the − and + beside the other controls on a wide pane) makes the diff’s code smaller or larger, and the menu stays open so you can tap again. The size is this device’s, apart from the terminal’s, so a pinch in the shell never moves the diff. Settings → Code font size sets the same value and also sizes the editor; leave it empty to keep the defaults.',
+  },
   {
     category: 'Terminal',
     title: 'Links',
@@ -369,7 +416,19 @@ export const TIPS: Tip[] = [
     category: 'Side panel',
     title: 'The side dock',
     description:
-      'On desktop the icon rail down the right edge opens a panel: Settings, Files, Dictation, and the New-tab chooser. It is LAYOUT, not an overlay — the terminal narrows instead of being covered, so you can read the panel and the shell at once. Clicking the icon of the panel already open closes it. Settings → Side rail hides the rail if you never use it (per-device). On mobile the same four views are the drawer instead.',
+      'On desktop the icon rail down the right edge is always there and opens a panel: the New-tab chooser, Files, Source Control, Dictation and Settings. It is LAYOUT, not an overlay — the terminal narrows instead of being covered, so you can read the panel and the shell at once. Clicking the icon of the panel already open closes it. On mobile the same views are the drawer instead.',
+  },
+  {
+    category: 'Side panel',
+    title: 'Source Control',
+    description:
+      "The branch icon on the rail, between Explorer and Dictation, opens Source Control. It starts empty: Add project takes the absolute path of any folder inside a git repository and keeps the repository's top folder. The project list is shared by every device on this palmux; which project a device shows is its own choice. Changes are listed as Merge Changes (conflicted files, shown first), Staged Changes and Changes, each a folder tree with a status letter on every file, and a file changed both before and after staging appears in both. The list refreshes about once a second while the panel is open and the window is in front, and a slower repository is read less often; with the panel closed or the window in the background nothing is read. Choosing a file opens that group's review in the main area, or focuses the one already open. On a phone it is the branch icon in the drawer's switcher, and choosing a file closes the drawer.",
+  },
+  {
+    category: 'Side panel',
+    title: 'Changed files as a tree',
+    description:
+      'Each Source Control group is a folder tree, in the order a review walks the files, so Next file follows the rows. A folder that holds only one other folder shares its row, as in packages/client/src. Tap or click a folder, or press Enter or Space on it, to collapse or expand it; this device remembers which folders are closed, for each project and group. On a focused row, ArrowRight opens a closed folder, and ArrowLeft closes an open one or moves to the folder that holds the row. View as list, in the project bar, switches to the flat list, where each file shows its folder; View as tree switches back. That choice is per device too.',
   },
   {
     category: 'Side panel',

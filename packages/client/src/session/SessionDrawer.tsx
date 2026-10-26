@@ -3,15 +3,18 @@
 // Replaces the desktop top bar on mobile. It lives on the RIGHT edge: a
 // right→left swipe across the extra-keys bar pulls it in (the direction of
 // travel). It covers the full height and all but a 44px scrim strip on the left,
-// so a thumb can always reach the terminal side to close it (the root view also
-// has a close button of its own). Lists every workspace tab as a colour dot, a
-// title and a subdued number; a non-terminal tab adds its kind icon.
+// so a thumb can always reach the terminal side to close it. There is no close
+// button: the scrim strip, a swipe and every action that leaves the drawer close
+// it, and Escape does for a keyboard or assistive tech that has focus in here.
+// Lists every workspace tab as a colour dot, a title and a subdued number; a
+// non-terminal tab adds its kind icon. A row is compact (`--drawer-row-h`, 32px
+// under the mobile class) so more of them fit above the footer.
 //
 // Reach order, bottom → top: the footer, the bottom-anchored session list, and at
-// the very top ONE row — a gear for Settings, the view switcher, Close. The row is
-// the root level's alone: Settings and the new-tab chooser sit under a back header
-// and draw no switcher. The switcher is up there because the owner does not want it
-// at the bottom. Settings is a VIEW of this drawer, not a modal (a dialog stacked
+// the very top ONE row — the view switcher and, at its right end where Close used
+// to be, a gear for Settings. The row is the root level's alone: Settings and the
+// new-tab chooser sit under a back header and draw no switcher. The switcher is up
+// there because the owner does not want it at the bottom. Settings is a VIEW of this drawer, not a modal (a dialog stacked
 // over the terminal is strictly worse on a phone), and its fields come from
 // settings/SettingsFields so this and the desktop DOCK share one definition. The
 // switcher is the kit Segmented over the surfaces the dock rail also hosts, wearing
@@ -19,9 +22,10 @@
 //
 // `view` is optional and the control is uncontrolled without it, defaulting to
 // the session list — a host that passes nothing gets exactly today's drawer.
-// The two views with no built-in body (files, dictation) are rendered by the
-// HOST through `viewContent`, and a host that cannot render one must not offer
-// it — an enabled segment that opens an empty drawer is worse than no segment.
+// The three views with no built-in body (files, Source Control, dictation) are
+// rendered by the HOST through `viewContent`, and a host that cannot render one
+// must not offer it — an enabled segment that opens an empty drawer is worse than
+// no segment.
 // Availability is therefore declared UP FRONT in `hostedViews`, not inferred
 // from `viewContent`: content necessarily tracks the SELECTED view, so a host
 // can only supply it once the view is already active, and inferring from it
@@ -33,7 +37,7 @@
 // past:
 //   * fixed chrome acts on pointerdown + preventDefault. The scrim is a bare
 //     <div> nothing can focus, so `press` is enough there. Every fixed BUTTON
-//     (both back headers, the top buttons, the footer cells) uses `pressClick`,
+//     (both back headers, the gear, the footer cells) uses `pressClick`,
 //     which also acts on click: a focusable button that ignores Enter, Space and
 //     an assistive-tech click is a control that only some users can operate;
 //   * anything in a LIST uses the pointerup-with-slop form (`pressMove`, and the
@@ -133,7 +137,7 @@ const NO_HOSTED_VIEWS: readonly DrawerView[] = [];
 
 /** The drawer's top-level surfaces — the dock rail's set, with the session list
  *  standing in for the dock's New-tab view. */
-export type DrawerView = 'sessions' | 'settings' | 'files' | 'dictation';
+export type DrawerView = 'sessions' | 'settings' | 'files' | 'scm' | 'dictation';
 
 /**
  * The switcher's segments. Settings is not one of them: it is the gear beside the
@@ -144,6 +148,7 @@ export type DrawerView = 'sessions' | 'settings' | 'files' | 'dictation';
 const SWITCHER_VIEWS: { id: DrawerView; icon: IconName; label: string; hosted: boolean }[] = [
   { id: 'sessions', icon: 'sessions', label: 'Sessions', hosted: false },
   { id: 'files', icon: 'files', label: 'Explorer', hosted: true },
+  { id: 'scm', icon: 'scm', label: 'Source Control', hosted: true },
   { id: 'dictation', icon: 'dictation', label: 'Dictation', hosted: true },
 ];
 
@@ -152,6 +157,7 @@ const VIEW_LABEL: Record<DrawerView, string> = {
   sessions: 'Sessions',
   settings: 'Settings',
   files: 'Explorer',
+  scm: 'Source Control',
   dictation: 'Dictation',
 };
 
@@ -207,15 +213,15 @@ interface SessionDrawerProps {
   viewContent?: ReactNode | undefined;
   /**
    * Hosted views this host can render. Anything not listed stays disabled — the
-   * default is NONE, so a host that passes no bodies gets today's two-view
+   * default is NONE, so a host that passes no bodies gets the sessions-only
    * drawer unchanged.
    */
   hostedViews?: readonly DrawerView[] | undefined;
   /**
    * The new-tab chooser, shown in place of the session list when `+ New tab` is
-   * pressed. A SUB-SURFACE of the session view, not a fourth segment: the list
+   * pressed. A SUB-SURFACE of the session view, not a segment of its own: the list
    * and the chooser are the same job (pick where to go), which is why the switcher
-   * has three segments and the dock's New-tab rail item maps onto this list.
+   * has four segments and the dock's New-tab rail item maps onto this list.
    * Omit it and `+ New tab` just calls `onCreate`, as before.
    */
   newTabContent?: ReactNode | undefined;
@@ -471,8 +477,8 @@ export const SessionDrawer = ({
     disabled: v.hosted && !hostedViews.includes(v.id),
   }));
 
-  // The root level is the sessions list and the two hosted views, and it is where the
-  // top row (gear · switcher · Close) lives. Settings and the chooser are
+  // The root level is the sessions list and the hosted views, and it is where the
+  // top row (switcher · gear) lives. Settings and the chooser are
   // sub-surfaces under a back header, which is the drawer's top control there: a
   // second row above it would push the way back down the screen, and the switcher
   // goes with that row, so reaching Explorer or Dictation from there is one back
@@ -822,6 +828,26 @@ export const SessionDrawer = ({
     if (g && g.phase !== 'dragging') endGesture(g);
   };
 
+  // Escape closes the drawer for a keyboard or assistive tech with focus inside it:
+  // the scrim and a swipe are pointer-only, and there is no close button. It is the
+  // nav's own handler and never a document one, because the drawer leaves #mobile-kbd
+  // focused, so a key typed while it is open still belongs to the shell. A key that
+  // something inside already took does not close the drawer as well: a Radix popup
+  // closing prevents the default (and renders outside the nav, so its event only
+  // reaches here through React's tree), and a field cancelling an edit is an editable
+  // target.
+  const closeOnEscape = useCallback(
+    (e: ReactKeyboardEvent<HTMLElement>) => {
+      if (!open || e.key !== 'Escape' || e.defaultPrevented) return;
+      const target = e.target instanceof Element ? e.target : null;
+      if (!target || !e.currentTarget.contains(target)) return;
+      if (target.closest('input, textarea, select, [contenteditable="true"]')) return;
+      e.preventDefault();
+      onClose();
+    },
+    [open, onClose],
+  );
+
   // A tap anywhere that is not a row or the revealed Close puts the row back.
   const hideRevealOnOutsidePress = (e: ReactPointerEvent) => {
     if (revealedRef.current === null) return;
@@ -966,18 +992,13 @@ export const SessionDrawer = ({
         aria-label="Sessions"
         data-testid="drawer"
         onPointerDownCapture={hideRevealOnOutsidePress}
+        onKeyDown={closeOnEscape}
       >
         {atRoot && (
           <div className="drawer-top">
-            {/* Gear · switcher · Close, one line. Settings is first in the DOM and
-                the tab order, highest and leftmost on screen. */}
-            <IconButton
-              label="Settings"
-              data-testid="drawer-settings"
-              {...pressClick(() => selectView('settings'))}
-            >
-              <Icon name="settings" size={16} />
-            </IconButton>
+            {/* Switcher · gear, one line. The switcher is first in the DOM and the tab
+                order; the gear is at the row's right end, where Close used to be, and
+                the drawer has no close button (see the header comment). */}
             <Segmented
               className="drawer-views-seg"
               label="Drawer view"
@@ -990,11 +1011,11 @@ export const SessionDrawer = ({
               keepFocus
             />
             <IconButton
-              label="Close drawer"
-              data-testid="drawer-close"
-              {...pressClick(() => onClose())}
+              label="Settings"
+              data-testid="drawer-settings"
+              {...pressClick(() => selectView('settings'))}
             >
-              <Icon name="close" size={16} />
+              <Icon name="settings" size={16} />
             </IconButton>
           </div>
         )}

@@ -27,9 +27,9 @@ describe('DockPanel', () => {
     expect(screen.getByTestId('dock')).toBeInTheDocument();
   });
 
-  it('puts every view on the rail, Dictation included', () => {
+  it('puts every view on the rail, Source Control and Dictation included', () => {
     render(<DockPanel view={null} onView={noop} />);
-    for (const id of ['newtab', 'files', 'dictation', 'settings']) {
+    for (const id of ['newtab', 'files', 'scm', 'dictation', 'settings']) {
       expect(screen.getByTestId(`dock-rail-${id}`)).toBeInTheDocument();
     }
   });
@@ -63,12 +63,61 @@ describe('DockPanel', () => {
   });
 });
 
+describe('Source Control on the rail', () => {
+  it('sits directly below Explorer and directly above Dictation', () => {
+    render(<DockPanel view={null} onView={noop} />);
+    const rail = [...screen.getByTestId('dock-rail').children].map((el) =>
+      el.getAttribute('data-testid'),
+    );
+    const at = rail.indexOf('dock-rail-scm');
+    expect(rail[at - 1]).toBe('dock-rail-files');
+    expect(rail[at + 1]).toBe('dock-rail-dictation');
+  });
+
+  it('is labelled Source Control and draws the branch glyph', () => {
+    render(<DockPanel view={null} onView={noop} />);
+    const button = screen.getByTestId('dock-rail-scm');
+    expect(button).toHaveAttribute('aria-label', 'Source Control');
+    expect(button).toHaveAttribute('title', 'Source Control');
+    expect(button.querySelector('svg')).not.toBeNull();
+  });
+
+  it('opens the view in the dock, titled Source Control, with its rail button pressed', () => {
+    render(
+      <DockPanel view="scm" onView={noop}>
+        <p>changes</p>
+      </DockPanel>,
+    );
+    expect(screen.getByTestId('dock')).toHaveAttribute('data-view', 'scm');
+    expect(screen.getByLabelText('Source Control', { selector: 'aside' })).toBeInTheDocument();
+    expect(screen.getByTestId('dock-body')).toHaveTextContent('changes');
+    expect(screen.getByTestId('dock-rail-scm')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('dock-rail-files')).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('clicking the rail entry selects the view, and clicking it again closes the dock', async () => {
+    const onView = vi.fn();
+    const { rerender } = render(<DockPanel view={null} onView={onView} />);
+    await userEvent.click(screen.getByTestId('dock-rail-scm'));
+    expect(onView).toHaveBeenLastCalledWith('scm');
+    rerender(<DockPanel view="scm" onView={onView} />);
+    await userEvent.click(screen.getByTestId('dock-rail-scm'));
+    expect(onView).toHaveBeenLastCalledWith(null);
+  });
+});
+
 describe('dock view persistence', () => {
   it('round-trips and clears', () => {
     writeDockView('files');
     expect(readDockView()).toBe('files');
     writeDockView(null);
     expect(readDockView()).toBeNull();
+  });
+
+  it('remembers Source Control like every other view', () => {
+    writeDockView('scm');
+    expect(localStorage.getItem('palmux-dock-view')).toBe('scm');
+    expect(readDockView()).toBe('scm');
   });
 
   it('a corrupt or unknown stored value reads as closed, never throws', () => {
@@ -122,7 +171,7 @@ describe('rail actions', () => {
 
   // Frequency of use, top to bottom: what you open mid-session, then the actions
   // behind their separator, then Settings alone at the bottom edge.
-  it('renders New tab, Explorer, Dictation, a separator, Upload, Download, Settings', () => {
+  it('renders New tab, Explorer, Source Control, Dictation, a separator, Upload, Download, Settings', () => {
     const { container } = render(
       <DockPanel view={null} onView={noop} actions={[...actions(noop)]} />,
     );
@@ -133,6 +182,7 @@ describe('rail actions', () => {
     expect(order).toEqual([
       'dock-rail-newtab',
       'dock-rail-files',
+      'dock-rail-scm',
       'dock-rail-dictation',
       'sep',
       'dock-rail-upload',

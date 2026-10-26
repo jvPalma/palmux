@@ -1,5 +1,19 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { ACTIONS, ACTION_LABELS, DEFAULT_BINDINGS, chordEq, chordFromEvent, findConflict, formatChord, loadBindings, matchAction, resetBindings, saveBindings } from './keybindings';
+import {
+  ACTIONS,
+  ACTION_LABELS,
+  DEFAULT_BINDINGS,
+  chordEq,
+  chordFromEvent,
+  findConflict,
+  formatChord,
+  loadBindings,
+  matchAction,
+  resetBindings,
+  saveBindings,
+  type Action,
+  type Chord,
+} from './keybindings';
 
 const kd = (key: string, mods: Partial<KeyboardEventInit> = {}): KeyboardEvent =>
   new KeyboardEvent('keydown', { key, ...mods });
@@ -101,5 +115,93 @@ describe('upload and download are reachable without the rail', () => {
       expect(seen.has(key), `${a} collides with ${seen.get(key)} on ${key}`).toBe(false);
       seen.set(key, a);
     }
+  });
+});
+
+// ── The review keys ──────────────────────────────────────────────────────────
+//
+// `matchAction` answers the FIRST action whose chord matches, so two actions on one
+// chord make the later one unreachable with no error anywhere. VS Code's own chord
+// for Source Control (Ctrl+Shift+G) is `copyLastOutput` here, which is why the
+// review keys are Ctrl+Alt+letters.
+
+const chordKey = (c: Chord): string =>
+  `${c.ctrl ? 'C' : ''}${c.alt ? 'A' : ''}${c.shift ? 'S' : ''}${c.meta ? 'M' : ''}-${c.key.toLowerCase()}`;
+
+describe('every default chord is unique', () => {
+  it('gives no two actions the same chord', () => {
+    const seen = new Map<string, Action>();
+    for (const a of ACTIONS) {
+      const key = chordKey(DEFAULT_BINDINGS[a]);
+      expect(seen.has(key), `${a} collides with ${seen.get(key)} on ${key}`).toBe(false);
+      seen.set(key, a);
+    }
+  });
+
+  it('can reach every action: matchAction answers each one from its own chord', () => {
+    for (const a of ACTIONS) {
+      const c = DEFAULT_BINDINGS[a];
+      const event = kd(c.shift ? c.key.toUpperCase() : c.key, {
+        ctrlKey: !!c.ctrl,
+        altKey: !!c.alt,
+        shiftKey: !!c.shift,
+        metaKey: !!c.meta,
+      });
+      expect(matchAction(DEFAULT_BINDINGS, event), a).toBe(a);
+    }
+  });
+});
+
+describe('the review keys', () => {
+  const expected: [Action, Chord, string][] = [
+    ['openSourceControl', { key: 'g', ctrl: true, alt: true }, 'Ctrl+Alt+G'],
+    ['scmNextChange', { key: 'j', ctrl: true, alt: true }, 'Ctrl+Alt+J'],
+    ['scmPrevChange', { key: 'j', ctrl: true, alt: true, shift: true }, 'Ctrl+Alt+Shift+J'],
+    ['scmNextFile', { key: 'n', ctrl: true, alt: true }, 'Ctrl+Alt+N'],
+    ['scmPrevFile', { key: 'n', ctrl: true, alt: true, shift: true }, 'Ctrl+Alt+Shift+N'],
+    ['scmReviewed', { key: 'Enter', ctrl: true, alt: true }, 'Ctrl+Alt+Enter'],
+  ];
+
+  it.each(expected)('%s is a real action with a label, bound to %o', (action, chord, text) => {
+    expect(ACTIONS).toContain(action);
+    expect(ACTION_LABELS[action]).toBeTruthy();
+    expect(DEFAULT_BINDINGS[action]).toEqual(chord);
+    expect(formatChord(DEFAULT_BINDINGS[action])).toBe(text);
+  });
+
+  it('resolves a keydown to each of them, Shift told apart from no Shift', () => {
+    const press = (key: string, shiftKey = false) =>
+      matchAction(DEFAULT_BINDINGS, kd(key, { ctrlKey: true, altKey: true, shiftKey }));
+    expect(press('g')).toBe('openSourceControl');
+    expect(press('j')).toBe('scmNextChange');
+    expect(press('J', true)).toBe('scmPrevChange');
+    expect(press('n')).toBe('scmNextFile');
+    expect(press('N', true)).toBe('scmPrevFile');
+    expect(press('Enter')).toBe('scmReviewed');
+  });
+
+  it('keeps Ctrl+Shift+G for copyLastOutput and Ctrl+Alt+K for downloadFile', () => {
+    expect(matchAction(DEFAULT_BINDINGS, kd('g', { ctrlKey: true, shiftKey: true }))).toBe(
+      'copyLastOutput',
+    );
+    expect(matchAction(DEFAULT_BINDINGS, kd('k', { ctrlKey: true, altKey: true }))).toBe(
+      'downloadFile',
+    );
+  });
+
+  it('survives a stored binding for another action: the defaults still merge in', () => {
+    saveBindings({ ...DEFAULT_BINDINGS, newTab: { key: 'n', ctrl: true } });
+    const loaded = loadBindings();
+    expect(loaded.scmReviewed).toEqual(DEFAULT_BINDINGS.scmReviewed);
+    expect(loaded.openSourceControl).toEqual(DEFAULT_BINDINGS.openSourceControl);
+  });
+
+  it('loads an older stored blob that has none of the new actions', () => {
+    localStorage.setItem(
+      'palmux-keybindings',
+      JSON.stringify({ newTab: { key: 'n', ctrl: true } }),
+    );
+    const loaded = loadBindings();
+    for (const [action, chord] of expected) expect(loaded[action]).toEqual(chord);
   });
 });

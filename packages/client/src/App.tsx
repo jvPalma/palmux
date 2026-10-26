@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { JsonObject, TabMeta, WebAppLink } from '@palmux/shared';
-import { DEFAULT_MAX_UPLOAD_BYTES, forgivingOrder, normalizeOrder } from '@palmux/shared';
+import {
+  DEFAULT_MAX_UPLOAD_BYTES,
+  forgivingOrder,
+  normalizeOrder,
+  parseReviewUrl,
+  reviewUrl,
+} from '@palmux/shared';
 import { WsClient } from './lib/ws';
 import { Toast, type ToastAction, type ToastHandle } from './Toast';
 import { useSettings } from './settings/useSettings';
@@ -119,8 +125,17 @@ import {
   type CreateSpec,
 } from './panes/DashboardBody';
 import { focusedEditor } from './panes/editor-registry';
+import { SourceControlView, type ScmOpenTarget } from './scm/SourceControlView';
+import { ReviewHostContext, type ReviewHost } from './review/review-host';
+import { reviewApiFor } from './review/review-registry';
+import { commentsStore, connectCommentsToStatus } from './review/use-comments';
+import { resolveActiveRepo, scmStatusStore } from './scm/status-store';
 import { editorKeyAction } from './mobile/editor-keys';
 import type { KeyMods } from './mobile/key-encoder';
+import { ReviewBar } from './mobile/ReviewBar';
+
+/** How long a `createTab` for a review url blocks a second one while it is unanswered. */
+const PENDING_REVIEW_MS = 5000;
 
 function downloadText(filename: string, text: string): void {
   const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
@@ -134,8 +149,8 @@ function downloadText(filename: string, text: string): void {
   URL.revokeObjectURL(url);
 }
 
-/** The drawer views App supplies a body for (the dock's Explorer and Dictation). */
-const DRAWER_HOSTED_VIEWS: readonly DrawerView[] = ['files', 'dictation'];
+/** The drawer views App supplies a body for (the dock's Explorer, Source Control and Dictation). */
+const DRAWER_HOSTED_VIEWS: readonly DrawerView[] = ['files', 'scm', 'dictation'];
 
 /**
  * How much the visual viewport must GROW for the soft keyboard to count as
@@ -531,6 +546,21 @@ export function App() {
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
 
+  // The project this device reads in Source Control: its stored choice while that
+  // is still in the synced list (another device may have removed it), else the
+  // first project. The status store polls THIS project only, and counts only
+  // subscribers that are visible, so with the view closed nothing is read.
+  const activeScmRepo = resolveActiveRepo(settings.scmRepos, settings.scmActiveRepo);
+  const activeScmRepoRef = useRef(activeScmRepo);
+  activeScmRepoRef.current = activeScmRepo;
+  useEffect(() => {
+    scmStatusStore.setActiveRepo(activeScmRepo);
+    commentsStore.setActiveRepo(activeScmRepo);
+  }, [activeScmRepo]);
+  // Every status answer carries the comments' rev: the backstop for an `scmComments`
+  // frame this window missed (the other is the refresh on every reconnect).
+  useEffect(() => connectCommentsToStatus(scmStatusStore, commentsStore), []);
+
   // Every theme-mode TRANSITION bumps this generation. A pending import compares
   // the one it was submitted under, so any mode change in between supersedes it —
   // a round trip back to the same mode included, after which the user may already
@@ -699,6 +729,9 @@ export function App() {
   // `createTab` is defined further down; a ref lets the first-broadcast handler
   // reach it without hoisting the whole callback above the state it closes over.
   const createTabRef = useRef<((spec: CreateSpec) => void) | null>(null);
+  // Review urls this window sent a `createTab` for and has no answer to yet, with
+  // when it was sent. See `openReview`.
+  const pendingReviewsRef = useRef(new Map<string, number>());
   useEffect(() => {
     if (bootSpent.current || popout) return;
     bootSpent.current = true;
@@ -915,8 +948,8 @@ export function App() {
    * editor tab it drives Monaco by COMMAND — measured: Monaco 0.55 takes input
    * through the EditContext API and ignores synthetic keyboard events entirely,
    * so there is no event to forward and `editor.trigger` is the only route.
-   * The bar is always present on mobile now (it is the only way to the drawer),
-   * so without this its keys would be visible and dead on half the tabs.
+   * The bar is present on every mobile tab but a review (it is the only way to the
+   * drawer), so without this its keys would be visible and dead on half the tabs.
    */
   const sendKeyToEditor = useCallback(
     (name: string, mods: KeyMods) => {
@@ -1476,8 +1509,13 @@ export function App() {
           }
           knownVersionRef.current = msg.version;
         }
-        // A `ready` means a server is serving us again — the update finished.
+        // A `ready` means a server is serving us again — the update finished. It also
+        // follows every reconnect, during which frames were missed: the comments
+        // are read again whatever rev they were last heard to be at.
         setUpdating(null);
+        commentsStore.refresh();
+      } else if (msg.type === 'scmComments') {
+        commentsStore.observeRev(msg.repo, msg.rev);
       } else if (msg.type === 'updating') {
         if (msg.stage === 'failed') {
           setUpdating(null);
@@ -1486,7 +1524,17 @@ export function App() {
           setUpdating({ stage: msg.stage, ...(msg.version ? { version: msg.version } : {}) });
         }
       } else if (msg.type === 'tabCreated') {
-        dispatch({ type: 'tabCreated', id: msg.id });
+        // A review create is idempotent on the server, so its answer may name a tab
+        // this window already holds. Tell the controller what was asked for, so
+        // that answer is not mistaken for a stale ghost under a split.
+        const answered = tabsRef.current.find((t) => t.id === msg.id);
+        const asked =
+          answered?.kind === 'review' &&
+          answered.url !== undefined &&
+          pendingReviewsRef.current.delete(answered.url)
+            ? { kind: answered.kind, url: answered.url }
+            : undefined;
+        dispatch({ type: 'tabCreated', id: msg.id, expected: asked });
       } else if (msg.type === 'sessions') {
         // Accumulate seen-terminals + prune BEFORE deciding close-nav (the
         // controller reads seenTermIds); `setTabs` is async so `tabsRef.current`
@@ -1633,9 +1681,34 @@ export function App() {
     openDrawer();
   };
 
+  // Source Control lives in the dock on desktop and in the drawer's own view on
+  // mobile, where the dock never renders. The review bar's file list is the same
+  // route, so the chord, the palette entry and that button open one thing.
+  const openSourceControl = () => {
+    if (!mobileActiveRef.current) return openDockView('scm');
+    setDrawerView('scm');
+    openDrawer();
+  };
+
+  // The review keys act on the review the user is looking at, and ONLY then: with
+  // any other tab focused they are unwired, so the chord reaches the terminal and
+  // the palette does not offer them. The pane is found by its tab id.
+  const reviewHandlers: Partial<Record<Action, () => void>> =
+    activeTab.kind === 'review'
+      ? {
+          scmNextChange: () => reviewApiFor(activeTab.id)?.nextChange(),
+          scmPrevChange: () => reviewApiFor(activeTab.id)?.prevChange(),
+          scmNextFile: () => reviewApiFor(activeTab.id)?.nextFile(),
+          scmPrevFile: () => reviewApiFor(activeTab.id)?.prevFile(),
+          scmReviewed: () => reviewApiFor(activeTab.id)?.reviewCurrent(),
+        }
+      : {};
+
   // Rebindable desktop keybindings, wired to the actions that currently have a
   // target. Unbound / unwired chords fall through to the terminal untouched.
   const actionHandlers: Partial<Record<Action, () => void>> = {
+    ...reviewHandlers,
+    openSourceControl,
     commandPalette: () => setPanel('commandPalette'),
     search: () => registry.focusedApi()?.openSearch(),
     newTab: openNewTab,
@@ -1666,7 +1739,7 @@ export function App() {
   useKeybindings(actionHandlers);
 
   const createTab = useCallback(
-    (spec: CreateSpec) => {
+    (spec: CreateSpec): boolean => {
       setNewTabOpen(false);
       if (spec.kind === 'terminal') {
         // Always created OUTSIDE every pairing: exclude the current id and every
@@ -1681,10 +1754,12 @@ export function App() {
         // is about to mount on this id to collect it.
         if (spec.tmux !== undefined) pendingTmuxRef.current.set(id, spec.tmux);
         selectTab(id);
-        return;
+        return true;
       }
       // The server acks with `tabCreated` carrying the assigned id (deterministic).
-      if (!wsControlRef.current?.sendCreateTab(spec)) showToast('Not connected — try again');
+      const sent = wsControlRef.current?.sendCreateTab(spec) ?? false;
+      if (!sent) showToast('Not connected — try again');
+      return sent;
     },
     [selectTab, showToast],
   );
@@ -1858,6 +1933,114 @@ export function App() {
     },
     [createTab, selectTab],
   );
+
+  // The file each review tab should scroll to once it shows, keyed by the review's
+  // url. The hand-off point for the review pane: it takes the entry for its own url
+  // and clears it, the way a terminal pane takes its tmux target. A later open of the
+  // same url simply replaces the entry. The tick tells a pane that is already
+  // mounted (and maybe already shown, so nothing else about it changes) to look.
+  const reviewScrollRef = useRef(new Map<string, ScmOpenTarget>());
+  const [reviewOpenTick, setReviewOpenTick] = useState(0);
+  /**
+   * Open the review a Source Control row belongs to, or focus the one already open.
+   *
+   * One review tab per (group, project), the rule `openFileTab` applies to editor
+   * files: a second tab on the same url would be two panes polling one project.
+   * A live tab is selected and a missing one is created. The server also answers a
+   * duplicate `createTab` with the existing tab, but that is only the cross-window
+   * backstop; this window never sends one for a url it can see, and never sends a
+   * second while its first is still unanswered (two quick taps before the tab has
+   * been broadcast). An unanswered create is forgotten after a few seconds, so a
+   * refused one cannot block the url for good.
+   */
+  const openReview = useCallback(
+    (target: ScmOpenTarget) => {
+      const repo = activeScmRepoRef.current;
+      if (!repo) return;
+      const url = reviewUrl(target.group, repo);
+      reviewScrollRef.current.set(url, target);
+      setReviewOpenTick((tick) => tick + 1);
+      const existing = tabsRef.current.find((t) => t.kind === 'review' && t.url === url);
+      if (existing) {
+        selectTab(existing.id);
+        return;
+      }
+      const sentAt = pendingReviewsRef.current.get(url);
+      if (sentAt !== undefined && Date.now() - sentAt < PENDING_REVIEW_MS) return;
+      pendingReviewsRef.current.set(url, Date.now());
+      if (!createTab({ kind: 'review', url })) pendingReviewsRef.current.delete(url);
+    },
+    [createTab, selectTab],
+  );
+
+  // Where the review bar's left→right swipe goes: the last tab that was NOT a review,
+  // which is the tab that was active before the review opened (and, from one review
+  // to another, still that tab, so swiping back twice never ping-pongs between two
+  // reviews). Recorded as the selection moves, from the list as broadcast: a tab id
+  // the server has not announced yet reads as a terminal, and a review just created
+  // must not be taken for the tab to return to.
+  const returnTabRef = useRef<string | null>(null);
+  useEffect(() => {
+    const shown = tabs.find((t) => t.id === sessionId);
+    if (shown && shown.kind !== 'review') returnTabRef.current = shown.id;
+  }, [sessionId, tabs]);
+  // That tab, or the first terminal when it has been closed since.
+  const leaveReview = useCallback(() => {
+    const list = tabsRef.current;
+    const back =
+      list.find((t) => t.id === returnTabRef.current && t.kind !== 'review') ??
+      list.find((t) => t.kind === 'terminal');
+    if (back) selectTab(back.id);
+  }, [selectTab]);
+
+  // What a review pane takes from the app around it (review/review-host.ts).
+  const reviewHost = useMemo<ReviewHost>(
+    () => ({
+      repos: settings.scmRepos,
+      layout: settings.scmLayout,
+      algorithm: settings.scmAlgorithm,
+      wrap: settings.scmWrap,
+      codeFontSize: settings.codeFontSize,
+      openTick: reviewOpenTick,
+      setPreferences: updateSettings,
+      activate: (repo) => updateSettings({ scmActiveRepo: repo }),
+      openFile: openFileTab,
+      takeScrollTarget: (url) => {
+        const target = reviewScrollRef.current.get(url);
+        reviewScrollRef.current.delete(url);
+        return target;
+      },
+      notify: showToast,
+    }),
+    [
+      settings.scmRepos,
+      settings.scmLayout,
+      settings.scmAlgorithm,
+      settings.scmWrap,
+      settings.codeFontSize,
+      reviewOpenTick,
+      updateSettings,
+      openFileTab,
+      showToast,
+    ],
+  );
+
+  // Focusing a review makes its project the one this device reads. Keyed on the
+  // focused tab and its repo and on nothing else, so choosing another project in the
+  // dock while the review stays focused is not undone by the next tab broadcast: that
+  // review then shows as paused until it is focused again. A project that is no
+  // longer in the list (a removed one) is never made active. In a split only the
+  // focused slot drives this, because `sessionId` follows focus.
+  const focusedReviewRepo =
+    !popout && activeTab.kind === 'review' && activeTab.url !== undefined
+      ? (parseReviewUrl(activeTab.url)?.top ?? null)
+      : null;
+  useEffect(() => {
+    if (focusedReviewRepo === null) return;
+    if (!settingsRef.current.scmRepos.includes(focusedReviewRepo)) return;
+    if (activeScmRepoRef.current === focusedReviewRepo) return;
+    updateSettings({ scmActiveRepo: focusedReviewRepo });
+  }, [sessionId, focusedReviewRepo, updateSettings]);
 
   const updateQuickLinks = useCallback(
     (quickLinks: { name: string; url: string }[]) => updateSettings({ quickLinks }),
@@ -2198,6 +2381,7 @@ export function App() {
         <div className="content-area" ref={contentRef}>
           {/* All split geometry + the terminal/pane/divider/eject/dropzone
             rendering lives in SplitView (it owns the live divider ratio). */}
+          <ReviewHostContext.Provider value={reviewHost}>
           <SplitView
             pairing={activePairing}
             sessionId={sessionId}
@@ -2218,7 +2402,9 @@ export function App() {
               !activePairing &&
               !pairingOf(pairings, dragTabId)
             }
-            showSlotZones={dragTabId !== null && !!activePairing && !pairingOf(pairings, dragTabId)}
+            showSlotZones={
+              dragTabId !== null && !!activePairing && !pairingOf(pairings, dragTabId)
+            }
             containerRef={contentRef}
             registry={registry}
             settings={paneSettings}
@@ -2249,6 +2435,7 @@ export function App() {
             onDropSplit={doDropSplit}
             onDropSlot={doDropSlot}
           />
+          </ReviewHostContext.Provider>
 
           {/* Closing the last tab lands here: the chooser as an ACTUAL page. */}
           {chooserPage && (
@@ -2341,6 +2528,18 @@ export function App() {
                 onNotice={showToast}
               />
             )}
+            {dockView === 'scm' && (
+              // Mounted only while it is the open dock view, so it is visible by
+              // construction; the store adds the foreground-window check.
+              <SourceControlView
+                repos={settings.scmRepos}
+                activeRepo={activeScmRepo}
+                visible
+                onChange={updateSettings}
+                onOpenFile={openReview}
+                onNotice={showToast}
+              />
+            )}
             {dockView === 'dictation' && (
               <DictationView
                 onCopy={(text) => void copyText(text).then(() => showToast('Copied'))}
@@ -2409,21 +2608,39 @@ export function App() {
                   />
                 ),
               }
-            : drawerView === 'dictation'
+            : drawerView === 'scm'
               ? {
                   viewContent: (
-                    <DictationView
-                      onCopy={(text) => void copyText(text).then(() => showToast('Copied'))}
-                      onInsert={(text) => {
-                        closeDrawer();
-                        const api = registry.focusedApi();
-                        if (!api) showToast('Focus a terminal to insert into');
-                        else if (!api.paste(text)) showToast('Terminal not connected');
+                    <SourceControlView
+                      repos={settings.scmRepos}
+                      activeRepo={activeScmRepo}
+                      // The drawer stays mounted while it is closed, so being mounted
+                      // is not being seen: a closed drawer must not keep the poll alive.
+                      visible={drawerOpen}
+                      onChange={updateSettings}
+                      onOpenFile={(target) => {
+                        closeDrawer(); // opening navigates; get out of the way first
+                        openReview(target);
                       }}
+                      onNotice={showToast}
                     />
                   ),
                 }
-              : {})}
+              : drawerView === 'dictation'
+                ? {
+                    viewContent: (
+                      <DictationView
+                        onCopy={(text) => void copyText(text).then(() => showToast('Copied'))}
+                        onInsert={(text) => {
+                          closeDrawer();
+                          const api = registry.focusedApi();
+                          if (!api) showToast('Focus a terminal to insert into');
+                          else if (!api.paste(text)) showToast('Terminal not connected');
+                        }}
+                      />
+                    ),
+                  }
+                : {})}
           actions={drawerActions}
           settings={settings}
           onChangeSettings={updateSettings}
@@ -2451,16 +2668,32 @@ export function App() {
         />
       )}
 
-      {mobileActive && !popout && (
+      {/* A review has no terminal to type into, so it gets its own bar in the extra-keys
+          bar's slot (the extra-keys bar is not rendered at all, and returns with the
+          next tab that is not a review). Both keep the drawer swipe. */}
+      {mobileActive && !popout && activeTab.kind === 'review' && (
+        <ReviewBar
+          group={parseReviewUrl(activeTab.url ?? '')?.group ?? 'changes'}
+          onFiles={openSourceControl}
+          onPreviousFile={() => reviewApiFor(activeTab.id)?.prevFile()}
+          onNextFile={() => reviewApiFor(activeTab.id)?.nextFile()}
+          onReview={() => reviewApiFor(activeTab.id)?.reviewCurrent()}
+          // Right→left pulls in the drawer, as on the extra-keys bar; left→right goes
+          // back to where the review was opened from.
+          onSwipe={(dir) => (dir === 'right' ? leaveReview() : openDrawer())}
+        />
+      )}
+      {mobileActive && !popout && activeTab.kind !== 'review' && (
         <ExtraKeysBar
           ref={barRef}
           config={extraKeys}
-          // ALWAYS present on mobile, whatever the tab is. It used to hide on a
-          // non-terminal tab, which looked tidy and was a TRAP: the bar is the
-          // only route to the drawer (right→left swipe), and mobile has no tab
-          // strip, so opening a file from the Explorer left no way to switch
-          // tabs, close it, or reach anything else. Measured: header showed only
-          // Read/Edit, bar hidden, no exit.
+          // A bar with the drawer swipe is ALWAYS present on mobile, whatever the tab
+          // is. The extra-keys bar used to hide on a non-terminal tab, which looked
+          // tidy and was a TRAP: the bar is the only route to the drawer
+          // (right→left swipe), and mobile has no tab strip, so opening a file from
+          // the Explorer left no way to switch tabs, close it, or reach anything
+          // else. Measured: header showed only Read/Edit, bar hidden, no exit. A
+          // review swaps this bar for the review bar, which keeps that route.
           visible={extraKeys.enabled}
           send={sendInput}
           sendKey={sendKeyToEditor}

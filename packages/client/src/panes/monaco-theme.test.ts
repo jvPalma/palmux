@@ -26,8 +26,17 @@ const LIGHT: ColorProfile = { ...DARK, id: 'test-light', name: 'Test Light', bg:
 const ruleFor = (p: ColorProfile, token: string) =>
   buildMonacoTheme(p).rules.find((r) => r.token === token);
 
+// Every subscription a test makes is dropped here: the list is module state, and a
+// listener left behind would hear the next test's profile.
+const subscriptions: (() => void)[] = [];
+const subscribe = (...args: Parameters<typeof onEditorProfile>): (() => void) => {
+  const unsubscribe = onEditorProfile(...args);
+  subscriptions.push(unsubscribe);
+  return unsubscribe;
+};
+
 afterEach(() => {
-  onEditorProfile(() => {});
+  for (const unsubscribe of subscriptions.splice(0)) unsubscribe();
   vi.restoreAllMocks();
 });
 
@@ -92,9 +101,85 @@ describe('the editor-profile bridge', () => {
 
   it('notifies the loader once it has subscribed', () => {
     const seen: string[] = [];
-    onEditorProfile((p) => seen.push(p.id));
+    subscribe((p) => seen.push(p.id));
     setEditorProfile(DARK);
     setEditorProfile(LIGHT);
     expect(seen).toEqual(['test-dark', 'test-light']);
+  });
+
+  // The loader's listener used to be THE listener: a review pane subscribing would
+  // have displaced it and left every editor on the old palette.
+  it('keeps every subscriber and runs them in registration order', () => {
+    const order: string[] = [];
+    subscribe(() => order.push('loader'));
+    subscribe(() => order.push('review 1'));
+    subscribe(() => order.push('review 2'));
+    setEditorProfile(DARK);
+    expect(order).toEqual(['loader', 'review 1', 'review 2']);
+  });
+
+  it('runs a `first` subscriber ahead of earlier ones, however late it registers', () => {
+    const order: string[] = [];
+    subscribe(() => order.push('review'));
+    subscribe(() => order.push('loader'), { first: true });
+    subscribe(() => order.push('another review'));
+    subscribe(() => order.push('second first'), { first: true });
+    setEditorProfile(DARK);
+    expect(order).toEqual(['loader', 'second first', 'review', 'another review']);
+  });
+
+  it('stops notifying a subscriber once it unsubscribes, and only that one', () => {
+    const kept: string[] = [];
+    const dropped: string[] = [];
+    subscribe((p) => kept.push(p.id));
+    const unsubscribe = subscribe((p) => dropped.push(p.id));
+    setEditorProfile(DARK);
+    unsubscribe();
+    unsubscribe(); // idempotent
+    setEditorProfile(LIGHT);
+    expect(kept).toEqual(['test-dark', 'test-light']);
+    expect(dropped).toEqual(['test-dark']);
+  });
+
+  it('unsubscribing a `first` subscriber leaves the order of the rest intact', () => {
+    const order: string[] = [];
+    const dropFirst = subscribe(() => order.push('loader'), { first: true });
+    subscribe(() => order.push('review'));
+    dropFirst();
+    // A later `first` must still land at the front, not behind the survivor.
+    subscribe(() => order.push('loader again'), { first: true });
+    setEditorProfile(DARK);
+    expect(order).toEqual(['loader again', 'review']);
+  });
+
+  it('treats one callback registered twice as two subscriptions', () => {
+    const seen: string[] = [];
+    const cb = (p: ColorProfile) => seen.push(p.id);
+    const unsubscribeOne = subscribe(cb);
+    subscribe(cb);
+    setEditorProfile(DARK);
+    expect(seen).toHaveLength(2);
+    unsubscribeOne();
+    setEditorProfile(LIGHT);
+    expect(seen).toHaveLength(3);
+  });
+
+  it('does not call a subscriber that an earlier one removed during the same change', () => {
+    const seen: string[] = [];
+    let dropLater = () => {};
+    subscribe(() => dropLater());
+    dropLater = subscribe(() => seen.push('later'));
+    setEditorProfile(DARK);
+    expect(seen).toEqual([]);
+  });
+
+  it('lets every subscriber run when one throws, then rethrows the first failure', () => {
+    const seen: string[] = [];
+    subscribe(() => {
+      throw new Error('theme failed');
+    });
+    subscribe(() => seen.push('review'));
+    expect(() => setEditorProfile(DARK)).toThrow('theme failed');
+    expect(seen).toEqual(['review']);
   });
 });

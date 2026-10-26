@@ -17,16 +17,13 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type * as Monaco from 'monaco-editor';
-import { loadSettings, onSettingsChange } from '../settings/settings';
+import { editorFontSize, loadSettings, onSettingsChange } from '../settings/settings';
 import { languageOf } from './editor-language';
 import { Icon } from '../ui/icons';
 import { editorLayoutOptions, observeEditorWidth } from './editor-layout';
 import { focusEditor, registerEditor, unregisterEditor } from './editor-registry';
 
 const AUTOSAVE_MS = 2000;
-// The editor tracks the terminal font size, a touch larger for readability.
-const EDITOR_FONT_OFFSET = 1;
-const editorFontSize = (): number => loadSettings().fontSize + EDITOR_FONT_OFFSET;
 
 /**
  * The terminal's own family, and it must be set explicitly. Monaco's default
@@ -131,7 +128,7 @@ export const EditorPane = ({
           theme: 'palmux',
           automaticLayout: true, // handles pane show/hide + window resizes
           minimap: { enabled: false },
-          fontSize: editorFontSize(),
+          fontSize: editorFontSize(loadSettings()),
           fontFamily: editorFontFamily(),
           padding: { top: 8 },
           // Gutter chrome is affordable on a desktop pane and not on a 390px
@@ -235,13 +232,14 @@ export const EditorPane = ({
     };
   }, [src, regId, filePath, tabId]);
 
-  // Follow the terminal font live (settings pub/sub → updateOptions).
+  // Follow the code size (the terminal's, until one is set) live: settings pub/sub
+  // → updateOptions.
   useEffect(
     () =>
-      onSettingsChange(() => {
+      onSettingsChange((settings) => {
         editorRef.current?.updateOptions({
-          fontSize: editorFontSize(),
-          fontFamily: editorFontFamily(),
+          fontSize: editorFontSize(settings),
+          fontFamily: settings.fontFamily,
         });
       }),
     [],

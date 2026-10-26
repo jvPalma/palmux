@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { TAB_KINDS } from '@palmux/shared';
 import {
   displayTitle,
   kindIcon,
@@ -56,6 +57,44 @@ describe('displayTitle', () => {
     expect(displayTitle({ id: '2', kind: 'dashboard' })).toBe('dashboard');
     expect(displayTitle({ id: '3', kind: 'editor' })).toBe('notes');
   });
+
+  // A review tab is named for what it shows and which project it is about, so two
+  // reviews of one project (Changes and Staged) and two projects stay apart.
+  describe('review tabs', () => {
+    it('names Changes and Staged after the project folder', () => {
+      expect(displayTitle({ id: '4', kind: 'review', url: 'changes:/work/palmux' })).toBe(
+        'Changes · palmux',
+      );
+      expect(displayTitle({ id: '5', kind: 'review', url: 'staged:/work/palmux' })).toBe(
+        'Staged · palmux',
+      );
+    });
+
+    it('uses the last folder of a nested project, trailing slash or not', () => {
+      expect(
+        displayTitle({ id: '4', kind: 'review', url: 'changes:/home/user/projects/a b' }),
+      ).toBe('Changes · a b');
+      expect(displayTitle({ id: '4', kind: 'review', url: 'staged:/work/palmux/' })).toBe(
+        'Staged · palmux',
+      );
+    });
+
+    it('falls back to the whole path for a project at the root', () => {
+      expect(displayTitle({ id: '4', kind: 'review', url: 'changes:/' })).toBe('Changes · /');
+    });
+
+    it('lets an explicit name win', () => {
+      expect(
+        displayTitle({ id: '4', kind: 'review', url: 'changes:/work/palmux', name: 'api review' }),
+      ).toBe('api review');
+    });
+
+    it('is just "review" when the url is missing or is not a review url', () => {
+      expect(displayTitle({ id: '4', kind: 'review' })).toBe('review');
+      expect(displayTitle({ id: '4', kind: 'review', url: '/work/palmux' })).toBe('review');
+      expect(displayTitle({ id: '4', kind: 'review', url: 'changes:relative' })).toBe('review');
+    });
+  });
 });
 
 describe('palette', () => {
@@ -66,9 +105,11 @@ describe('palette', () => {
     for (let n = 0; n < 16; n++) {
       expect(TAB_COLORS.find((c) => c.name === `ansi${n}`)?.value).toBe(`var(--tab-c-ansi${n})`);
     }
-    for (const kind of ['terminal', 'web', 'dashboard', 'editor', 'markdown'] as const) {
+    for (const kind of ['terminal', 'web', 'dashboard', 'editor', 'markdown', 'review'] as const) {
       expect(kindIcon(kind)).toBeTruthy();
     }
+    // The strip tells kinds apart by icon, so no two share one.
+    expect(new Set(TAB_KINDS.map(kindIcon)).size).toBe(TAB_KINDS.length);
   });
 
   describe('resolveColorSlot', () => {

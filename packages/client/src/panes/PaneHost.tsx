@@ -16,6 +16,7 @@ import type { CreateSpec, QuickLink } from './DashboardBody';
 import { EditorPane } from './EditorPane';
 import { MarkdownPane } from './MarkdownPane';
 import { FileTabPane } from './FileTabPane';
+import { ReviewPane } from '../review/ReviewPane';
 import type { WebAppLink } from '@palmux/shared';
 import type { Rect } from '../session/useSplit';
 
@@ -119,6 +120,10 @@ export const PaneHost = memo(function PaneHost({
                 onMenu={onMenu}
               />
             )}
+            {/* A review is told whether it is shown and whether its slot has focus, and
+                nothing else: a hidden one issues no request, and only a focused one
+                may make its project the active one (App does that from the tab). */}
+            {tab.kind === 'review' && <ReviewPane tab={tab} visible={shown} focused={focused} />}
           </div>
         );
       })}

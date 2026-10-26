@@ -305,6 +305,77 @@ describe('tabCreated', () => {
   });
 });
 
+// A review create is idempotent in the server registry, so its answer can name a
+// tab this window already holds (another window opened the same group first). If
+// that tab sits in a split here, treating the id as a stale ghost would dissolve
+// the split the review is in.
+describe('tabCreated, answering a review create (F4-05)', () => {
+  const URL = 'changes:/work/app';
+  const review = (id: string, url = URL): TabMeta => ({ id, kind: 'review', url });
+  const reviewSplit = (focused: 'a' | 'b' = 'a'): SplitState => ({
+    a: { tabId: '3', kind: 'review' },
+    b: { tabId: '0', kind: 'terminal' },
+    orientation: 'row',
+    ratio: 0.5,
+    focused,
+  });
+  const held = { tabs: [tab('0'), review('3')], pairings: [reviewSplit()] };
+
+  it('keeps the split that holds the live review and moves to its slot', () => {
+    const out = run(
+      { type: 'tabCreated', id: '3', expected: { kind: 'review', url: URL } },
+      { ...held, sessionId: '0' },
+    );
+    expect(out).toEqual([
+      { type: 'chooserPage', value: false },
+      { type: 'focusSlotP', key: '3', slot: 'a' },
+      { type: 'navigate', id: '3' },
+    ]);
+    expect(out.some((e) => e.type === 'dissolveP')).toBe(false);
+  });
+
+  it('still dissolves when the id is not a live tab of the expected url', () => {
+    // The id was recycled: a different review now holds it.
+    const out = run(
+      { type: 'tabCreated', id: '3', expected: { kind: 'review', url: URL } },
+      { ...held, tabs: [tab('0'), review('3', 'staged:/work/app')] },
+    );
+    expect(out[0]).toEqual({ type: 'dissolveP', key: '3' });
+  });
+
+  it('still dissolves when the id is not live at all', () => {
+    const out = run(
+      { type: 'tabCreated', id: '3', expected: { kind: 'review', url: URL } },
+      { ...held, tabs: [tab('0')] },
+    );
+    expect(out[0]).toEqual({ type: 'dissolveP', key: '3' });
+  });
+
+  it('still dissolves when the slot holds another kind (a recycled terminal id)', () => {
+    const out = run(
+      { type: 'tabCreated', id: '3', expected: { kind: 'review', url: URL } },
+      { ...held, pairings: [split('0', '3')] },
+    );
+    expect(out[0]).toEqual({ type: 'dissolveP', key: '0' });
+  });
+
+  it('without an expectation (every other kind) the ghost rule is unchanged', () => {
+    const out = run({ type: 'tabCreated', id: '3' }, held);
+    expect(out[0]).toEqual({ type: 'dissolveP', key: '3' });
+  });
+
+  it('a live review outside every split just navigates', () => {
+    const out = run(
+      { type: 'tabCreated', id: '3', expected: { kind: 'review', url: URL } },
+      { tabs: [tab('0'), review('3')] },
+    );
+    expect(out).toEqual([
+      { type: 'chooserPage', value: false },
+      { type: 'navigate', id: '3' },
+    ]);
+  });
+});
+
 describe('sessionsBroadcast (close-navigation)', () => {
   it('the active tab closed → navigate to its LEFT neighbor', () => {
     // old tabs [0,1,2], active 1 closed → left neighbor 0

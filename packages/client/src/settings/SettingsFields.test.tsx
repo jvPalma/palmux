@@ -262,6 +262,96 @@ describe('layout', () => {
   });
 });
 
+// ── Code font size: the Font size row's twin ──────────────────────────────────
+describe('Code font size row', () => {
+  const input = () => screen.getByTestId('set-code-size');
+
+  it('is a number input labelled by its row, right after Font size, in the same column', () => {
+    render(<SettingsFields settings={DEFAULTS} onChange={() => {}} />);
+    expect(input()).toHaveAttribute('type', 'number');
+    expect(input()).toHaveClass('ui-input', 'srow-num');
+    expect(input().id).toBe('set-code-size');
+    expect(input().closest('.srow-control')).not.toBeNull();
+    expect(screen.getByText('Code font size').closest('label')).toHaveAttribute(
+      'for',
+      'set-code-size',
+    );
+    expect(screen.getByText('diff and editor, this device')).toBeInTheDocument();
+    const rows = [...document.querySelectorAll('.srow')].map((row) => row.textContent);
+    const at = (label: string) => rows.findIndex((text) => text?.startsWith(label));
+    expect(at('Code font size')).toBe(at('Font size') + 1);
+  });
+
+  it('takes the terminal’s range, so the two cannot disagree about what a size is', () => {
+    render(<SettingsFields settings={DEFAULTS} onChange={() => {}} />);
+    for (const id of ['set-size', 'set-code-size']) {
+      expect(screen.getByTestId(id)).toHaveAttribute('min', '6');
+      expect(screen.getByTestId(id)).toHaveAttribute('max', '48');
+    }
+  });
+
+  it('is empty, with the word Default in it, while the device never chose', () => {
+    render(<SettingsFields settings={DEFAULTS} onChange={() => {}} />);
+    expect(input()).toHaveValue(null);
+    expect(input()).toHaveAttribute('placeholder', 'Default');
+  });
+
+  it('shows the size the device chose', () => {
+    render(<SettingsFields settings={{ ...DEFAULTS, codeFontSize: 11 }} onChange={() => {}} />);
+    expect(input()).toHaveValue(11);
+  });
+
+  it('reports a number as the code size alone, and leaves the terminal size to its own row', () => {
+    const onChange = vi.fn();
+    render(<SettingsFields settings={DEFAULTS} onChange={onChange} />);
+    fireEvent.change(input(), { target: { value: '16' } });
+    expect(onChange).toHaveBeenCalledWith({ codeFontSize: 16 });
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a cleared field as null: back to the default, not zero', () => {
+    const onChange = vi.fn();
+    render(<SettingsFields settings={{ ...DEFAULTS, codeFontSize: 11 }} onChange={onChange} />);
+    fireEvent.change(input(), { target: { value: '' } });
+    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.blur(input());
+    expect(onChange).toHaveBeenCalledWith({ codeFontSize: null });
+  });
+
+  // Committing each keystroke clamped the "1" of "11" to the minimum (6), so the
+  // next "1" made 61 and then 48.
+  for (const id of ['set-size', 'set-code-size']) {
+    it(`${id}: typing 11 one digit at a time commits 11, never a clamped first digit`, () => {
+      const onChange = vi.fn();
+      render(<SettingsFields settings={DEFAULTS} onChange={onChange} />);
+      const field = screen.getByTestId(id);
+      fireEvent.change(field, { target: { value: '1' } });
+      expect(field).toHaveValue(1);
+      fireEvent.change(field, { target: { value: '11' } });
+      fireEvent.blur(field);
+      const key = id === 'set-size' ? 'fontSize' : 'codeFontSize';
+      expect(onChange.mock.calls.map(([patch]) => patch[key])).toEqual([11]);
+    });
+
+    it(`${id}: an out-of-range entry is clamped when the field is left`, () => {
+      const onChange = vi.fn();
+      render(<SettingsFields settings={DEFAULTS} onChange={onChange} />);
+      const field = screen.getByTestId(id);
+      fireEvent.change(field, { target: { value: '60' } });
+      expect(onChange).not.toHaveBeenCalled();
+      fireEvent.keyDown(field, { key: 'Enter' });
+      expect(field).toHaveValue(48);
+      const key = id === 'set-size' ? 'fontSize' : 'codeFontSize';
+      expect(onChange).toHaveBeenLastCalledWith({ [key]: 48 });
+    });
+  }
+
+  it('does not touch the terminal size row, whatever the code size is', () => {
+    render(<SettingsFields settings={{ ...DEFAULTS, codeFontSize: 9 }} onChange={() => {}} />);
+    expect(screen.getByTestId('set-size')).toHaveValue(DEFAULTS.fontSize);
+  });
+});
+
 // ── Font: the kit Select ──────────────────────────────────────────────────────
 describe('Font row', () => {
   const trigger = () => screen.getByTestId('set-font');
@@ -703,6 +793,7 @@ describe.each([
 
   const SINGLE_BOX = {
     'an Input': 'set-size',
+    'the code size Input': 'set-code-size',
     'a Button': 'open-keybindings',
     'the Select trigger': 'set-font',
     'the Theme button': 'set-theme',

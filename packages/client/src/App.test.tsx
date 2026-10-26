@@ -17,6 +17,9 @@ import { GROUP_DND_TYPE, TAB_DND_TYPE } from './session/SessionTabs';
 import type { SessionDrawer as SessionDrawerComponent } from './session/SessionDrawer';
 import type { DrawerDrop } from './session/drawer-tree';
 import type { PaneApi, SlotId, SplitRegistry } from './session/SplitFocusContext';
+import { registerReview, resetReviewRegistry, type ReviewApi } from './review/review-registry';
+import { commentsStore } from './review/use-comments';
+import { scmStatusStore } from './scm/status-store';
 import { useFileUpload } from './terminal/useFileUpload';
 import { Icon } from './ui/icons';
 import { DEFAULTS, type ClientSettings } from './settings/settings';
@@ -135,6 +138,8 @@ const paneApiFake = vi.hoisted(() => ({
   launches: true,
   /** How many times the layout asked the pane to re-fit: each one is a SIGWINCH risk. */
   refits: 0,
+  /** Every string a shared input surface sent the pane, typed or pasted: what reaches the PTY. */
+  typed: [] as string[],
 }));
 const UploadingPaneApi = (p: { registry: SplitRegistry; slot: SlotId; sessionId: string }) => {
   const { openPicker, openImagePicker } = useFileUpload({
@@ -146,8 +151,14 @@ const UploadingPaneApi = (p: { registry: SplitRegistry; slot: SlotId; sessionId:
   useEffect(() => {
     const noop = () => {};
     const api: PaneApi = {
-      sendInput: () => true,
-      paste: () => true,
+      sendInput: (t) => {
+        paneApiFake.typed.push(t);
+        return true;
+      },
+      paste: (t) => {
+        paneApiFake.typed.push(t);
+        return true;
+      },
       pasteImage: noop,
       openPicker: (onReturn) => (paneApiFake.launches ? openPicker(onReturn) : false),
       openImagePicker: (onReturn) => (paneApiFake.launches ? openImagePicker(onReturn) : false),
@@ -237,14 +248,20 @@ const paneHost = vi.hoisted(() => ({
   onDirtyChange: null as null | ((id: string, dirty: boolean) => void),
   /** The ☰ the web/editor/markdown panes show on a phone, where there is no strip. */
   onMenu: undefined as undefined | (() => void),
+  /** What a review pane would read from the app around it (review/review-host.ts). */
+  review: null as null | import('./review/review-host').ReviewHost,
 }));
-vi.mock('./panes/PaneHost', () => ({
-  PaneHost: (p: { onDirtyChange: (id: string, dirty: boolean) => void; onMenu?: () => void }) => {
-    paneHost.onDirtyChange = p.onDirtyChange;
-    paneHost.onMenu = p.onMenu;
-    return <div data-testid="pane-host" />;
-  },
-}));
+vi.mock('./panes/PaneHost', async () => {
+  const { useReviewHost } = await import('./review/review-host');
+  return {
+    PaneHost: (p: { onDirtyChange: (id: string, dirty: boolean) => void; onMenu?: () => void }) => {
+      paneHost.onDirtyChange = p.onDirtyChange;
+      paneHost.onMenu = p.onMenu;
+      paneHost.review = useReviewHost();
+      return <div data-testid="pane-host" />;
+    },
+  };
+});
 
 // Settings' raw config.json editor is Monaco, behind the lazy loader. The fake
 // keeps the content listeners so a test can play someone typing into it — the
@@ -4656,6 +4673,53 @@ describe('Settings in the app', () => {
 
   const openDockSettings = () => fireEvent.click(screen.getByTestId('dock-rail-settings'));
 
+  // One field list in both hosts, so the row has to be in both, and a change has to
+  // reach the real settings: this device's, and not the terminal's or the server's.
+  describe('the Code font size row', () => {
+    const settingsNow = (): Record<string, unknown> =>
+      JSON.parse(localStorage.getItem('palmux-settings') ?? '{}');
+
+    it('is in the dock’s Appearance card beside Font size, empty until the device chooses', async () => {
+      setup(['0', '1']);
+      openDockSettings();
+      const row = await screen.findByTestId('set-code-size');
+      expect(screen.getByTestId('settings-section-appearance')).toContainElement(row);
+      expect(row).toHaveValue(null);
+      expect(row).toHaveAttribute('placeholder', 'Default');
+      const [size, code] = ['set-size', 'set-code-size'].map((id) => screen.getByTestId(id));
+      expect(size!.compareDocumentPosition(code!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+      const sentBefore = server().settingsSent.length;
+      fireEvent.change(row, { target: { value: '11' } });
+      expect(settingsNow()['codeFontSize']).toBe(11);
+      // Not the terminal's size, and nothing about it reaches the server, though the
+      // synced settings themselves still go out.
+      expect(settingsNow()['fontSize']).not.toBe(11);
+      expect(server().settingsSent.length).toBeGreaterThan(sentBefore);
+      for (const message of server().settingsSent)
+        expect(message).not.toHaveProperty('codeFontSize');
+    });
+
+    it('is in the mobile drawer’s Settings too, and clearing it goes back to the default', async () => {
+      localStorage.setItem(
+        'palmux-settings',
+        JSON.stringify({ mobileMode: 'on', codeFontSize: 14 }),
+      );
+      setup(['0', '1']);
+      fireEvent.keyDown(window, { key: ',', ctrlKey: true });
+      const row = await screen.findByTestId('set-code-size');
+      expect(screen.getByTestId('drawer-settings-body')).toContainElement(row);
+      expect(row).toHaveValue(14);
+
+      fireEvent.change(row, { target: { value: '' } });
+      fireEvent.blur(row);
+      expect(settingsNow()['codeFontSize']).toBeNull();
+      expect(screen.getByTestId('set-code-size')).toHaveValue(null);
+      for (const message of server().settingsSent)
+        expect(message).not.toHaveProperty('codeFontSize');
+    });
+  });
+
   describe('Edit config.json in the dock', () => {
     it('offers the row, with the editor already loaded behind the form and hidden', async () => {
       setup(['0', '1']);
@@ -5540,5 +5604,1223 @@ describe('the Download prompt uses the path exactly as typed', () => {
     download('/tmp/notes.md\n');
     expect(downloadFromServer).not.toHaveBeenCalled();
     expect(document.querySelector('.toast.show')?.textContent).toBe(LINE_BREAK);
+  });
+});
+
+// ── Source Control in the dock ────────────────────────────────────────────────
+//
+// SourceControlView and the status store are tested alone. What only App can get
+// wrong is the seam: the rail must open the view, the device's selection must
+// reach the store and stay LOCAL, and a row must open (or focus) the right review
+// tab without ever sending a second `createTab` for one that is already live.
+describe('Source Control in the dock', () => {
+  const APP_REPO = '/home/u/work/app';
+  const LIB_REPO = '/home/u/work/lib';
+
+  const scmStatus = (top: string, over: Record<string, unknown> = {}) => ({
+    top,
+    branch: 'main',
+    unborn: false,
+    merge: [],
+    staged: [],
+    changes: [],
+    truncated: false,
+    tookMs: 10,
+    commentsRev: 0,
+    attrEpoch: 'e0',
+    ...over,
+  });
+  const entryOf = (path: string, over: Record<string, unknown> = {}) => ({
+    path,
+    kind: 'ordinary',
+    status: 'M',
+    fp: `fp-${path}`,
+    ...over,
+  });
+
+  let statusRepos: string[] = [];
+  let answers: Record<string, ReturnType<typeof scmStatus>> = {};
+  let repoTop: string | null = null;
+  const reply = (body: unknown, status = 200) =>
+    Promise.resolve({ ok: status < 400, status, json: () => Promise.resolve(body) });
+
+  beforeEach(() => {
+    statusRepos = [];
+    answers = {};
+    repoTop = null;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) => {
+        const u = new URL(url, 'http://palmux');
+        if (u.pathname === '/scm/status') {
+          const repo = u.searchParams.get('repo') ?? '';
+          statusRepos.push(repo);
+          return reply(answers[repo] ?? scmStatus(repo));
+        }
+        if (u.pathname === '/scm/repo') {
+          return repoTop === null
+            ? reply({ error: 'path is not a git repository' }, 400)
+            : reply({ top: repoTop });
+        }
+        return reply(null, 404);
+      }),
+    );
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    document.documentElement.removeAttribute('style');
+  });
+
+  const storeSettings = (extra: Record<string, unknown>) =>
+    localStorage.setItem('palmux-settings', JSON.stringify({ mobileMode: 'off', ...extra }));
+  const stored = () => JSON.parse(localStorage.getItem('palmux-settings') ?? '{}');
+  const flush = () => act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+  const openScm = async () => {
+    fireEvent.click(screen.getByTestId('dock-rail-scm'));
+    await flush();
+  };
+  const boot = (tabs: Array<Record<string, unknown>>) => {
+    render(<App />);
+    send({ type: 'sessions', tabs });
+  };
+  const selected = () =>
+    [...document.querySelectorAll('[data-testid^="session-tab-"][aria-selected="true"]')].map(
+      (el) => el.getAttribute('data-testid')?.replace('session-tab-', ''),
+    );
+
+  it('puts Source Control on the rail, and opens the view with no project to read', async () => {
+    boot([{ id: '0', kind: 'terminal' }]);
+    await openScm();
+    expect(screen.getByTestId('dock')).toHaveAttribute('data-view', 'scm');
+    expect(screen.getByTestId('scm-empty')).toBeInTheDocument();
+    expect(statusRepos).toEqual([]);
+  });
+
+  it('remembers the view per device, like the others', async () => {
+    boot([{ id: '0', kind: 'terminal' }]);
+    await openScm();
+    expect(localStorage.getItem('palmux-dock-view')).toBe('scm');
+    cleanup();
+    sockets.length = 0;
+    boot([{ id: '0', kind: 'terminal' }]);
+    expect(screen.getByTestId('dock')).toHaveAttribute('data-view', 'scm');
+  });
+
+  it('reads the active project and lists its changes', async () => {
+    storeSettings({ scmRepos: [APP_REPO, LIB_REPO], scmActiveRepo: LIB_REPO });
+    answers[LIB_REPO] = scmStatus(LIB_REPO, { changes: [entryOf('lib.ts')] });
+    boot([{ id: '0', kind: 'terminal' }]);
+    await openScm();
+    expect(await screen.findByTestId('scm-row-changes:lib.ts')).toBeInTheDocument();
+    expect(new Set(statusRepos)).toEqual(new Set([LIB_REPO]));
+  });
+
+  it('falls to the first project when the stored selection is no longer in the list', async () => {
+    storeSettings({ scmRepos: [APP_REPO, LIB_REPO], scmActiveRepo: '/home/u/removed' });
+    boot([{ id: '0', kind: 'terminal' }]);
+    await openScm();
+    await screen.findByTestId('scm-branch');
+    expect(new Set(statusRepos)).toEqual(new Set([APP_REPO]));
+    expect(screen.getByTestId('scm-project-select')).toHaveTextContent('app');
+  });
+
+  it('reads nothing while Source Control is not the open view', async () => {
+    vi.useFakeTimers();
+    storeSettings({ scmRepos: [APP_REPO], scmActiveRepo: APP_REPO });
+    boot([{ id: '0', kind: 'terminal' }]);
+    await act(() => vi.advanceTimersByTimeAsync(60 * 60 * 1000));
+    expect(statusRepos).toEqual([]);
+
+    fireEvent.click(screen.getByTestId('dock-rail-scm'));
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(statusRepos.length).toBeGreaterThan(0);
+
+    // Leaving for Explorer unmounts the view, and with it the only counting subscriber.
+    fireEvent.click(screen.getByTestId('dock-rail-files'));
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    const afterLeaving = statusRepos.length;
+    await act(() => vi.advanceTimersByTimeAsync(60 * 60 * 1000));
+    expect(statusRepos).toHaveLength(afterLeaving);
+  });
+
+  describe('the project list is synced, the selection stays on the device', () => {
+    it('adding a project syncs the list, stores the selection locally, and sends only the list', async () => {
+      repoTop = APP_REPO;
+      boot([{ id: '0', kind: 'terminal' }]);
+      await openScm();
+      fireEvent.click(screen.getByTestId('scm-add-project'));
+      fireEvent.change(screen.getByTestId('scm-add-input'), {
+        target: { value: `${APP_REPO}/src` },
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('scm-add-submit'));
+      });
+      expect(await screen.findByTestId('scm-branch')).toBeInTheDocument();
+
+      expect(stored()).toMatchObject({ scmRepos: [APP_REPO], scmActiveRepo: APP_REPO });
+      const sent = server().settingsSent.at(-1) ?? {};
+      expect(sent['scmRepos']).toEqual([APP_REPO]);
+      for (const local of ['scmActiveRepo', 'scmLayout', 'scmAlgorithm', 'scmWrap']) {
+        expect(local in sent, local).toBe(false);
+      }
+      expect(new Set(statusRepos)).toEqual(new Set([APP_REPO]));
+    });
+
+    it('a refused path adds nothing and sends nothing', async () => {
+      boot([{ id: '0', kind: 'terminal' }]);
+      await openScm();
+      const before = server().settingsSent.length;
+      fireEvent.click(screen.getByTestId('scm-add-project'));
+      fireEvent.change(screen.getByTestId('scm-add-input'), { target: { value: '/tmp' } });
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('scm-add-submit'));
+      });
+      expect(screen.getByTestId('scm-add-note')).toHaveTextContent('path is not a git repository');
+      expect(stored()['scmRepos']).toBeUndefined();
+      expect(server().settingsSent).toHaveLength(before);
+    });
+
+    it('switching project reads the new one only, and a list change from another device is taken', async () => {
+      storeSettings({ scmRepos: [APP_REPO, LIB_REPO], scmActiveRepo: APP_REPO });
+      boot([{ id: '0', kind: 'terminal' }]);
+      await openScm();
+      await screen.findByTestId('scm-branch');
+      statusRepos.length = 0;
+      fireEvent.click(screen.getByTestId('scm-project-select'));
+      fireEvent.click(screen.getByTestId(`scm-project-select-option-${LIB_REPO}`));
+      await flush();
+      expect(stored()['scmActiveRepo']).toBe(LIB_REPO);
+      expect(new Set(statusRepos)).toEqual(new Set([LIB_REPO]));
+
+      // Another window removes the project this device is showing.
+      send({ type: 'settings', settings: { scmRepos: [APP_REPO] } });
+      await flush();
+      expect(screen.getByTestId('scm-project-select')).toHaveTextContent('app');
+      expect(stored()['scmActiveRepo']).toBe(LIB_REPO); // the choice is kept, not rewritten
+    });
+  });
+
+  describe('choosing a file opens its review', () => {
+    const rows = () => {
+      answers[APP_REPO] = scmStatus(APP_REPO, {
+        staged: [entryOf('s.ts')],
+        changes: [entryOf('c.ts')],
+      });
+      storeSettings({ scmRepos: [APP_REPO], scmActiveRepo: APP_REPO });
+    };
+
+    it('creates the Changes review for a changed file when none is open', async () => {
+      rows();
+      boot([{ id: '0', kind: 'terminal' }]);
+      await openScm();
+      fireEvent.click(await screen.findByTestId('scm-row-changes:c.ts'));
+      expect(server().created).toEqual([{ kind: 'review', url: `changes:${APP_REPO}` }]);
+    });
+
+    it('creates the Staged review for a staged file', async () => {
+      rows();
+      boot([{ id: '0', kind: 'terminal' }]);
+      await openScm();
+      fireEvent.click(await screen.findByTestId('scm-row-staged:s.ts'));
+      expect(server().created).toEqual([{ kind: 'review', url: `staged:${APP_REPO}` }]);
+    });
+
+    it('selects the review already open and sends no createTab', async () => {
+      rows();
+      boot([
+        { id: '0', kind: 'terminal' },
+        { id: '4', kind: 'review', url: `changes:${APP_REPO}` },
+      ]);
+      await openScm();
+      expect(selected()).toEqual(['0']);
+      fireEvent.click(await screen.findByTestId('scm-row-changes:c.ts'));
+      expect(server().created).toEqual([]);
+      expect(selected()).toEqual(['4']);
+    });
+
+    it('a staged file does not take the Changes review for its own', async () => {
+      rows();
+      boot([
+        { id: '0', kind: 'terminal' },
+        { id: '4', kind: 'review', url: `changes:${APP_REPO}` },
+      ]);
+      await openScm();
+      fireEvent.click(await screen.findByTestId('scm-row-staged:s.ts'));
+      expect(server().created).toEqual([{ kind: 'review', url: `staged:${APP_REPO}` }]);
+      expect(selected()).toEqual(['0']);
+    });
+
+    it('a review of another project is not reused for this one', async () => {
+      rows();
+      boot([
+        { id: '0', kind: 'terminal' },
+        { id: '4', kind: 'review', url: `changes:${LIB_REPO}` },
+      ]);
+      await openScm();
+      fireEvent.click(await screen.findByTestId('scm-row-changes:c.ts'));
+      expect(server().created).toEqual([{ kind: 'review', url: `changes:${APP_REPO}` }]);
+    });
+
+    it('opens the review of the device’s active project, whatever the list holds', async () => {
+      answers[LIB_REPO] = scmStatus(LIB_REPO, { changes: [entryOf('l.ts')] });
+      storeSettings({ scmRepos: [APP_REPO, LIB_REPO], scmActiveRepo: LIB_REPO });
+      boot([{ id: '0', kind: 'terminal' }]);
+      await openScm();
+      fireEvent.click(await screen.findByTestId('scm-row-changes:l.ts'));
+      expect(server().created).toEqual([{ kind: 'review', url: `changes:${LIB_REPO}` }]);
+    });
+  });
+
+  // ── A review in the workspace ──────────────────────────────────────────────
+  //
+  // Reviews are tabs like any other, so what only App can get wrong is how they
+  // meet the rest of the workspace: which project a focused review makes active,
+  // what a Source Control row hands the pane that shows it, and a create that is
+  // answered with a tab this window already holds.
+
+  describe('a review in a split', () => {
+    const openRows = () => {
+      answers[APP_REPO] = scmStatus(APP_REPO, {
+        changes: [entryOf('c.ts'), entryOf('d.ts')],
+      });
+      storeSettings({ scmRepos: [APP_REPO], scmActiveRepo: APP_REPO });
+    };
+    const splitsHold = (id: string) =>
+      (localStorage.getItem('palmux-splits') ?? '').includes(`"tabId":"${id}"`);
+
+    it('keeps the split when another file of the review it holds is chosen', async () => {
+      openRows();
+      boot([
+        { id: '0', kind: 'terminal' },
+        { id: '4', kind: 'review', url: `changes:${APP_REPO}` },
+      ]);
+      openSplitVia('4'); // (0 | 4), the review focused
+      expect(splitsHold('0') && splitsHold('4')).toBe(true);
+
+      await openScm();
+      fireEvent.click(await screen.findByTestId('scm-row-changes:d.ts'));
+      // The review is selected, not created again, and the pairing it is in survives.
+      expect(server().created).toEqual([]);
+      expect(splitsHold('0') && splitsHold('4')).toBe(true);
+      expect(panes()).toEqual([{ slot: 'a', session: '0', focused: false }]);
+    });
+
+    it('keeps the split when a create is answered with the review it holds', async () => {
+      openRows();
+      boot([{ id: '0', kind: 'terminal' }]);
+      await openScm();
+      fireEvent.click(await screen.findByTestId('scm-row-changes:c.ts'));
+      expect(server().created).toEqual([{ kind: 'review', url: `changes:${APP_REPO}` }]);
+
+      // Another window's create won: the tab arrives in a broadcast, and this window
+      // puts it in a split before the answer to its own create (the same tab) comes.
+      await send({
+        type: 'sessions',
+        tabs: [
+          { id: '0', kind: 'terminal' },
+          { id: '4', kind: 'review', url: `changes:${APP_REPO}` },
+        ],
+      });
+      openSplitVia('4');
+      expect(splitsHold('4')).toBe(true);
+      await send({ type: 'tabCreated', id: '4' });
+      expect(splitsHold('0') && splitsHold('4')).toBe(true);
+    });
+  });
+
+  describe('creating a review', () => {
+    const openRows = () => {
+      answers[APP_REPO] = scmStatus(APP_REPO, {
+        changes: [entryOf('c.ts'), entryOf('d.ts')],
+      });
+      storeSettings({ scmRepos: [APP_REPO], scmActiveRepo: APP_REPO });
+    };
+
+    it('sends one createTab for two quick opens before the tab exists', async () => {
+      openRows();
+      boot([{ id: '0', kind: 'terminal' }]);
+      await openScm();
+      fireEvent.click(await screen.findByTestId('scm-row-changes:c.ts'));
+      fireEvent.click(await screen.findByTestId('scm-row-changes:d.ts'));
+      expect(server().created).toEqual([{ kind: 'review', url: `changes:${APP_REPO}` }]);
+      // The second open still asks the pane for ITS file.
+      expect(paneHost.review?.takeScrollTarget(`changes:${APP_REPO}`)).toEqual({
+        group: 'changes',
+        path: 'd.ts',
+      });
+    });
+
+    it('does not let an unanswered create block the url for good', async () => {
+      openRows();
+      boot([{ id: '0', kind: 'terminal' }]);
+      await openScm();
+      vi.useFakeTimers({ toFake: ['Date'] });
+      fireEvent.click(await screen.findByTestId('scm-row-changes:c.ts'));
+      vi.setSystemTime(Date.now() + 6000);
+      fireEvent.click(screen.getByTestId('scm-row-changes:d.ts'));
+      expect(server().created).toHaveLength(2);
+    });
+
+    it('creates the review again once the one it asked for has been answered and closed', async () => {
+      openRows();
+      boot([
+        { id: '0', kind: 'terminal' },
+        { id: '4', kind: 'review', url: `changes:${APP_REPO}` },
+      ]);
+      await openScm();
+      await send({ type: 'sessions', tabs: [{ id: '0', kind: 'terminal' }] });
+      fireEvent.click(await screen.findByTestId('scm-row-changes:c.ts'));
+      expect(server().created).toEqual([{ kind: 'review', url: `changes:${APP_REPO}` }]);
+    });
+  });
+
+  describe('the review pane’s host', () => {
+    const openRows = () => {
+      answers[APP_REPO] = scmStatus(APP_REPO, { changes: [entryOf('c.ts')] });
+      storeSettings({ scmRepos: [APP_REPO, LIB_REPO], scmActiveRepo: APP_REPO });
+    };
+
+    it('hands a chosen file to the review once, and ticks so a shown pane looks', async () => {
+      openRows();
+      boot([
+        { id: '0', kind: 'terminal' },
+        { id: '4', kind: 'review', url: `changes:${APP_REPO}` },
+      ]);
+      await openScm();
+      const before = paneHost.review!.openTick;
+      fireEvent.click(await screen.findByTestId('scm-row-changes:c.ts'));
+      expect(paneHost.review!.openTick).toBeGreaterThan(before);
+      const url = `changes:${APP_REPO}`;
+      expect(paneHost.review!.takeScrollTarget(url)).toEqual({ group: 'changes', path: 'c.ts' });
+      expect(paneHost.review!.takeScrollTarget(url)).toBeUndefined();
+    });
+
+    it('is told the project list, and the preferences stay on the device', async () => {
+      openRows();
+      boot([{ id: '0', kind: 'terminal' }]);
+      expect(paneHost.review!.repos).toEqual([APP_REPO, LIB_REPO]);
+      await act(async () =>
+        paneHost.review!.setPreferences({
+          scmAlgorithm: 'patience',
+          scmLayout: 'split',
+          scmWrap: true,
+        }),
+      );
+      expect(stored()).toMatchObject({
+        scmAlgorithm: 'patience',
+        scmLayout: 'split',
+        scmWrap: true,
+      });
+      expect(paneHost.review!.algorithm).toBe('patience');
+      const sent = server().settingsSent.at(-1) ?? {};
+      for (const local of ['scmAlgorithm', 'scmLayout', 'scmWrap'])
+        expect(local in sent, local).toBe(false);
+    });
+
+    it('carries the code font size, which is this device’s and moves nothing else', async () => {
+      openRows();
+      boot([{ id: '0', kind: 'terminal' }]);
+      expect(paneHost.review!.codeFontSize).toBeNull();
+      const sentBefore = server().settingsSent.length;
+      await act(async () => paneHost.review!.setPreferences({ codeFontSize: 11 }));
+      expect(paneHost.review!.codeFontSize).toBe(11);
+      expect(stored()).toMatchObject({ codeFontSize: 11 });
+      // The terminal's own size is as it was.
+      expect(stored()['fontSize']).toBe(DEFAULTS.fontSize);
+      // The synced settings still went out (a change always sends them), without it.
+      const sentAfter = server().settingsSent.slice(sentBefore);
+      expect(sentAfter.length).toBeGreaterThan(0);
+      for (const message of server().settingsSent)
+        expect(message).not.toHaveProperty('codeFontSize');
+    });
+
+    it('takes the stored code font size at boot, and a server broadcast never changes it', async () => {
+      openRows();
+      storeSettings({ codeFontSize: 13 });
+      boot([{ id: '0', kind: 'terminal' }]);
+      expect(paneHost.review!.codeFontSize).toBe(13);
+      await send({ type: 'settings', settings: { codeFontSize: 30, scmRepos: [APP_REPO] } });
+      expect(paneHost.review!.codeFontSize).toBe(13);
+    });
+
+    it('makes a project active on request, which is a local choice', async () => {
+      openRows();
+      boot([{ id: '0', kind: 'terminal' }]);
+      await act(async () => paneHost.review!.activate(LIB_REPO));
+      expect(stored()['scmActiveRepo']).toBe(LIB_REPO);
+      expect(server().settingsSent.at(-1) ?? {}).not.toHaveProperty('scmActiveRepo');
+    });
+
+    it('opens a file in the editor through the same focus-if-open rule as the tree', async () => {
+      openRows();
+      boot([
+        { id: '0', kind: 'terminal' },
+        { id: '6', kind: 'editor', url: `${APP_REPO}/open.ts` },
+      ]);
+      act(() => paneHost.review!.openFile(`${APP_REPO}/new.ts`));
+      expect(server().created).toEqual([{ kind: 'editor', url: `${APP_REPO}/new.ts` }]);
+      act(() => paneHost.review!.openFile(`${APP_REPO}/open.ts`));
+      expect(server().created).toHaveLength(1);
+      expect(selected()).toEqual(['6']);
+    });
+  });
+
+  describe('focusing a review makes its project the active one', () => {
+    const tabs = [
+      { id: '0', kind: 'terminal' },
+      { id: '4', kind: 'review', url: `changes:${LIB_REPO}` },
+    ];
+
+    it('sets the device’s project when the review becomes the active tab, and not before', async () => {
+      storeSettings({ scmRepos: [APP_REPO, LIB_REPO], scmActiveRepo: APP_REPO });
+      boot(tabs);
+      expect(stored()['scmActiveRepo']).toBe(APP_REPO);
+      fireEvent.click(screen.getByTestId('session-tab-4'), { button: 0 });
+      await flush();
+      expect(stored()['scmActiveRepo']).toBe(LIB_REPO);
+      expect(server().settingsSent.at(-1) ?? {}).not.toHaveProperty('scmActiveRepo');
+    });
+
+    it('lets the dock choose another project while the review stays focused, through every broadcast', async () => {
+      storeSettings({ scmRepos: [APP_REPO, LIB_REPO], scmActiveRepo: APP_REPO });
+      boot(tabs);
+      fireEvent.click(screen.getByTestId('session-tab-4'), { button: 0 });
+      await openScm();
+      fireEvent.click(screen.getByTestId('scm-project-select'));
+      fireEvent.click(screen.getByTestId(`scm-project-select-option-${APP_REPO}`));
+      await flush();
+      expect(stored()['scmActiveRepo']).toBe(APP_REPO);
+
+      // A broadcast hands App a new tab list; the focused review has not changed.
+      await send({ type: 'sessions', tabs: [...tabs] });
+      await send({ type: 'sessions', tabs: [...tabs, { id: '5', kind: 'terminal' }] });
+      expect(stored()['scmActiveRepo']).toBe(APP_REPO);
+
+      // Focusing the review again is a new focus.
+      fireEvent.click(screen.getByTestId('session-tab-0'), { button: 0 });
+      fireEvent.click(screen.getByTestId('session-tab-4'), { button: 0 });
+      await flush();
+      expect(stored()['scmActiveRepo']).toBe(LIB_REPO);
+    });
+
+    it('does not make a project that was removed from the list active', async () => {
+      storeSettings({ scmRepos: [APP_REPO], scmActiveRepo: APP_REPO });
+      boot(tabs);
+      fireEvent.click(screen.getByTestId('session-tab-4'), { button: 0 });
+      await flush();
+      expect(stored()['scmActiveRepo']).toBe(APP_REPO);
+    });
+
+    it('moves to the review’s project when focus moves within a split', async () => {
+      storeSettings({ scmRepos: [APP_REPO, LIB_REPO], scmActiveRepo: APP_REPO });
+      boot(tabs);
+      openSplitVia('4'); // (0 | 4), review focused
+      await flush();
+      expect(stored()['scmActiveRepo']).toBe(LIB_REPO);
+      clickTab('0');
+      await act(async () => paneHost.review!.activate(APP_REPO));
+      clickTab('4');
+      await flush();
+      expect(stored()['scmActiveRepo']).toBe(LIB_REPO);
+    });
+  });
+});
+
+// ── The review keys and the comments, as the app wires them ─────────────────────
+//
+// The pane, the registry, the keybinding table and the comments store are each
+// tested alone. What only App can get wrong is the seam: a key reaches the review
+// the user is looking at and no other, an unwired key is left to the terminal, the
+// palette offers what is wired, and what the control socket and the status answers
+// say about comments reaches the store.
+describe('Source Control keys and comments in the app', () => {
+  const APP = '/home/u/work/app';
+  let commentFetches: string[];
+  let statusRev: number;
+
+  const reply = (body: unknown, status = 200) =>
+    Promise.resolve({ ok: status < 400, status, json: () => Promise.resolve(body) });
+
+  beforeEach(() => {
+    commentFetches = [];
+    statusRev = 1;
+    localStorage.setItem(
+      'palmux-settings',
+      JSON.stringify({ mobileMode: 'off', scmRepos: [APP], scmActiveRepo: APP }),
+    );
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) => {
+        const u = new URL(url, 'http://palmux');
+        if (u.pathname === '/scm/status') {
+          return reply({
+            top: APP,
+            branch: 'main',
+            unborn: false,
+            merge: [],
+            staged: [],
+            changes: [],
+            truncated: false,
+            tookMs: 1,
+            commentsRev: statusRev,
+            attrEpoch: 'e0',
+          });
+        }
+        if (u.pathname === '/scm/comments') {
+          commentFetches.push(u.searchParams.get('repo') ?? '');
+          return reply({ rev: statusRev, comments: [] });
+        }
+        return reply(null, 404);
+      }),
+    );
+  });
+  afterEach(() => {
+    resetReviewRegistry();
+    scmStatusStore.setActiveRepo('');
+    commentsStore.setActiveRepo('');
+    vi.unstubAllGlobals();
+    localStorage.clear();
+  });
+
+  const flush = () => act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+  const fakeApi = (): ReviewApi => ({
+    nextChange: vi.fn(),
+    prevChange: vi.fn(),
+    nextFile: vi.fn(),
+    prevFile: vi.fn(),
+    reviewCurrent: vi.fn(),
+  });
+  /** Press a chord; true when the app claimed it (prevented its default). */
+  const press = (init: KeyboardEventInit): boolean => !fireEvent.keyDown(window, init);
+  const CTRL_ALT = { ctrlKey: true, altKey: true } as const;
+
+  const bootReviews = (...ids: string[]) => {
+    render(<App />);
+    send({
+      type: 'sessions',
+      tabs: [
+        { id: '0', kind: 'terminal' },
+        ...ids.map((id) => ({ id, kind: 'review', url: `changes:${APP}` })),
+      ],
+    });
+  };
+  const select = (id: string) => fireEvent.click(screen.getByTestId(`session-tab-${id}`));
+
+  describe('Ctrl+Alt+G', () => {
+    it('opens Source Control in the dock from any tab', async () => {
+      render(<App />);
+      broadcast(['0']);
+      expect(press({ key: 'g', ...CTRL_ALT })).toBe(true);
+      await flush();
+      expect(screen.getByTestId('dock')).toHaveAttribute('data-view', 'scm');
+    });
+
+    it('is not the chord that copies the last output', () => {
+      render(<App />);
+      broadcast(['0']);
+      // Ctrl+Shift+G still belongs to Copy last output, which needs a terminal: here
+      // it says so, and opens no dock.
+      press({ key: 'g', ctrlKey: true, shiftKey: true });
+      expect(screen.queryByTestId('dock')).toBeNull();
+    });
+  });
+
+  describe('the review keys', () => {
+    it('are left to the terminal when no review is the focused tab', () => {
+      render(<App />);
+      broadcast(['0']);
+      for (const init of [
+        { key: 'j', ...CTRL_ALT },
+        { key: 'J', ...CTRL_ALT, shiftKey: true },
+        { key: 'n', ...CTRL_ALT },
+        { key: 'N', ...CTRL_ALT, shiftKey: true },
+        { key: 'Enter', ...CTRL_ALT },
+      ]) {
+        expect(press(init), JSON.stringify(init)).toBe(false);
+      }
+    });
+
+    it('reach the review that is the focused tab, each its own action', async () => {
+      const api = fakeApi();
+      registerReview('1', api);
+      bootReviews('1');
+      select('1');
+      await flush();
+
+      expect(press({ key: 'j', ...CTRL_ALT })).toBe(true);
+      expect(api.nextChange).toHaveBeenCalledTimes(1);
+      expect(press({ key: 'J', ...CTRL_ALT, shiftKey: true })).toBe(true);
+      expect(api.prevChange).toHaveBeenCalledTimes(1);
+      expect(press({ key: 'n', ...CTRL_ALT })).toBe(true);
+      expect(api.nextFile).toHaveBeenCalledTimes(1);
+      expect(press({ key: 'N', ...CTRL_ALT, shiftKey: true })).toBe(true);
+      expect(api.prevFile).toHaveBeenCalledTimes(1);
+      expect(press({ key: 'Enter', ...CTRL_ALT })).toBe(true);
+      expect(api.reviewCurrent).toHaveBeenCalledTimes(1);
+    });
+
+    it('reach only the focused review when several are open', async () => {
+      const first = fakeApi();
+      const second = fakeApi();
+      registerReview('1', first);
+      registerReview('2', second);
+      bootReviews('1', '2');
+      select('2');
+      await flush();
+      press({ key: 'j', ...CTRL_ALT });
+      expect(second.nextChange).toHaveBeenCalledTimes(1);
+      expect(first.nextChange).not.toHaveBeenCalled();
+      select('1');
+      await flush();
+      press({ key: 'j', ...CTRL_ALT });
+      expect(first.nextChange).toHaveBeenCalledTimes(1);
+    });
+
+    it('go back to the terminal when the review is left', async () => {
+      const api = fakeApi();
+      registerReview('1', api);
+      bootReviews('1');
+      select('1');
+      await flush();
+      select('0');
+      await flush();
+      expect(press({ key: 'j', ...CTRL_ALT })).toBe(false);
+      expect(api.nextChange).not.toHaveBeenCalled();
+    });
+
+    it('are offered by the command palette while a review is focused, and not otherwise', async () => {
+      registerReview('1', fakeApi());
+      bootReviews('1');
+      fireEvent.keyDown(window, { key: 'p', ctrlKey: true, shiftKey: true });
+      await flush();
+      expect(screen.getByTestId('palette-item-openSourceControl')).toHaveTextContent(
+        'Open Source Control',
+      );
+      expect(screen.queryByTestId('palette-item-scmNextChange')).toBeNull();
+      fireEvent.keyDown(window, { key: 'Escape' });
+      await flush();
+
+      select('1');
+      await flush();
+      fireEvent.keyDown(window, { key: 'p', ctrlKey: true, shiftKey: true });
+      await flush();
+      for (const [action, label, chord] of [
+        ['scmNextChange', 'Review: next change', 'Ctrl+Alt+J'],
+        ['scmPrevChange', 'Review: previous change', 'Ctrl+Alt+Shift+J'],
+        ['scmNextFile', 'Review: next file', 'Ctrl+Alt+N'],
+        ['scmPrevFile', 'Review: previous file', 'Ctrl+Alt+Shift+N'],
+        ['scmReviewed', 'Review: Reviewed (Unstage in Staged)', 'Ctrl+Alt+Enter'],
+      ] as const) {
+        const item = screen.getByTestId(`palette-item-${action}`);
+        expect(item).toHaveTextContent(label);
+        expect(item).toHaveTextContent(chord);
+      }
+    });
+
+    it('run from the palette on the focused review', async () => {
+      const api = fakeApi();
+      registerReview('1', api);
+      bootReviews('1');
+      select('1');
+      await flush();
+      fireEvent.keyDown(window, { key: 'p', ctrlKey: true, shiftKey: true });
+      await flush();
+      fireEvent.pointerDown(screen.getByTestId('palette-item-scmNextFile'));
+      expect(api.nextFile).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('the Undo toast', () => {
+    const toast = () => document.querySelector('.toast') as HTMLElement;
+
+    it('holds for six seconds, as a message with an action must', async () => {
+      vi.useFakeTimers();
+      try {
+        render(<App />);
+        broadcast(['0']);
+        const undo = vi.fn();
+        act(() => paneHost.review?.notify('Reviewed a.ts', { label: 'Undo', onClick: undo }));
+        expect(toast()).toHaveClass('show');
+        expect(toast()).toHaveTextContent('Reviewed a.ts');
+        act(() => void vi.advanceTimersByTime(5900));
+        expect(toast()).toHaveClass('show');
+        act(() => void vi.advanceTimersByTime(200));
+        expect(toast()).not.toHaveClass('show');
+        expect(undo).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('runs the action once from its button, and takes the toast down', () => {
+      render(<App />);
+      broadcast(['0']);
+      const undo = vi.fn();
+      act(() => paneHost.review?.notify('Reviewed a.ts', { label: 'Undo', onClick: undo }));
+      fireEvent.click(screen.getByTestId('toast-action'));
+      expect(undo).toHaveBeenCalledTimes(1);
+      expect(toast()).not.toHaveClass('show');
+    });
+
+    it('is a plain toast, gone in a moment, without an action', () => {
+      vi.useFakeTimers();
+      try {
+        render(<App />);
+        broadcast(['0']);
+        act(() => paneHost.review?.notify('Undone'));
+        expect(screen.queryByTestId('toast-action')).toBeNull();
+        act(() => void vi.advanceTimersByTime(1500));
+        expect(toast()).not.toHaveClass('show');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  describe('comments reach the store', () => {
+    const openScm = async () => {
+      render(<App />);
+      broadcast(['0']);
+      fireEvent.click(screen.getByTestId('dock-rail-scm'));
+      await flush();
+      await flush();
+    };
+
+    it('reads the project’s comments when the view is visible, and not before', async () => {
+      render(<App />);
+      broadcast(['0']);
+      await flush();
+      expect(commentFetches).toEqual([]);
+      fireEvent.click(screen.getByTestId('dock-rail-scm'));
+      await flush();
+      await flush();
+      expect(commentFetches).toEqual([APP]);
+    });
+
+    it('reads them again when an scmComments frame names a newer rev of the active project', async () => {
+      await openScm();
+      expect(commentFetches).toHaveLength(1);
+      statusRev = 5;
+      send({ type: 'scmComments', repo: APP, rev: 5 });
+      await flush();
+      expect(commentFetches).toHaveLength(2);
+    });
+
+    it('ignores a frame about another project, and a rev it already holds', async () => {
+      await openScm();
+      send({ type: 'scmComments', repo: '/home/u/work/lib', rev: 9 });
+      send({ type: 'scmComments', repo: APP, rev: 1 });
+      await flush();
+      expect(commentFetches).toHaveLength(1);
+    });
+
+    it('reads them again after a reconnect, whatever rev it last heard', async () => {
+      await openScm();
+      send({ type: 'ready', maxUploadBytes: 1, webApps: [] });
+      await flush();
+      expect(commentFetches).toHaveLength(2);
+    });
+
+    it('reads them when a status answer carries a newer rev: the backstop for a missed frame', async () => {
+      await openScm();
+      expect(commentFetches).toHaveLength(1);
+      statusRev = 7;
+      act(() => scmStatusStore.refresh());
+      await flush();
+      await flush();
+      expect(commentFetches).toHaveLength(2);
+    });
+  });
+});
+
+// ── Source Control on a phone ─────────────────────────────────────────────────
+//
+// The drawer's fourth view hosts the dock's Source Control body, and while a review
+// is the active tab a review bar takes the extra-keys bar's slot. What only App can
+// get wrong is the seam: which bar is drawn for which tab, where each button and each
+// swipe goes, where "back" is, and that choosing a file leaves the drawer.
+describe('Source Control on a phone', () => {
+  const APP = '/home/u/work/app';
+  let statusReads: number;
+
+  const reply = (body: unknown, status = 200) =>
+    Promise.resolve({ ok: status < 400, status, json: () => Promise.resolve(body) });
+  const entryOf = (path: string) => ({ path, kind: 'ordinary', status: 'M', fp: `fp-${path}` });
+
+  beforeEach(() => {
+    statusReads = 0;
+    localStorage.setItem(
+      'palmux-settings',
+      JSON.stringify({ mobileMode: 'on', scmRepos: [APP], scmActiveRepo: APP }),
+    );
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) => {
+        const u = new URL(url, 'http://palmux');
+        if (u.pathname === '/scm/status') {
+          statusReads += 1;
+          return reply({
+            top: APP,
+            branch: 'main',
+            unborn: false,
+            merge: [],
+            staged: [entryOf('b.ts')],
+            changes: [entryOf('a.ts')],
+            truncated: false,
+            tookMs: 1,
+            commentsRev: 0,
+            attrEpoch: 'e0',
+          });
+        }
+        if (u.pathname === '/scm/comments') return reply({ rev: 0, comments: [] });
+        return reply(null, 404);
+      }),
+    );
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    resetReviewRegistry();
+    scmStatusStore.setActiveRepo('');
+    commentsStore.setActiveRepo('');
+    vi.unstubAllGlobals();
+    localStorage.clear();
+  });
+
+  const flush = () => act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+  const fakeApi = (): ReviewApi => ({
+    nextChange: vi.fn(),
+    prevChange: vi.fn(),
+    nextFile: vi.fn(),
+    prevFile: vi.fn(),
+    reviewCurrent: vi.fn(),
+  });
+  const REVIEW = { id: '4', kind: 'review', url: `changes:${APP}` };
+  const STAGED = { id: '5', kind: 'review', url: `staged:${APP}` };
+
+  const boot = (...tabs: Array<Record<string, unknown>>) => {
+    render(<App />);
+    send({ type: 'sessions', tabs: tabs.length ? tabs : [{ id: '0', kind: 'terminal' }, REVIEW] });
+  };
+  /** The tab this window shows, which the drawer is told. */
+  const shown = (): string => drawer().current;
+  const goTo = (id: string) => act(() => drawer().onSwitch(id));
+  const extraKeysBar = () => document.getElementById('extra-keys-bar');
+  const reviewBar = () => screen.queryByTestId('review-bar');
+
+  const at = (x: number, pointerId = 1) => ({
+    pointerId,
+    pointerType: 'touch',
+    clientX: x,
+    clientY: 100,
+  });
+  const tapOn = (el: Element) => {
+    fireEvent.pointerDown(el, at(100));
+    fireEvent.pointerUp(el, at(100));
+  };
+  const swipe = (el: Element, dir: 'left' | 'right') => {
+    const [from, to] = dir === 'left' ? [300, 100] : [100, 300];
+    fireEvent.pointerDown(el, at(from));
+    fireEvent.pointerMove(el, at(to));
+    fireEvent.pointerUp(el, at(to));
+  };
+
+  describe('the bar in the extra-keys bar’s slot', () => {
+    it('is the extra-keys bar on a terminal, and the review bar on a review, never both', () => {
+      boot();
+      expect(shown()).toBe('0');
+      expect(extraKeysBar()).not.toBeNull();
+      expect(reviewBar()).toBeNull();
+
+      goTo('4');
+      expect(shown()).toBe('4');
+      expect(reviewBar()).not.toBeNull();
+      expect(extraKeysBar()).toBeNull();
+      expect(screen.queryAllByTestId(/^extra-key-/)).toHaveLength(0);
+
+      goTo('0');
+      expect(extraKeysBar()).not.toBeNull();
+      expect(reviewBar()).toBeNull();
+    });
+
+    it('is drawn only on a phone: the desktop has the keys and no bar at all', () => {
+      localStorage.setItem(
+        'palmux-settings',
+        JSON.stringify({ mobileMode: 'off', scmRepos: [APP], scmActiveRepo: APP }),
+      );
+      boot();
+      expect(reviewBar()).toBeNull();
+      expect(extraKeysBar()).toBeNull();
+    });
+
+    it('returns the extra-keys bar for any tab that is not a review, an editor included', () => {
+      boot({ id: '0', kind: 'terminal' }, { id: '3', kind: 'editor' }, REVIEW);
+      goTo('4');
+      expect(extraKeysBar()).toBeNull();
+      goTo('3');
+      expect(extraKeysBar()).not.toBeNull();
+      expect(reviewBar()).toBeNull();
+    });
+
+    it('offers Reviewed in a Changes review and Unstage in a Staged one', () => {
+      boot({ id: '0', kind: 'terminal' }, REVIEW, STAGED);
+      goTo('4');
+      expect(screen.getByTestId('review-bar-reviewed')).toBeInTheDocument();
+      expect(screen.queryByTestId('review-bar-unstage')).toBeNull();
+      goTo('5');
+      expect(screen.getByTestId('review-bar-unstage')).toBeInTheDocument();
+      expect(screen.queryByTestId('review-bar-reviewed')).toBeNull();
+    });
+
+    it('stays when the extra keys are switched off: a review has no other way to the drawer', () => {
+      boot();
+      send({ type: 'extraKeys', extraKeys: { enabled: false } });
+      expect(extraKeysBar()).toHaveClass('hidden'); // the terminal's bar obeys the setting
+      goTo('4');
+      expect(reviewBar()).not.toBeNull();
+      expect(reviewBar()).not.toHaveClass('hidden');
+    });
+  });
+
+  describe('each button acts on the review that is the active tab', () => {
+    it('↑ and ↓ move by file, Reviewed reviews, and none of them touches another review', () => {
+      const api = fakeApi();
+      const other = fakeApi();
+      registerReview('4', api);
+      registerReview('9', other);
+      boot({ id: '0', kind: 'terminal' }, REVIEW);
+      goTo('4');
+
+      tapOn(screen.getByTestId('review-bar-next'));
+      expect(api.nextFile).toHaveBeenCalledTimes(1);
+      tapOn(screen.getByTestId('review-bar-previous'));
+      expect(api.prevFile).toHaveBeenCalledTimes(1);
+      tapOn(screen.getByTestId('review-bar-reviewed'));
+      expect(api.reviewCurrent).toHaveBeenCalledTimes(1);
+      expect(other.nextFile).not.toHaveBeenCalled();
+      expect(other.reviewCurrent).not.toHaveBeenCalled();
+      // Not a change-by-change move: that is scrolling on a phone.
+      expect(api.nextChange).not.toHaveBeenCalled();
+    });
+
+    it('Unstage acts on the staged review', () => {
+      const api = fakeApi();
+      registerReview('5', api);
+      boot({ id: '0', kind: 'terminal' }, STAGED);
+      goTo('5');
+      tapOn(screen.getByTestId('review-bar-unstage'));
+      expect(api.reviewCurrent).toHaveBeenCalledTimes(1);
+    });
+
+    it('a button with no pane behind it does nothing, and says nothing', () => {
+      boot();
+      goTo('4');
+      expect(() => tapOn(screen.getByTestId('review-bar-next'))).not.toThrow();
+    });
+
+    it('the file list opens the drawer on the Source Control view', async () => {
+      boot();
+      goTo('4');
+      expect(drawerIsOpen()).toBe(false);
+      tapOn(screen.getByTestId('review-bar-files'));
+      await flush();
+      expect(drawerIsOpen()).toBe(true);
+      expect(drawer().view).toBe('scm');
+      expect(screen.getByTestId('drawer-view-scm')).toHaveAttribute('data-state', 'on');
+      expect(await screen.findByTestId('scm-row-changes:a.ts')).toBeInTheDocument();
+    });
+
+    it('sends no key to any terminal: the bar has none to send', () => {
+      // Watched where a key travels: the focused pane's sendInput / paste, which is
+      // what the extra-keys bar and the soft keyboard call to reach the PTY. On a
+      // phone the review takes the terminal's slot, so no terminal pane is mounted
+      // behind it today; one kept mounted would land its keys here.
+      paneApiFake.enabled = true;
+      paneApiFake.typed = [];
+      try {
+        boot();
+        tapOn(screen.getByTestId('extra-key-TAB'));
+        expect(paneApiFake.typed).toEqual(['\t']); // the channel is live on the terminal
+
+        goTo('4');
+        paneApiFake.typed = [];
+        for (const id of ['files', 'previous', 'next', 'reviewed']) {
+          tapOn(screen.getByTestId(`review-bar-${id}`));
+        }
+        expect(paneApiFake.typed).toEqual([]);
+      } finally {
+        paneApiFake.enabled = false;
+        paneApiFake.typed = [];
+      }
+    });
+  });
+
+  describe('the bar keeps the swipes', () => {
+    it('right to left opens the drawer, on the view it was on', async () => {
+      boot();
+      goTo('4');
+      swipe(screen.getByTestId('review-bar-next'), 'left');
+      await flush();
+      expect(drawerIsOpen()).toBe(true);
+      expect(drawer().view).toBe('sessions');
+      expect(shown()).toBe('4');
+    });
+
+    it('a swipe that starts on Reviewed opens the drawer and stages nothing', async () => {
+      const api = fakeApi();
+      registerReview('4', api);
+      boot();
+      goTo('4');
+      swipe(screen.getByTestId('review-bar-reviewed'), 'left');
+      await flush();
+      expect(drawerIsOpen()).toBe(true);
+      expect(api.reviewCurrent).not.toHaveBeenCalled();
+    });
+
+    it('left to right goes back to the tab the review was opened from, and the extra keys return', () => {
+      boot({ id: '0', kind: 'terminal' }, { id: '1', kind: 'terminal' }, REVIEW);
+      goTo('1');
+      goTo('4');
+      expect(reviewBar()).not.toBeNull();
+      swipe(screen.getByTestId('review-bar-previous'), 'right');
+      expect(shown()).toBe('1');
+      expect(extraKeysBar()).not.toBeNull();
+      expect(reviewBar()).toBeNull();
+    });
+
+    it('goes back to an editor too, if that is where the review was opened from', () => {
+      boot({ id: '0', kind: 'terminal' }, { id: '3', kind: 'editor' }, REVIEW);
+      goTo('3');
+      goTo('4');
+      swipe(screen.getByTestId('review-bar-files'), 'right');
+      expect(shown()).toBe('3');
+    });
+
+    it('goes to the first terminal when that tab has been closed since', () => {
+      boot({ id: '0', kind: 'terminal' }, { id: '3', kind: 'editor' }, REVIEW);
+      goTo('3');
+      goTo('4');
+      send({ type: 'sessions', tabs: [{ id: '0', kind: 'terminal' }, REVIEW] });
+      swipe(screen.getByTestId('review-bar-next'), 'right');
+      expect(shown()).toBe('0');
+    });
+
+    it('from one review to another still goes back to where the first was opened from', () => {
+      boot({ id: '0', kind: 'terminal' }, { id: '1', kind: 'terminal' }, REVIEW, STAGED);
+      goTo('1');
+      goTo('4');
+      goTo('5');
+      swipe(screen.getByTestId('review-bar-next'), 'right');
+      // Not back to review 4, which a second swipe would leave for 5 again.
+      expect(shown()).toBe('1');
+    });
+
+    it('does not take a review created this moment for the tab to return to', () => {
+      boot({ id: '0', kind: 'terminal' });
+      // The review's id is navigated to before the server has announced the tab, when
+      // it still reads as a terminal; the broadcast then brings it in as a review.
+      goTo('4');
+      send({ type: 'sessions', tabs: [{ id: '0', kind: 'terminal' }, REVIEW] });
+      swipe(screen.getByTestId('review-bar-next'), 'right');
+      expect(shown()).toBe('0');
+    });
+
+    it('stays put when there is no tab to return to', () => {
+      boot(REVIEW);
+      goTo('4');
+      swipe(screen.getByTestId('review-bar-next'), 'right');
+      expect(shown()).toBe('4');
+    });
+  });
+
+  describe('the drawer’s Source Control view', () => {
+    /** The way in a phone has: swipe the extra keys, then choose the segment. */
+    const openDrawerOnScm = async () => {
+      swipe(screen.getAllByTestId(/^extra-key-/)[0]!, 'left');
+      fireEvent.click(screen.getByTestId('drawer-view-scm'));
+      await flush();
+    };
+
+    it('lists the active project’s changes inside the drawer', async () => {
+      boot();
+      await openDrawerOnScm();
+      const body = screen.getByTestId('drawer-view-body');
+      expect(body).toContainElement(screen.getByTestId('scm-view'));
+      expect(await screen.findByTestId('scm-row-changes:a.ts')).toBeInTheDocument();
+      expect(screen.getByTestId('scm-row-staged:b.ts')).toBeInTheDocument();
+    });
+
+    it('is a segment of the drawer’s own switcher, declared so it can be chosen', () => {
+      boot();
+      expect(screen.getByTestId('drawer-view-scm')).not.toBeDisabled();
+      expect(drawer().hostedViews).toContain('scm');
+    });
+
+    it('choosing a file leaves the drawer and opens the review for its group', async () => {
+      boot({ id: '0', kind: 'terminal' });
+      await openDrawerOnScm();
+      expect(drawerIsOpen()).toBe(true);
+      tapOn(await screen.findByTestId('scm-row-changes:a.ts'));
+      await flush();
+      expect(drawerIsOpen()).toBe(false);
+      expect(server().created).toEqual([{ kind: 'review', url: `changes:${APP}` }]);
+    });
+
+    it('a staged file opens the staged review', async () => {
+      boot({ id: '0', kind: 'terminal' });
+      await openDrawerOnScm();
+      tapOn(await screen.findByTestId('scm-row-staged:b.ts'));
+      await flush();
+      expect(drawerIsOpen()).toBe(false);
+      expect(server().created).toEqual([{ kind: 'review', url: `staged:${APP}` }]);
+    });
+
+    it('a pan that starts on a file opens nothing and leaves the drawer open', async () => {
+      boot({ id: '0', kind: 'terminal' });
+      await openDrawerOnScm();
+      const row = await screen.findByTestId('scm-row-changes:a.ts');
+      fireEvent.pointerDown(row, { ...at(100), clientY: 100 });
+      fireEvent.pointerMove(row, { ...at(100), clientY: 160 });
+      fireEvent.pointerUp(row, { ...at(100), clientY: 160 });
+      await flush();
+      expect(drawerIsOpen()).toBe(true);
+      expect(server().created).toEqual([]);
+    });
+
+    it('an existing review of that group is focused, not opened a second time', async () => {
+      boot({ id: '0', kind: 'terminal' }, REVIEW);
+      await openDrawerOnScm();
+      tapOn(await screen.findByTestId('scm-row-changes:a.ts'));
+      await flush();
+      expect(server().created).toEqual([]);
+      expect(shown()).toBe('4');
+      expect(drawerIsOpen()).toBe(false);
+    });
+
+    it('reads nothing once the drawer is closed, though the view is still mounted', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+      boot();
+      swipe(screen.getAllByTestId(/^extra-key-/)[0]!, 'left');
+      fireEvent.click(screen.getByTestId('drawer-view-scm'));
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      expect(statusReads).toBeGreaterThan(0);
+
+      act(() => drawer().onClose());
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      expect(screen.getByTestId('scm-view')).toBeInTheDocument(); // mounted, not seen
+      const settled = statusReads;
+      await act(() => vi.advanceTimersByTimeAsync(60 * 60 * 1000));
+      expect(statusReads).toBe(settled);
+    });
+
+    it('Ctrl+Alt+G opens it on a phone, where the dock is never drawn', async () => {
+      boot();
+      const claimed = !fireEvent.keyDown(window, { key: 'g', ctrlKey: true, altKey: true });
+      await flush();
+      expect(claimed).toBe(true);
+      expect(drawerIsOpen()).toBe(true);
+      expect(drawer().view).toBe('scm');
+      expect(screen.queryByTestId('dock')).toBeNull();
+    });
   });
 });

@@ -1,0 +1,354 @@
+/* ── Source Control view ──────────────────────────────────────────────────────
+ *
+ * The dock/drawer body: a project bar, the branch, and three collapsible groups
+ * of changed files. The dock chrome (title, close, background) is DockPanel's, so
+ * `.scm-view` carries layout only and fills the dock body.
+ *
+ * Nothing here holds a colour literal, an off-scale size or a duration outside
+ * the motion tiers (scale.test.ts and ui.test.tsx read every stylesheet).
+ *
+ * THE ONE HUE THE EIGHT TOKENS DO NOT CARRY. A status letter is told apart by
+ * colour (added green, deleted red), and the eight `--t-*` tokens hold neither.
+ * The theme's own ANSI slots do, so the letters read `--tab-c-ansiN` — the same
+ * theme-resolved slots files.css and dictation-view.css take for their hues, so a
+ * theme change repaints them. The letter and its title say the same thing in
+ * words, so colour is never the only cue.
+ */
+
+.scm-view {
+  /* The three numbers a row is made of, so the rows, a long group's height cap and the
+     phone's compact variant (below) state each once. A row is one control height, a tree
+     level is one step of the scale, and the gap is what sits between a row's parts. */
+  --scm-row-h: var(--ctl-h);
+  --scm-indent: var(--sp-3);
+  --scm-gap: var(--sp-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  height: 100%;
+  min-height: 0;
+  font-size: var(--fs-2);
+}
+
+/* On a phone the list is COMPACT: a row is one step below the control height (32px, the
+   extra-keys bar's key and the drawer's rows), a level indents by 8px instead of 12px and
+   the parts of a row sit 4px apart, so a deep tree keeps its file names (a 4-level path lost
+   44px to its indent) and more rows fit above the footer. The text is already the body size.
+   The desktop keeps the kit's control height: a pointer does not need the room. A row's
+   height stays a control height, never a bare pixel count, so it follows the device class. */
+:root[data-mobile='true'] .scm-view {
+  --scm-row-h: calc(var(--ctl-h) - var(--sp-1));
+  --scm-indent: var(--sp-2);
+  --scm-gap: var(--sp-1);
+}
+
+/* ── Project bar ────────────────────────────────────────────────────────── */
+
+.scm-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex: 0 0 auto;
+}
+
+/* The selector takes the room the two icon buttons leave; `min-width: 0` lets a
+   long project name end in the trigger's ellipsis instead of pushing them out. */
+.scm-select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.scm-add {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  flex: 0 0 auto;
+}
+
+.scm-add-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.scm-add-row .ui-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.scm-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex: 0 0 auto;
+  min-width: 0;
+  color: var(--t-subtext);
+  font-size: var(--fs-1);
+}
+
+.scm-branch-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--t-text);
+  font-weight: 600;
+}
+
+.scm-dim {
+  flex: 0 0 auto;
+  color: var(--t-subtext);
+}
+
+/* ── Empty state ────────────────────────────────────────────────────────── */
+
+.scm-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-5) var(--sp-2);
+  text-align: center;
+  color: var(--t-subtext);
+}
+
+.scm-empty-text {
+  margin: 0;
+  color: var(--t-text);
+  font-weight: 600;
+}
+
+.scm-empty-hint {
+  margin: 0;
+  font-size: var(--fs-1);
+}
+
+.scm-empty .scm-add {
+  align-self: stretch;
+  text-align: left;
+}
+
+/* ── Notes: loading, a failed read, truncation, a clean tree ────────────────
+   A failure has to READ as a failure: an empty list is the one outcome that is
+   indistinguishable from a broken feature. */
+
+.scm-note {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-2);
+  color: var(--t-subtext);
+  font-size: var(--fs-1);
+}
+
+.scm-note[data-tone='error'] {
+  color: var(--tab-c-ansi1);
+}
+
+.scm-note-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ── Groups and rows ────────────────────────────────────────────────────── */
+
+.scm-scroll {
+  margin-top: var(--sp-1);
+}
+
+/* The kit's bar takes no layout: it is drawn over the viewport's right edge, which
+   is where a row's status letter and a group's count sit. The content keeps that
+   strip, the bar's own width, free. On a phone the bar is not drawn (ui.css), so
+   nothing is kept. */
+.scm-scroll .ui-scroll-content {
+  padding-right: var(--sp-2);
+}
+
+:root[data-mobile='true'] .scm-scroll .ui-scroll-content {
+  padding-right: 0;
+}
+
+.scm-group-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scm-count {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 2px var(--sp-1);
+  border-radius: var(--r-pill);
+  background: var(--t-surface);
+  color: var(--t-subtext);
+  font-size: var(--fs-1);
+  font-weight: 500;
+}
+
+/* A tree row is the flat row indented: `--depth` is set inline on the row, and one
+   level is `--scm-indent`. A flat row sets none, so it indents by nothing. */
+.scm-row,
+.scm-folder {
+  display: flex;
+  align-items: center;
+  gap: var(--scm-gap);
+  width: 100%;
+  height: var(--scm-row-h);
+  padding: 0 var(--sp-2) 0 calc(var(--sp-2) + var(--depth, 0) * var(--scm-indent));
+  border: 0;
+  border-radius: var(--r-2);
+  background: transparent;
+  color: var(--t-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background var(--mo-micro) ease;
+}
+
+.scm-row:hover,
+.scm-folder:hover {
+  background: color-mix(in srgb, var(--t-surface) 60%, transparent);
+}
+
+.scm-row:focus-visible,
+.scm-folder:focus-visible {
+  outline: 2px solid var(--t-accent);
+  outline-offset: -2px;
+}
+
+/* The chevron column. A folder draws a chevron in it that turns a quarter when the
+   folder opens (the micro tier: it is feedback on a press, not a surface); a file
+   row keeps the column empty so its icon stands under the folder icons of its level. */
+.scm-twisty {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--t-subtext);
+  transition: transform var(--mo-micro) ease;
+}
+
+.scm-folder[aria-expanded='true'] .scm-twisty {
+  transform: rotate(90deg);
+}
+
+/* The file count lines up with the status letters below it. */
+.scm-folder-count {
+  flex: 0 0 auto;
+  min-width: var(--sp-4);
+  margin-left: auto;
+  text-align: right;
+  color: var(--t-subtext);
+  font-size: var(--fs-1);
+}
+
+/* Material Icon Theme, as in the Explorer: a fixed 16px box either way, so the
+   name column does not shift when the icon index lands. */
+.scm-glyph {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.scm-glyph-fallback {
+  color: var(--t-subtext);
+}
+
+.scm-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A folder row's name: a chain (`packages/client/src`) that does not fit gives way
+   at the front, because the folder the row is about is its last one. The head
+   shrinks to an ellipsis first; the tail ends in one only when it alone is
+   wider than the row. */
+.scm-chain {
+  display: flex;
+}
+
+.scm-chain-head {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scm-chain-tail {
+  flex: 0 0 auto;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The directory is the dim half of the row and gives way first. */
+.scm-dir {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--t-subtext);
+  font-size: var(--fs-1);
+}
+
+.scm-letter {
+  flex: 0 0 auto;
+  min-width: var(--sp-4);
+  margin-left: auto;
+  text-align: right;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-1);
+  font-weight: 600;
+  color: var(--t-subtext);
+}
+
+.scm-letter[data-status='M'] {
+  color: var(--tab-c-ansi3);
+}
+
+.scm-letter[data-status='A'],
+.scm-letter[data-status='?'] {
+  color: var(--tab-c-ansi2);
+}
+
+.scm-letter[data-status='D'],
+.scm-letter[data-status='U'] {
+  color: var(--tab-c-ansi1);
+}
+
+.scm-letter[data-status='R'],
+.scm-letter[data-status='T'] {
+  color: var(--tab-c-ansi4);
+}
+
+/* A long group is its own scroller (react-window), so it takes a bounded height.
+   Over 200 rows it is always taller than this. The kit gives it the thin
+   scrollbar; the group's own scroll area carries on from where this one ends.
+   In a tree most of those rows can be folded away, so the height is also capped
+   by the rows that are there (each is exactly `--scm-row-h`), and a folded group
+   does not leave a tall empty box. */
+.scm-vlist {
+  height: min(60vh, calc(var(--scm-rows, 1000) * var(--scm-row-h)));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scm-row,
+  .scm-folder,
+  .scm-twisty {
+    transition-duration: 0.001ms;
+  }
+}

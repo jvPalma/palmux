@@ -1,10 +1,11 @@
 /* ── Mobile drawer: top row and view switcher ─────────────────────────────────
  *
  * The drawer is ordered for the thumb, bottom to top: the footer, the
- * bottom-anchored session list, and at the very top ONE row — Settings (a gear),
- * the view switcher, Close. The switcher is up there because the owner does not
- * want it at the bottom. The row is the root level's alone: Settings and the
- * new-tab chooser draw a back header in its place, so they carry no switcher.
+ * bottom-anchored session list, and at the very top ONE row — the view switcher
+ * and, at its right end where Close used to be, Settings (a gear). The switcher is
+ * up there because the owner does not want it at the bottom. The row is the root
+ * level's alone: Settings and the new-tab chooser draw a back header in its place,
+ * so they carry no switcher.
  * This file owns that row; the list, the footer, the scrim and the open
  * transition are index.css's.
  *
@@ -13,8 +14,8 @@
  * different ground from the kit's, and each names only --pill-* and --t-* tokens.
  */
 
-/* Gear · switcher · Close. The two IconButtons are the drawer's own control
-   height; the switcher takes what they leave. */
+/* Switcher · gear. The IconButton is the drawer's own control height; the switcher
+   takes what it leaves. */
 .drawer-top {
   flex: 0 0 auto;
   display: flex;
@@ -25,9 +26,9 @@
 
 /* Compounded with `.ui-seg` so the override beats the kit rule whatever order
    the two stylesheets end up in. The kit root is inline-flex and content-sized;
-   here it takes the space between the two buttons, so the three segments share
-   it and land at equal tap widths. `min-width: 0` lets it shrink on a narrow
-   phone instead of pushing Close off the row. */
+   here it takes the space the gear leaves, so the four segments share it and land
+   at equal tap widths. `min-width: 0` lets it shrink on a narrow phone instead of
+   pushing the gear off the row. */
 .drawer-views-seg.ui-seg {
   display: flex;
   flex: 1 1 0;
@@ -67,7 +68,7 @@
   color: var(--t-accent-ink);
 }
 
-/* The icon is the whole label: three words do not fit beside each other with a
+/* The icon is the whole label: four words do not fit beside each other with a
    thumb's width each, and these are the icons the desktop rail already teaches.
    The name stays in the accessibility tree so each segment still has a readable
    name. */

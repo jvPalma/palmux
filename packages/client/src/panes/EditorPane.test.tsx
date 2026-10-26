@@ -10,7 +10,13 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EditorPane } from './EditorPane';
-import { DEFAULTS } from '../settings/settings';
+import {
+  DEFAULTS,
+  notifySettingsChange,
+  sanitize,
+  saveSettings,
+  type ClientSettings,
+} from '../settings/settings';
 import { Icon } from '../ui/icons';
 
 // ── fake monaco ───────────────────────────────────────────────────────────────
@@ -164,6 +170,89 @@ describe('EditorPane', () => {
 
 // ── the file source (GET/PUT /file?path=) ─────────────────────────────────────
 
+// "Editor font size follows the terminal" (editor-pane): the editor takes the device's
+// code font size, which the review shares. Until one is set it is the terminal's size
+// plus the offset it always had; once set, the terminal no longer moves it.
+describe('EditorPane font size', () => {
+  const device = (over: Partial<ClientSettings>) =>
+    saveSettings(sanitize({ ...DEFAULTS, ...over }));
+  /** The size the editor was last given: at creation, else by a live update. */
+  const createdSize = () =>
+    (fakeMonaco.editor.create.mock.calls[0] as unknown as [unknown, { fontSize: number }])[1]
+      .fontSize;
+  const lastUpdate = () =>
+    (fakeEditor.updateOptions.mock.calls.at(-1) as [{ fontSize?: number }] | undefined)?.[0]
+      .fontSize;
+  /** What a settings change on this device looks like to the pane: stored, then announced. */
+  const change = (over: Partial<ClientSettings>) => {
+    const next = sanitize({ ...DEFAULTS, ...over });
+    saveSettings(next);
+    notifySettingsChange(next);
+  };
+
+  afterEach(() => localStorage.clear());
+
+  it('matches the terminal size plus the editor offset while no code size was ever set', async () => {
+    device({ fontSize: 14 });
+    await renderPane();
+    // 14pt terminal: 15 in the editor, not a fixed 13.
+    expect(createdSize()).toBe(15);
+  });
+
+  it('follows the terminal live until a code size is set', async () => {
+    device({ fontSize: 14 });
+    await renderPane();
+    change({ fontSize: 18 });
+    expect(lastUpdate()).toBe(19);
+  });
+
+  it('opens at the code size once one is set, whatever the terminal is', async () => {
+    device({ fontSize: 20, codeFontSize: 11 });
+    await renderPane();
+    expect(createdSize()).toBe(11);
+  });
+
+  it('updates the open editor when the code size changes, without reopening the tab', async () => {
+    device({ fontSize: 14 });
+    await renderPane();
+    expect(fakeMonaco.editor.create).toHaveBeenCalledTimes(1);
+    const disposed = fakeEditor.dispose.mock.calls.length;
+    change({ fontSize: 14, codeFontSize: 16 });
+    expect(lastUpdate()).toBe(16);
+    change({ fontSize: 14, codeFontSize: 9 });
+    expect(lastUpdate()).toBe(9);
+    // The same editor throughout: nothing was disposed or created again.
+    expect(fakeMonaco.editor.create).toHaveBeenCalledTimes(1);
+    expect(fakeEditor.dispose).toHaveBeenCalledTimes(disposed);
+  });
+
+  it('stays at the code size when the terminal font size changes', async () => {
+    device({ fontSize: 14, codeFontSize: 11 });
+    await renderPane();
+    change({ fontSize: 22, codeFontSize: 11 });
+    expect(lastUpdate()).toBe(11);
+    change({ fontSize: 8, codeFontSize: 11 });
+    expect(lastUpdate()).toBe(11);
+  });
+
+  it('goes back to following the terminal when the code size is cleared', async () => {
+    device({ fontSize: 14, codeFontSize: 11 });
+    await renderPane();
+    change({ fontSize: 20, codeFontSize: null });
+    expect(lastUpdate()).toBe(21);
+  });
+
+  it('keeps the family it follows while the size changes', async () => {
+    device({ fontSize: 14 });
+    await renderPane();
+    change({ fontSize: 14, codeFontSize: 12 });
+    expect(fakeEditor.updateOptions).toHaveBeenLastCalledWith({
+      fontSize: 12,
+      fontFamily: DEFAULTS.fontFamily,
+    });
+  });
+});
+
 describe('EditorPane over a file path', () => {
   const FILE = '/home/u/notes/todo.md';
 
@@ -206,7 +295,9 @@ describe('EditorPane over a file path', () => {
 
   it('still falls back to plaintext for a name it does not know', async () => {
     serveFile('binary-ish');
-    render(<EditorPane tabId="/p/a.parquet" filePath="/p/a.parquet" active onDirtyChange={vi.fn()} />);
+    render(
+      <EditorPane tabId="/p/a.parquet" filePath="/p/a.parquet" active onDirtyChange={vi.fn()} />,
+    );
     await screen.findByText('saved');
     expect(fakeMonaco.editor.create).toHaveBeenCalledWith(
       expect.anything(),

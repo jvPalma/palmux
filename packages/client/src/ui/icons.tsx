@@ -158,6 +158,21 @@ const GLYPHS = {
   ),
   // A prompt: the chevron and the cursor line.
   terminal: <path d="M5 8 L9 12 L5 16 M12 17 H19" />,
+  // Source control: a trunk with two nodes, and a second node whose line bends
+  // back into the trunk's end.
+  'git-branch': (
+    <>
+      <circle cx="7" cy="5.5" r="2.5" />
+      <circle cx="7" cy="18.5" r="2.5" />
+      <circle cx="17" cy="9" r="2.5" />
+      <path d="M7 8 V16" />
+      <path d="M17 11.5 V12.5 A3.5 3.5 0 0 1 13.5 16 H7" />
+    </>
+  ),
+  // A speech bubble with its tail at the lower left: a review comment.
+  comment: (
+    <path d="M5.5 4.5 H18.5 A2 2 0 0 1 20.5 6.5 V14.5 A2 2 0 0 1 18.5 16.5 H11 L7 20.5 V16.5 H5.5 A2 2 0 0 1 3.5 14.5 V6.5 A2 2 0 0 1 5.5 4.5 Z" />
+  ),
 
   // ── Transfer, navigation, direction ──
   upload: (
@@ -187,6 +202,14 @@ const GLYPHS = {
     <>
       <path d="M8.5 5 L4 9.5 L8.5 14" />
       <path d="M4 9.5 H15 A4.75 4.75 0 0 1 15 19 H10" />
+    </>
+  ),
+  // ↶ — a corner head with a curved lead into a half-turn: take the last action
+  // back. Not `back`, whose straight lead means "up a level".
+  undo: (
+    <>
+      <path d="M5 7.5 V13 H10.5" />
+      <path d="M5 13 C6.5 9.5 9.5 8 13 8 A5.75 5.75 0 0 1 13 19.5 H9" />
     </>
   ),
   'arrow-left': (

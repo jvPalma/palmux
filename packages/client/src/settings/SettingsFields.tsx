@@ -54,7 +54,14 @@ import type {
   ThemeSlot,
   ThemeTarget,
 } from './settings';
-import { FONT_PRESETS, resolveThemeId, themeModeChange, themePick } from './settings';
+import {
+  FONT_PRESETS,
+  FONT_SIZE_MAX,
+  FONT_SIZE_MIN,
+  resolveThemeId,
+  themeModeChange,
+  themePick,
+} from './settings';
 import { allProfiles, type ColorProfile } from './themes';
 import { ThemeBrowser } from './ThemeBrowser';
 import { useSystemPrefersDark } from './useSystemPrefersDark';
@@ -233,6 +240,77 @@ function LinkRow({
         <Icon name="chevron-right" size={12} />
       </span>
     </button>
+  );
+}
+
+/**
+ * A font size field that keeps what is being typed. Committing every keystroke
+ * through the settings sanitiser clamped the "1" of "11" to the minimum, so the
+ * next "1" made 61 and then the maximum. A draft is committed only while it is a
+ * whole number in range; blur or Enter commits it clamped (or, for an optional
+ * size, as "unset" when empty).
+ */
+function FontSizeInput({
+  id,
+  value,
+  optional = false,
+  placeholder,
+  onCommit,
+}: {
+  id: string;
+  value: number | null;
+  optional?: boolean;
+  placeholder?: string;
+  onCommit: (next: number | null) => void;
+}) {
+  const shown = value === null ? '' : String(value);
+  const [draft, setDraft] = useState(shown);
+  // What this field last sent: the prop lags a commit by a render, and blur must
+  // not send the same size twice.
+  const committed = useRef(value);
+  useEffect(() => {
+    committed.current = value;
+    setDraft(shown);
+  }, [value, shown]);
+  const commit = (next: number | null) => {
+    if (next === committed.current) return;
+    committed.current = next;
+    onCommit(next);
+  };
+  const inRange = (n: number) => Number.isInteger(n) && n >= FONT_SIZE_MIN && n <= FONT_SIZE_MAX;
+  const settle = () => {
+    if (draft.trim() === '') {
+      if (optional) commit(null);
+      else setDraft(shown);
+      return;
+    }
+    const n = Math.round(Number(draft));
+    if (!Number.isFinite(n)) return setDraft(shown);
+    const clamped = Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, n));
+    setDraft(String(clamped));
+    commit(clamped);
+  };
+  return (
+    <Input
+      id={id}
+      data-testid={id}
+      className="srow-num"
+      type="number"
+      min={FONT_SIZE_MIN}
+      max={FONT_SIZE_MAX}
+      placeholder={placeholder}
+      value={draft}
+      onChange={(e) => {
+        const next = e.target.value;
+        setDraft(next);
+        const n = Number(next);
+        if (next !== '' && inRange(n)) commit(n);
+      }}
+      onBlur={settle}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') settle();
+      }}
+    />
   );
 }
 
@@ -570,15 +648,20 @@ export function SettingsFields({
         </Row>
 
         <Row label="Font size" sub="terminal zoom, this device" htmlFor="set-size">
-          <Input
+          <FontSizeInput
             id="set-size"
-            data-testid="set-size"
-            className="srow-num"
-            type="number"
-            min={6}
-            max={48}
             value={settings.fontSize}
-            onChange={(e) => onChange({ fontSize: Number(e.target.value) })}
+            onCommit={(fontSize) => fontSize !== null && onChange({ fontSize })}
+          />
+        </Row>
+
+        <Row label="Code font size" sub="diff and editor, this device" htmlFor="set-code-size">
+          <FontSizeInput
+            id="set-code-size"
+            value={settings.codeFontSize}
+            optional
+            placeholder="Default"
+            onCommit={(codeFontSize) => onChange({ codeFontSize })}
           />
         </Row>
 

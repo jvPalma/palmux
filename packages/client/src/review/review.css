@@ -1,0 +1,713 @@
+/* ── Review pane ──────────────────────────────────────────────────────────────
+ *
+ * One group of changed files as a single virtual list. The frame is the pane's
+ * (`.pane-frame`, `.pane-header` come from index.css); everything else is here.
+ *
+ * Nothing here holds a colour literal, an off-scale size or a duration: colour is
+ * the eight `--t-*` tokens, and `review-css.test.ts` reads this sheet as text.
+ * Nothing animates either. The list scrolls under a finger and a reader's eye, and
+ * a transition on a row would be work per frame on the busiest surface in the app.
+ *
+ * THE HUES THE EIGHT TOKENS DO NOT CARRY. A diff tells added from removed by
+ * green and red, and the tokens hold neither. The theme's own ANSI slots do, so
+ * the tints read `--tab-c-ansi2` (green) and `--tab-c-ansi1` (red), the same
+ * theme-resolved slots `scm.css` takes its status letters from, and a theme change
+ * repaints them. The sign column and the `+`/`-` counts say the same in text, so
+ * colour is never the only cue.
+ *
+ * ROW HEIGHTS ARE DECLARED TWICE ON PURPOSE. react-window needs an exact height for
+ * every row and gets it from `review-metrics.ts`; the custom properties below are
+ * the same numbers for the CSS that has to fit inside them. They are written from
+ * the `--sp-*` scale, not as bare pixels, because a custom property is a declaration
+ * `scale.test.ts` cannot see: spelled from the scale they cannot be off it. They are
+ * not `--ctl-h`, which is 28px on a desktop and 36px on a phone, because the list's
+ * geometry is a number JavaScript must know and a class-dependent length would have to
+ * be measured. `review-css.test.ts` resolves each one and holds it equal to its twin:
+ * a row drawn taller than it was sized overlaps the next.
+ *
+ * A CODE LINE's height is the one that is not fixed. It follows the device's code font
+ * size, which only JavaScript knows, so the pane writes `--rv-code-fs` and
+ * `--rv-code-lh` on the frame (inline, from the same `codeLineHeight` the list's
+ * heights come from) and the declarations below are what a frame with none of its own
+ * shows: the default size, `--fs-2` over the 20px line. Only the lines and the numbers
+ * beside them read the pair. A file header, a hunk header, a gap, a notice and a
+ * comment are chrome and keep their own sizes whatever the code is drawn at.
+ *
+ * A PHONE draws the structural rows shorter (the block after `.rv-frame`, which the pane
+ * switches on with `data-dense` from the mobile flag): a file header, a gap and a hunk
+ * header are the second table in `review-metrics.ts`, and `review-css.test.ts` holds
+ * that block to it too. Code lines are not in it, so the lines keep their size and the
+ * rows between them are what gives way.
+ */
+
+.rv-frame {
+  --rv-line-h: var(--sp-5);
+  --rv-head-h: calc(var(--sp-6) + var(--sp-4));
+  --rv-notice-h: calc(var(--sp-6) + var(--sp-1));
+  --rv-gap-h: calc(var(--sp-6) + var(--sp-2));
+  --rv-hunk-h: var(--sp-6);
+  /* A placeholder that failed to load: a message and a Retry button, which is taller
+     than the one line a binary file's placeholder is estimated at. */
+  --rv-error-h: calc(var(--sp-6) + var(--sp-4));
+  /* The most lines of quoted code an outdated comment shows before it scrolls. */
+  --rv-quote-h: calc(var(--rv-line-h) * 8);
+  --rv-code-fs: var(--fs-2);
+  --rv-code-lh: var(--rv-line-h);
+  --rv-add: var(--tab-c-ansi2, var(--t-accent));
+  --rv-del: var(--tab-c-ansi1, var(--t-accent-alt));
+
+  min-height: 0;
+  background: var(--t-base);
+  color: var(--t-text);
+  font-size: var(--fs-2);
+}
+
+/* The compact rows of a phone: a file header 36px (the kit's small button is 32px under
+   the mobile class, and it needs a pixel either side), a gap 28px and a hunk header one
+   code line, 20px, where they are 40px, 32px and 24px. The chip is what a gap's controls
+   are drawn at, a step inside their row (`.rv-chip`). */
+.rv-frame[data-dense='true'] {
+  --rv-head-h: calc(var(--sp-6) + var(--sp-3));
+  --rv-gap-h: calc(var(--sp-6) + var(--sp-1));
+  --rv-hunk-h: var(--sp-5);
+  --rv-chip-h: calc(var(--rv-gap-h) - var(--sp-1));
+}
+
+/* The file header already says what the file is (its letter and its colour) and
+   `.rv-current` above the list says the whole path: on a phone the word beside the
+   counts is what truncates the name. The letter keeps it as its `title`. */
+.rv-frame[data-dense='true'] .rv-state {
+  display: none;
+}
+
+/* ── Bar, banners, current file ──────────────────────────────────────────── */
+
+/* The controls wrap under the title on a pane too narrow for both instead of
+   squeezing it away. Below 500px they are one menu (`data-compact`), and the bar is
+   one row: the summary gives way first, then the title, both ending in an ellipsis. */
+.rv-bar {
+  flex-wrap: wrap;
+  row-gap: var(--sp-1);
+}
+
+.rv-bar[data-compact='true'] {
+  flex-wrap: nowrap;
+}
+
+.rv-bar[data-compact='true'] .rv-summary {
+  flex-shrink: 1000;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rv-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--t-text);
+  font-weight: 600;
+}
+
+.rv-summary {
+  color: var(--t-subtext);
+  font-size: var(--fs-1);
+  white-space: nowrap;
+}
+
+/* The kit's Select trigger fills whatever box it is given; without one it takes
+   the whole bar to itself. */
+.rv-algorithm {
+  flex: 0 0 auto;
+  width: calc(var(--sp-6) * 6);
+}
+
+/* The code size beside the other bar controls: a minus, the size, a plus. */
+.rv-size {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.rv-size-value {
+  min-width: var(--sp-5);
+  color: var(--t-subtext);
+  font-size: var(--fs-1);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.rv-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-2);
+  background: var(--t-mantle);
+  border-bottom: 1px solid var(--t-surface);
+  color: var(--t-subtext);
+  font-size: var(--fs-1);
+}
+
+.rv-banner-error {
+  color: var(--t-text);
+}
+
+.rv-banner-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The file the first visible row belongs to. In flow above the list, not over it:
+   a bar drawn over the rows would hide the header of a file just scrolled to. */
+.rv-current {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--rv-notice-h);
+  padding: 0 var(--sp-2);
+  background: var(--t-base);
+  border-bottom: 1px solid var(--t-surface);
+  font-size: var(--fs-1);
+}
+
+.rv-current-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--t-subtext);
+}
+
+.rv-current-pos {
+  flex: 0 0 auto;
+  color: var(--t-subtext);
+}
+
+.rv-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.rv-message {
+  margin: 0;
+  padding: var(--sp-5) var(--sp-3);
+  color: var(--t-subtext);
+  text-align: center;
+}
+
+/* ── The list ────────────────────────────────────────────────────────────── */
+
+.rv-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: auto;
+  /* The pane keeps the reader's place itself (scroll-anchor.ts) and lands a jump on
+     a header; a browser adjusting the offset on its own would fight both. */
+  overflow-anchor: none;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-2);
+  line-height: var(--rv-line-h);
+}
+
+/* The box that holds the scroller to the rows' real total (ReviewPane). It is
+   geometry only: nothing sees it, and it must not take a click from the 1px of
+   every row it stands over. */
+.rv-extent {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* react-window's own spacer, the list's last child: an in-flow box as tall as its
+   ESTIMATE (the row count times the average of the rows laid out so far). Where
+   the rows on top are taller than the rest it is taller than every row, and the
+   reader scrolls past the last file into blank space. The extent box above is the
+   real total, so it alone sizes the scroller, in both directions. */
+.rv-list > [aria-hidden='true']:not(.rv-extent) {
+  display: none;
+}
+
+.rv-row {
+  box-sizing: border-box;
+  display: flex;
+  align-items: stretch;
+  color: var(--t-text);
+}
+
+/* Every control a row holds sits in one of these, so that in a list that scrolls
+   sideways it can stay at the left edge: `--rv-scroll-w` and `--rv-view-w` are the
+   scroller's scroll width and client width, written by the pane as it scrolls. */
+.rv-sticky {
+  position: sticky;
+  left: 0;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: var(--rv-view-w, 100%);
+  min-width: 0;
+}
+
+/* ── File header ─────────────────────────────────────────────────────────── */
+
+.rv-head {
+  align-items: center;
+  background: var(--t-mantle);
+  border-top: 1px solid var(--t-surface);
+  border-bottom: 1px solid var(--t-surface);
+  font-family: inherit;
+}
+
+.rv-head-inner {
+  padding: 0 var(--sp-2);
+}
+
+.rv-head-toggle {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: var(--rv-head-h);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--t-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.rv-status {
+  flex: 0 0 auto;
+  min-width: var(--sp-4);
+  color: var(--t-subtext);
+  font-weight: 700;
+  text-align: center;
+}
+
+.rv-status[data-status='A'],
+.rv-status[data-status='?'] {
+  color: var(--rv-add);
+}
+
+.rv-status[data-status='D'],
+.rv-status[data-status='U'] {
+  color: var(--rv-del);
+}
+
+.rv-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rv-path-old,
+.rv-path-dir {
+  color: var(--t-subtext);
+}
+
+.rv-path-name {
+  font-weight: 600;
+}
+
+.rv-state {
+  flex: 0 0 auto;
+  color: var(--t-subtext);
+  font-size: var(--fs-1);
+}
+
+.rv-counts {
+  flex: 0 0 auto;
+  display: flex;
+  gap: var(--sp-1);
+  font-size: var(--fs-1);
+}
+
+.rv-count-add {
+  color: var(--rv-add);
+}
+
+.rv-count-del {
+  color: var(--rv-del);
+}
+
+/* ── Notices, gaps, hunk headers, placeholders ───────────────────────────── */
+
+.rv-notice,
+.rv-gap,
+.rv-hunk,
+.rv-placeholder {
+  align-items: center;
+  font-family: inherit;
+}
+
+.rv-notice {
+  min-height: var(--rv-notice-h);
+  background: var(--t-mantle);
+  color: var(--t-subtext);
+}
+
+.rv-notice .rv-sticky,
+.rv-gap .rv-sticky {
+  padding: 0 var(--sp-2);
+}
+
+.rv-notice-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.rv-gap {
+  background: color-mix(in srgb, var(--t-surface) 40%, var(--t-base));
+  color: var(--t-subtext);
+  font-size: var(--fs-1);
+}
+
+.rv-hunk {
+  background: color-mix(in srgb, var(--t-surface) 40%, var(--t-base));
+  color: var(--t-subtext);
+  font-size: var(--fs-1);
+}
+
+/* A gap's control on a phone, where the kit's small button (32px) would not fit the
+   row. It reads as that button's ghost variant: the hairline, the secondary text, a
+   press that fills. Inset focus ring: the row's own scroller would clip an outset one. */
+.rv-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  gap: var(--sp-1);
+  height: var(--rv-chip-h);
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--t-surface);
+  border-radius: var(--r-2);
+  background: transparent;
+  color: var(--t-subtext);
+  font: inherit;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.rv-chip:active {
+  background: color-mix(in srgb, var(--t-surface) 78%, var(--t-text));
+  color: var(--t-text);
+}
+
+.rv-chip:focus-visible {
+  outline: 2px solid var(--t-accent);
+  outline-offset: -2px;
+}
+
+.rv-hunk .rv-sticky {
+  padding: 0 var(--sp-2);
+}
+
+.rv-hunk-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rv-placeholder {
+  background: var(--t-base);
+}
+
+.rv-error {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-2);
+  color: var(--t-text);
+  font-size: var(--fs-1);
+}
+
+/* ── Lines ───────────────────────────────────────────────────────────────── */
+
+/* Code lines and the numbers and signs inside them (their widths are in `ch`, so they
+   follow the size too). The list's own size and line height stay for the chrome rows. */
+.rv-line,
+.rv-split {
+  font-size: var(--rv-code-fs);
+  line-height: var(--rv-code-lh);
+}
+
+.rv-line {
+  height: var(--rv-code-lh);
+}
+
+.rv-wrap.rv-line,
+.rv-wrap.rv-split {
+  height: auto;
+  min-height: var(--rv-code-lh);
+}
+
+.rv-no {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: 5ch;
+  padding-right: var(--sp-1);
+  color: var(--t-subtext);
+  text-align: right;
+  user-select: none;
+  /* A line number is the target of a range selection; the finger must not pan
+     into selecting the code instead. */
+  -webkit-user-select: none;
+}
+
+.rv-sign {
+  flex: 0 0 auto;
+  width: 2ch;
+  color: var(--t-subtext);
+  text-align: center;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.rv-code {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: pre;
+  tab-size: 4;
+}
+
+.rv-wrap .rv-code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+.rv-noeol {
+  flex: 0 0 auto;
+  padding: 0 var(--sp-2);
+  color: var(--t-subtext);
+  font-size: var(--fs-1);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.rv-add {
+  background: color-mix(in srgb, var(--rv-add) 14%, transparent);
+}
+
+.rv-del {
+  background: color-mix(in srgb, var(--rv-del) 14%, transparent);
+}
+
+.rv-add .rv-sign {
+  color: var(--rv-add);
+}
+
+.rv-del .rv-sign {
+  color: var(--rv-del);
+}
+
+/* The characters that differ between a paired removed and added line. */
+.rv-add .rv-mark {
+  background: color-mix(in srgb, var(--rv-add) 38%, transparent);
+}
+
+.rv-del .rv-mark {
+  background: color-mix(in srgb, var(--rv-del) 38%, transparent);
+}
+
+/* ── Picked and commented lines ───────────────────────────────────────────
+   Declared after the added and removed tints so a pick shows over them. The line
+   number says it in text colour and weight as well, so the tint is never the only cue. */
+.rv-selected {
+  background: color-mix(in srgb, var(--t-accent) 24%, transparent);
+}
+
+.rv-commented .rv-no,
+.rv-selected .rv-no {
+  color: var(--t-accent);
+  font-weight: 700;
+}
+
+/* A line number is what a pointer picks with, and a keyboard (it is a button). */
+.rv-no[data-testid^='review-no'] {
+  cursor: pointer;
+}
+
+/* Inset: the number sits at the edge of its cell, and an outset ring would be
+   clipped by the row. */
+.rv-no[role='button']:focus-visible {
+  outline: 2px solid var(--t-accent);
+  outline-offset: -2px;
+}
+
+/* ── Comments ─────────────────────────────────────────────────────────────── */
+
+.rv-note {
+  min-height: var(--rv-line-h);
+  background: var(--t-base);
+  font-family:
+    system-ui,
+    -apple-system,
+    sans-serif;
+  line-height: 1.4;
+}
+
+.rv-note-body {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--sp-2);
+  padding: var(--sp-2);
+}
+
+.rv-card {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-1) var(--sp-2) var(--sp-2);
+  background: var(--t-mantle);
+  border: 1px solid var(--t-surface);
+  border-left: var(--sp-1) solid var(--t-accent);
+  border-radius: var(--r-2);
+  color: var(--t-text);
+}
+
+.rv-card[data-unplaced] {
+  border-left-color: var(--t-subtext);
+}
+
+.rv-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--t-subtext);
+  font-size: var(--fs-1);
+}
+
+.rv-fill {
+  flex: 1 1 auto;
+}
+
+.rv-card-range {
+  color: var(--t-text);
+  font-weight: 600;
+}
+
+.rv-card-flag {
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--t-surface);
+  border-radius: var(--r-pill);
+}
+
+.rv-card-body {
+  font-size: var(--fs-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The code an outdated comment was about, as it was when the comment was made. */
+.rv-quote {
+  max-height: var(--rv-quote-h);
+  margin: 0;
+  padding: var(--sp-1) var(--sp-2);
+  overflow: auto;
+  background: var(--t-base);
+  border-radius: var(--r-1);
+  color: var(--t-subtext);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-1);
+  line-height: var(--rv-line-h);
+  white-space: pre;
+}
+
+.rv-editor {
+  padding-top: var(--sp-2);
+}
+
+.rv-input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: var(--sp-1) var(--sp-2);
+  background: var(--t-base);
+  border: 1px solid var(--t-surface);
+  border-radius: var(--r-2);
+  color: var(--t-text);
+  font: inherit;
+  font-size: var(--fs-2);
+  resize: vertical;
+}
+
+.rv-input:focus {
+  border-color: var(--t-accent);
+}
+
+.rv-input:disabled {
+  opacity: 0.5;
+}
+
+.rv-card-error {
+  color: var(--t-text);
+  font-size: var(--fs-1);
+}
+
+/* What an editor says about itself (its comment was deleted elsewhere): a sentence,
+   so it is plain text under the card's head and not a pill. */
+.rv-card-note {
+  color: var(--t-subtext);
+  font-size: var(--fs-1);
+}
+
+.rv-card-actions {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+/* What picking lines offers, below the list so it moves no row. */
+.rv-selection {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-2);
+  background: var(--t-mantle);
+  border-top: 1px solid var(--t-surface);
+  font-size: var(--fs-1);
+}
+
+.rv-selection-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--t-subtext);
+}
+
+/* ── Side by side ────────────────────────────────────────────────────────── */
+
+.rv-split {
+  height: var(--rv-code-lh);
+}
+
+.rv-cell {
+  box-sizing: border-box;
+  flex: 1 1 50%;
+  min-width: 0;
+  display: flex;
+}
+
+.rv-cell + .rv-cell {
+  border-left: 1px solid var(--t-surface);
+}
+
+.rv-cell.rv-empty {
+  background: color-mix(in srgb, var(--t-surface) 30%, var(--t-base));
+}

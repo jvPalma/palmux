@@ -1,0 +1,85 @@
+/* ── The review bar (mobile) ──────────────────────────────────────────────────
+ *
+ * In the extra-keys bar's slot while the active tab is a review: normal flow, so
+ * the review shrinks to sit above it, on the bar's own ground and hairline. Four
+ * buttons one step below the control height (`--ctl-h` less `--sp-1`: 32px under the
+ * mobile class, the extra-keys bar's own 33px key), `--sp-1` apart inside `--sp-2` of
+ * side padding and 2px above and below, so the bar is one key row tall (37px) where
+ * it was 45px: a review is read on a phone, and every pixel the bar takes is code it
+ * does not show. Unlike the extra-keys bar, whose keys tile it edge to edge, those
+ * gaps, the padding and the safe-area strip are dead space:
+ * a gesture starts on a button's pointerdown, so a tap or a swipe that begins
+ * between two buttons starts nothing. Each button is as wide as its own content
+ * plus an equal share of what is left (`flex: 1 1 auto`, not equal thirds:
+ * "Reviewed" needs more than an arrow does, and equal shares of a 390px row left
+ * it a few pixels short).
+ *
+ * Only the eight tokens, the size scale and the micro motion tier: the test that
+ * reads every stylesheet (scale.test.ts) holds this file to them.
+ */
+
+.review-bar {
+  flex: 0 0 auto;
+  display: flex;
+  gap: var(--sp-1);
+  padding: 2px var(--sp-2) calc(2px + env(safe-area-inset-bottom, 0px));
+  background: var(--t-mantle);
+  border-top: 1px solid var(--t-surface);
+  touch-action: manipulation;
+  user-select: none;
+  /* A held button must never raise the OS callout: its default handling takes focus
+     from the hidden keyboard textarea (the extra-keys bar says the same). */
+  -webkit-touch-callout: none;
+}
+
+.rb-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: calc(var(--ctl-h) - var(--sp-1));
+  gap: var(--sp-1);
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--t-surface);
+  border-radius: var(--r-2);
+  background: var(--t-surface);
+  color: var(--t-text);
+  font:
+    600 var(--fs-2) / 1 system-ui,
+    sans-serif;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  /* The bar reads horizontal swipes itself (the drawer, and the way back): the
+     browser must not scroll or navigate from a drag that starts on a button. */
+  touch-action: none;
+  transition: background-color var(--mo-micro) ease;
+}
+
+/* Reviewed is the one action here that writes, so it is the one that is filled. */
+.rb-primary {
+  border-color: var(--t-accent);
+  background: var(--t-accent);
+  color: var(--t-accent-ink);
+}
+
+/* Unstage takes a file OUT of the staged changes: the quiet counterpart. */
+.rb-ghost {
+  background: transparent;
+}
+
+/* Set from the gesture rather than `:active`, so it clears the moment a slide
+   cancels the tap: a button never says "pressed" for an action that will not run. */
+.rb-btn.pressed {
+  background: color-mix(in srgb, var(--t-surface) 80%, var(--t-text));
+  transition-duration: 0ms;
+}
+
+.rb-primary.pressed {
+  background: color-mix(in srgb, var(--t-accent) 80%, var(--t-text));
+}
+
+.rb-btn:focus-visible {
+  outline: 2px solid var(--t-accent);
+  outline-offset: -2px;
+}

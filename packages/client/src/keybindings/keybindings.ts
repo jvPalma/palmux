@@ -25,6 +25,12 @@ export type Action =
   | 'splitRight'
   | 'splitDown'
   | 'toggleSplitOrientation'
+  | 'openSourceControl'
+  | 'scmNextChange'
+  | 'scmPrevChange'
+  | 'scmNextFile'
+  | 'scmPrevFile'
+  | 'scmReviewed'
   | 'increaseFontSize'
   | 'decreaseFontSize'
   | 'resetFontSize';
@@ -48,6 +54,12 @@ export const ACTIONS: readonly Action[] = [
   'splitRight',
   'splitDown',
   'toggleSplitOrientation',
+  'openSourceControl',
+  'scmNextChange',
+  'scmPrevChange',
+  'scmNextFile',
+  'scmPrevFile',
+  'scmReviewed',
   'increaseFontSize',
   'decreaseFontSize',
   'resetFontSize',
@@ -72,6 +84,12 @@ export const ACTION_LABELS: Record<Action, string> = {
   splitRight: 'Split right',
   splitDown: 'Split down',
   toggleSplitOrientation: 'Toggle split orientation',
+  openSourceControl: 'Open Source Control',
+  scmNextChange: 'Review: next change',
+  scmPrevChange: 'Review: previous change',
+  scmNextFile: 'Review: next file',
+  scmPrevFile: 'Review: previous file',
+  scmReviewed: 'Review: Reviewed (Unstage in Staged)',
   increaseFontSize: 'Increase font size',
   decreaseFontSize: 'Decrease font size',
   resetFontSize: 'Reset font size',
@@ -105,6 +123,16 @@ export const DEFAULT_BINDINGS: Record<Action, Chord> = {
   splitRight: { key: 'd', ctrl: true, shift: true },
   splitDown: { key: 'e', ctrl: true, shift: true },
   toggleSplitOrientation: { key: 'o', ctrl: true, shift: true },
+  // Ctrl+Alt+G, not VS Code's Ctrl+Shift+G: that one is `copyLastOutput` here, and
+  // `matchAction` answers the first match, so reusing it would make one of the two
+  // unreachable. The review keys are letters, not VS Code's F7: GNOME takes Alt+F7
+  // (move window) before the browser sees it, and a Mac's F-row is media keys.
+  openSourceControl: { key: 'g', ctrl: true, alt: true },
+  scmNextChange: { key: 'j', ctrl: true, alt: true },
+  scmPrevChange: { key: 'j', ctrl: true, alt: true, shift: true },
+  scmNextFile: { key: 'n', ctrl: true, alt: true },
+  scmPrevFile: { key: 'n', ctrl: true, alt: true, shift: true },
+  scmReviewed: { key: 'Enter', ctrl: true, alt: true },
   increaseFontSize: { key: '=', ctrl: true },
   decreaseFontSize: { key: '-', ctrl: true },
   resetFontSize: { key: '0', ctrl: true },

@@ -26,7 +26,7 @@ import { Icon } from '../ui/icons';
 import './dock.css';
 
 /** The surfaces the dock can host. Persisted per device, so it is a stable set. */
-export type DockView = 'settings' | 'newtab' | 'files' | 'dictation';
+export type DockView = 'settings' | 'newtab' | 'files' | 'scm' | 'dictation';
 
 // SVG, not emoji. The rail is the app's most permanent chrome, and the emoji set
 // renders as whatever monochrome fallback the platform happens to have — measured
@@ -36,7 +36,7 @@ export type DockView = 'settings' | 'newtab' | 'files' | 'dictation';
 // come free from the button's own colour.
 const RAIL_ICON_PX = 15;
 
-/** Icon keys: the dock's four views plus `sessions`, which only the mobile
+/** Icon keys: the dock's five views plus `sessions`, which only the mobile
  *  drawer shows. One shared map so the two surfaces cannot drift — the drawer
  *  was rendering the `+` glyph for its Sessions tab because this map had no
  *  entry for it. */
@@ -47,6 +47,7 @@ export const ICONS: Record<IconName, ReactNode> = {
   settings: <Icon name="settings" size={RAIL_ICON_PX} />,
   newtab: <Icon name="plus" size={RAIL_ICON_PX} />,
   files: <Icon name="folder" size={RAIL_ICON_PX} />,
+  scm: <Icon name="git-branch" size={RAIL_ICON_PX} />,
   dictation: <Icon name="mic" size={RAIL_ICON_PX} />,
   upload: <Icon name="upload" size={RAIL_ICON_PX} />,
   download: <Icon name="download" size={RAIL_ICON_PX} />,
@@ -58,6 +59,7 @@ export const ICONS: Record<IconName, ReactNode> = {
 export const DOCK_VIEWS: { id: DockView; label: string }[] = [
   { id: 'newtab', label: 'New tab' },
   { id: 'files', label: 'Explorer' },
+  { id: 'scm', label: 'Source Control' },
   { id: 'dictation', label: 'Dictation' },
   { id: 'settings', label: 'Settings' },
 ];
@@ -76,7 +78,7 @@ const PINNED_VIEWS = DOCK_VIEWS.filter((v) => v.id === PINNED_VIEW);
 export const DOCK_SETTLE_MS = 280;
 
 const VIEW_KEY = 'palmux-dock-view';
-const IDS = new Set<string>(['settings', 'newtab', 'files', 'dictation']);
+const IDS = new Set<string>(['settings', 'newtab', 'files', 'scm', 'dictation']);
 
 /** The view this device last had open. Per-device, and never allowed to throw. */
 export function readDockView(): DockView | null {

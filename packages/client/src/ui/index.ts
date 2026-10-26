@@ -36,3 +36,14 @@ export type { DropdownMenuItemSpec, DropdownMenuProps } from './DropdownMenu';
 
 export { ErrorBoundary } from './ErrorBoundary';
 export type { ErrorBoundaryProps } from './ErrorBoundary';
+
+export { ScrollArea } from './ScrollArea';
+export type { ScrollAreaProps } from './ScrollArea';
+
+export { VirtualList, useDynamicRowHeight, useListRef } from './VirtualList';
+export type {
+  DynamicRowHeight,
+  ListImperativeAPI,
+  RowComponentProps,
+  VirtualListProps,
+} from './VirtualList';

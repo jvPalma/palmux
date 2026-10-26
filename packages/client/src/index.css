@@ -1303,14 +1303,17 @@ body {
 }
 
 /* ── Session drawer (mobile; RIGHT edge — swipe RtL on the extra-keys bar to
-   open; the scrim strip or the top close button closes it. Swipe LtR raises the
-   keyboard instead) ──────────────────────────────────────────────────────────
+   open; the scrim strip, a swipe, any action that leaves it, or Escape from inside
+   closes it. There is no close button. Swipe LtR raises the keyboard instead) ────
 
    It covers the full height and all but a 44px strip on the left: the touch-target
    floor, and a strip that hit-tests as the scrim with the keyboard up or down.
    Every control in here takes the --ctl-h step (36px under the mobile class), the
-   same one the kit and Settings use. Motion is the surface tier in and the micro
-   tier out: a leaving surface is shorter than an arriving one. */
+   same one the kit and Settings use, except the LIST rows (a session, a group
+   header, `+ New tab`): those take --drawer-row-h, one step down (32px), the
+   density of the extra-keys bar's keys and the footer, so more sessions fit above
+   the footer. Motion is the surface tier in and the micro tier out: a leaving
+   surface is shorter than an arriving one. */
 .drawer-scrim {
   position: fixed;
   inset: 0;
@@ -1331,6 +1334,10 @@ body {
 .drawer {
   /* The scrim strip the drawer leaves uncovered. */
   --drawer-strip: 44px;
+  /* A list row: the kit's small step (--ctl-h less --sp-1), written from the same
+     two tokens so it follows the device class and is on the scale by construction.
+     The row's own margin (below) and the leaf's clip are not part of it. */
+  --drawer-row-h: calc(var(--ctl-h) - var(--sp-1));
   position: fixed;
   /* Track the visible viewport like .app: when the soft keyboard is open the
      drawer shrinks to the space above it, so its footer (⬆ Upload, ⚙) stays
@@ -1616,7 +1623,7 @@ body {
   gap: var(--sp-2);
   flex: 1 1 auto;
   min-width: 0;
-  min-height: var(--ctl-h);
+  min-height: var(--drawer-row-h);
   padding: 0 var(--sp-2);
   border: 0;
   border-radius: var(--r-2);
@@ -1660,7 +1667,7 @@ body {
   z-index: 1;
   flex: 1 1 auto;
   min-width: 0;
-  min-height: var(--ctl-h);
+  min-height: var(--drawer-row-h);
   display: flex;
   align-items: center;
   gap: var(--sp-2);
@@ -1671,7 +1678,9 @@ body {
   background: var(--t-mantle);
   color: var(--pill-text);
   font: inherit;
-  font-size: var(--fs-3);
+  /* The body size, the footer's: --fs-3 (13px) made a title read bigger than every
+     other line in the drawer. */
+  font-size: var(--fs-2);
   font-weight: 500;
   text-align: left;
   cursor: pointer;
@@ -1856,7 +1865,7 @@ body {
   align-items: center;
   gap: var(--sp-1);
   width: 100%;
-  min-height: var(--ctl-h);
+  min-height: var(--drawer-row-h);
   padding: 0 var(--sp-2);
   border: 1px dashed var(--t-surface);
   border-radius: var(--r-2);

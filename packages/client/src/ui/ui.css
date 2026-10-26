@@ -40,6 +40,12 @@
   /* Kit-local derivations. Not theme tokens — both resolve to --t-* values. */
   --ui-danger: color-mix(in srgb, var(--t-accent-alt) 88%, var(--t-text));
   --ui-danger-tint: color-mix(in srgb, var(--t-accent-alt) 20%, transparent);
+
+  /* The scrollbar thumb of BOTH scroll surfaces: ScrollArea's Radix thumb and the
+     VirtualList's native `scrollbar-color`. One declaration is what makes them read
+     as one control, and a theme change repaints both. */
+  --ui-scroll-thumb: color-mix(in srgb, var(--t-text) 28%, transparent);
+  --ui-scroll-thumb-hover: color-mix(in srgb, var(--t-text) 44%, transparent);
 }
 
 /* ── Button ──────────────────────────────────────────────────────────────────
@@ -809,4 +815,82 @@
   height: var(--sp-4);
   color: var(--t-subtext);
   cursor: default;
+}
+
+/* ── ScrollArea and VirtualList ──────────────────────────────────────────────
+   Two scroll surfaces, one scrollbar. ScrollArea is Radix, for bounded content;
+   VirtualList is react-window, which is its own scroller and so wears the
+   browser's thin scrollbar in the same colour instead. Neither ever sets
+   `touch-action` on the thing that scrolls, so a swipe that starts inside pans
+   natively. Neither belongs inside the terminal grid. */
+.ui-scroll {
+  position: relative;
+  overflow: hidden;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+/* A child of a flex column: the height the siblings leave, scrolled inside. */
+.ui-scroll.ui-scroll-fill {
+  flex: 1 1 auto;
+  height: auto;
+}
+
+.ui-scroll-viewport {
+  width: 100%;
+  height: 100%;
+  max-height: inherit;
+  border-radius: inherit;
+}
+
+/* The bar sits over the viewport's edge and takes no layout. The size is the
+   scale's own step, so it is the same thin line on every theme. */
+.ui-scroll-bar {
+  display: flex;
+  padding: 1px;
+  user-select: none;
+  touch-action: none;
+}
+
+.ui-scroll-bar[data-orientation='vertical'] {
+  width: var(--sp-2);
+}
+
+.ui-scroll-bar[data-orientation='horizontal'] {
+  flex-direction: column;
+  height: var(--sp-2);
+}
+
+.ui-scroll-thumb {
+  position: relative;
+  flex: 1;
+  border-radius: var(--r-pill);
+  background: var(--ui-scroll-thumb);
+  transition: background var(--mo-micro) ease;
+}
+
+.ui-scroll-bar:hover .ui-scroll-thumb {
+  background: var(--ui-scroll-thumb-hover);
+}
+
+/* The list element IS the scroller (react-window sets its overflow, position and
+   flex-grow inline), so the scrollbar is the browser's, thinned. `min-height: 0`
+   lets it shrink inside a flex column. */
+.ui-virtual-list {
+  min-width: 0;
+  min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ui-scroll-thumb) transparent;
+}
+
+/* On a phone neither bar is drawn. The drawer's gesture lives on the right edge
+   and a slider there fights it (the terminal's own scrollbar went for the same
+   reason); touch panning is native and needs no handle. */
+:root[data-mobile='true'] .ui-scroll-bar {
+  display: none;
+}
+
+:root[data-mobile='true'] .ui-virtual-list {
+  scrollbar-width: none;
 }

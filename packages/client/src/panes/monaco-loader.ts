@@ -82,8 +82,10 @@ export function getMonaco(): typeof monaco {
   applyTheme();
   // From here on the app's theme changes reach the editor. Registering only
   // once Monaco exists is what keeps the editor chunk out of a terminal-only
-  // session: until then `setEditorProfile` just remembers the palette.
-  onEditorProfile(applyTheme);
+  // session: until then `setEditorProfile` just remembers the palette. `first`,
+  // because a review pane recolours on the same change and `colorize` reads the
+  // theme Monaco holds at that moment.
+  onEditorProfile(applyTheme, { first: true });
   return monaco;
 }
 

@@ -22,8 +22,9 @@
 // This module must NEVER import monaco-editor. App calls `setEditorProfile` on
 // every theme change, and a static path from App to the loader would drag the
 // whole 3.7 MB editor chunk into a session that only ever opens a terminal —
-// exactly what the loader's dynamic import exists to prevent. The loader
-// subscribes here instead, so the dependency points the safe way.
+// exactly what the loader's dynamic import exists to prevent. The loader (and
+// each review pane, which only ever colours through the loader) subscribes here
+// instead, so the dependency points the safe way.
 
 import { hex, isLightBg, deriveUiTokens, type ColorProfile } from '@palmux/shared';
 
@@ -120,25 +121,85 @@ export function buildMonacoTheme(profile: ColorProfile): MonacoThemeData {
 // ── The bridge App uses ───────────────────────────────────────────────────────
 
 let current: ColorProfile | null = null;
-let listener: ((p: ColorProfile) => void) | null = null;
+
+type ProfileListener = (p: ColorProfile) => void;
+
+interface Subscription {
+  cb: ProfileListener;
+  live: boolean;
+}
+
+// Registration order, except that `first` subscribers sit ahead of the rest.
+const subscriptions: Subscription[] = [];
+let firstCount = 0;
 
 /**
- * Record the app's palette and repaint any live editor.
+ * Record the app's palette and tell every subscriber.
  *
- * Safe to call before Monaco exists (and before it ever does): with no listener
+ * Safe to call before Monaco exists (and before it ever does): with no subscriber
  * this only remembers the profile, which the loader then reads when it starts.
  * That ordering is the point — an editor opened later is correct on its FIRST
  * frame instead of flashing VS Code's default palette and correcting itself.
+ *
+ * One subscriber that throws does not stop the others: a review pane that failed
+ * to repaint must not leave Monaco's own theme undefined, or the reverse. The
+ * first failure is rethrown once everyone has run.
  */
 export function setEditorProfile(p: ColorProfile): void {
   current = p;
-  listener?.(p);
+  let failed = false;
+  let failure: unknown;
+  for (const subscription of [...subscriptions]) {
+    // Unsubscribed by an earlier listener during this very call.
+    if (!subscription.live) continue;
+    try {
+      subscription.cb(p);
+    } catch (error) {
+      if (!failed) {
+        failed = true;
+        failure = error;
+      }
+    }
+  }
+  if (failed) throw failure;
 }
 
 /** The palette the next editor should use, or null before App has set one. */
 export const editorProfile = (): ColorProfile | null => current;
 
-/** The loader registers here as it initialises; there is only ever one. */
-export function onEditorProfile(cb: (p: ColorProfile) => void): void {
-  listener = cb;
+export interface EditorProfileOptions {
+  /**
+   * Run ahead of every subscriber that did not ask for this. The loader asks: it
+   * defines Monaco's theme, and a review that recolours with `colorize` must find
+   * that theme in place. The loader registers when Monaco first loads, which can be
+   * long after a review pane subscribed at mount, so plain registration order
+   * would put it second.
+   */
+  first?: boolean;
+}
+
+/**
+ * Be told of every palette change. Several subscribers coexist (the loader, and
+ * one per open review pane), run in registration order, and each gets back its own
+ * way out, which a pane calls on unmount so a closed review stops listening.
+ */
+export function onEditorProfile(
+  cb: ProfileListener,
+  options: EditorProfileOptions = {},
+): () => void {
+  const subscription: Subscription = { cb, live: true };
+  if (options.first === true) {
+    subscriptions.splice(firstCount, 0, subscription);
+    firstCount++;
+  } else {
+    subscriptions.push(subscription);
+  }
+  return () => {
+    if (!subscription.live) return;
+    subscription.live = false;
+    const index = subscriptions.indexOf(subscription);
+    if (index < 0) return;
+    subscriptions.splice(index, 1);
+    if (options.first === true) firstCount--;
+  };
 }

@@ -5,7 +5,7 @@
 // live OSC title > kind default), and the fixed color palette (names on the
 // wire, theme-matched hex here).
 
-import type { TabKind, TabMeta } from '@palmux/shared';
+import { parseReviewUrl, type TabKind, type TabMeta } from '@palmux/shared';
 import type { IconId } from '../ui/icons';
 
 // Icon NAMES, not glyphs: the strip, the drawer and the sheet each render
@@ -17,6 +17,8 @@ const KIND_ICONS: { [K in TabKind]: IconId } = {
   dashboard: 'dashboard',
   editor: 'pencil',
   markdown: 'book',
+  // The glyph of the Source Control rail entry the review belongs to.
+  review: 'git-branch',
 };
 
 export function kindIcon(kind: TabKind): IconId {
@@ -83,6 +85,14 @@ function webTitle(url: string | undefined): string {
   }
 }
 
+/** `Changes · <project>` / `Staged · <project>` for a review tab's `url`. */
+function reviewTitle(url: string | undefined): string {
+  const parsed = url === undefined ? null : parseReviewUrl(url);
+  if (!parsed) return 'review';
+  const label = parsed.group === 'staged' ? 'Staged' : 'Changes';
+  return `${label} · ${parsed.top.split('/').findLast(Boolean) ?? parsed.top}`;
+}
+
 /** What a tab is called in the strip/drawer: name > OSC title > kind default. */
 export function displayTitle(tab: TabMeta): string {
   if (tab.name) return tab.name;
@@ -100,6 +110,8 @@ export function displayTitle(tab: TabMeta): string {
       return tab.url ? (tab.url.split('/').pop() ?? 'notes') : 'notes';
     case 'markdown':
       return tab.url ? (tab.url.split('/').pop() ?? 'markdown') : 'markdown';
+    case 'review':
+      return reviewTitle(tab.url);
   }
 }
 
