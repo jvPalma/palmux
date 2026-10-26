@@ -130,6 +130,66 @@ describe('settings persistence', () => {
     expect(JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8'))).toEqual({});
   });
 
+  // An older bundle sends only the keys it knows, and a settings write used to
+  // replace the stored object with whatever arrived.
+  it('a save that omits a stored key leaves it in place', async () => {
+    const { mod } = await freshConfig('merge-omit');
+    mod.saveSettings({ fontSize: 14, scmRepos: ['/work/a', '/work/b'], themeMode: 'system' });
+    // A window from before scmRepos and themeMode existed saves a font change.
+    mod.saveSettings({ fontFamily: 'Fira Code' });
+    expect(mod.loadSettings()).toEqual({
+      fontSize: 14,
+      scmRepos: ['/work/a', '/work/b'],
+      themeMode: 'system',
+      fontFamily: 'Fira Code',
+    });
+  });
+
+  it('a key the save carries replaces the stored one, an explicit [] included', async () => {
+    const { mod } = await freshConfig('merge-replace');
+    mod.saveSettings({ scmRepos: ['/work/a'], fontSize: 14, nested: { a: 1, b: 2 } });
+    mod.saveSettings({ scmRepos: [], fontSize: 16, nested: { a: 9 } });
+    // Shallow: a nested object is replaced whole, not merged key by key.
+    expect(mod.loadSettings()).toEqual({ scmRepos: [], fontSize: 16, nested: { a: 9 } });
+  });
+
+  it('returns the merged object, which is what was persisted', async () => {
+    const { mod } = await freshConfig('merge-return');
+    mod.saveSettings({ themeId: 'dracula', fontSize: 14 });
+    const merged = mod.saveSettings({ fontSize: 18 });
+    expect(merged).toEqual({ themeId: 'dracula', fontSize: 18 });
+    expect(mod.loadSettings()).toEqual(merged);
+  });
+
+  it('a partial save keeps the per-device themeId in its own file', async () => {
+    const { dir, mod } = await freshConfig('merge-theme');
+    mod.saveSettings({ themeId: 'gruvbox-dark', fontFamily: 'Fira Code' });
+    const merged = mod.saveSettings({ fontSize: 12 });
+    expect(merged['themeId']).toBe('gruvbox-dark');
+    expect(JSON.parse(readFileSync(join(dir, 'settings.local.json'), 'utf8'))).toEqual({
+      themeId: 'gruvbox-dark',
+    });
+    expect(JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8'))).toEqual({
+      fontFamily: 'Fira Code',
+      fontSize: 12,
+    });
+  });
+
+  it('merges over a pre-split settings.json without losing its themeId', async () => {
+    const { dir, mod } = await freshConfig('merge-legacy');
+    mod.ensureConfigDir();
+    writeFileSync(join(dir, 'settings.json'), JSON.stringify({ themeId: 'legacy', scrollback: 7 }));
+    const merged = mod.saveSettings({ fontSize: 12 });
+    expect(merged).toEqual({ themeId: 'legacy', scrollback: 7, fontSize: 12 });
+    expect(JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8'))).toEqual({
+      scrollback: 7,
+      fontSize: 12,
+    });
+    expect(JSON.parse(readFileSync(join(dir, 'settings.local.json'), 'utf8'))).toEqual({
+      themeId: 'legacy',
+    });
+  });
+
   it('keeps the per-device file at 0600 — it sits beside the secret', async () => {
     const { dir, mod } = await freshConfig('local-mode');
     mod.saveSettings({ themeId: 'x' });

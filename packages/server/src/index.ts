@@ -14,6 +14,7 @@ import {
   readHandoff,
   spawnSuccessor,
 } from './handoff';
+import { releaseAllLocks } from './scm-index';
 import { APP_VERSION } from './version';
 import {
   loadOrCreateSecret,
@@ -107,6 +108,20 @@ const SNAPSHOT_INTERVAL_MS = 60_000;
 /** How long a clean shutdown may take before we exit anyway (systemd's own
  *  patience is 90s, and it ends in SIGKILL for every process in the unit). */
 const SHUTDOWN_GRACE_MS = 3000;
+
+/**
+ * A source-control write holds git's `index.lock` for a few milliseconds. A lock
+ * still held when we go would answer every later git command in that repository
+ * with "another git process seems to be running", so it is unlinked as the process
+ * ends, as git does from its own signal handlers. Only then, never earlier: an
+ * unlink while a write is still in flight could let it rename a stranger's lock
+ * over the index. The `exit` listener in `main` covers the exits that do not pass
+ * through `shutdown`.
+ */
+function exitNow(): void {
+  releaseAllLocks();
+  process.exit(0);
+}
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
@@ -230,6 +245,10 @@ async function main(): Promise<void> {
     registry.snapshotForRestore();
   }
 
+  process.on('exit', () => {
+    releaseAllLocks();
+  });
+
   const shutdown = () => {
     // Before the capture, not after: closing the server kills every shell, and
     // the exit handler must not mistake that for the user closing a tab (which
@@ -244,9 +263,9 @@ async function main(): Promise<void> {
     app.closeSockets();
     // And a floor under it regardless. Whatever else is holding the event loop,
     // the snapshots are written, so exiting is strictly better than being killed.
-    const giveUp = setTimeout(() => process.exit(0), SHUTDOWN_GRACE_MS);
+    const giveUp = setTimeout(exitNow, SHUTDOWN_GRACE_MS);
     giveUp.unref();
-    app.close().finally(() => process.exit(0));
+    app.close().finally(exitNow);
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);

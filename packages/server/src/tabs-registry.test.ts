@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DEFAULT_APP_CONFIG, type AppConfig } from './app-config';
 import { createSessionRegistry, type SessionRegistry } from './server';
-import { createTabsStore, memoryGroupsStore, memoryTabsStore } from './tabs-store';
+import { createTabsStore, memoryGroupsStore, memoryTabsStore, type TabsStore } from './tabs-store';
 import { memoryRestoreStore } from './session-restore';
 
 const cfg: AppConfig = { ...DEFAULT_APP_CONFIG, fontDirs: [] };
@@ -14,7 +14,7 @@ const registries: SessionRegistry[] = [];
 // A memory restore store, always: with the default the registry reads the REAL
 // <configDir>/sessions/, so a live palmux writing a snapshot mid-run decided
 // whether this file passed.
-const make = (store = memoryTabsStore(), groupsStore = memoryGroupsStore()) => {
+const make = (store: TabsStore = memoryTabsStore(), groupsStore = memoryGroupsStore()) => {
   const r = createSessionRegistry(cfg, store, groupsStore, undefined, memoryRestoreStore());
   registries.push(r);
   return r;
@@ -446,5 +446,174 @@ describe('tab groups', () => {
     const reg = make(store, memoryGroupsStore()); // no groups in the sidecar
     expect(reg.tabs().every((t) => t.groupId === undefined)).toBe(true);
     expect(reg.groups()).toEqual([]);
+  });
+});
+
+describe('tab registry — review tabs', () => {
+  it('creates a review tab for changes:/staged: plus an absolute path, and persists it', () => {
+    const store = memoryTabsStore();
+    const reg = make(store);
+    let broadcasts = 0;
+    reg.onListChanged(() => broadcasts++);
+
+    expect(reg.createTab({ kind: 'review', url: 'changes:/work/palmux' })).toBe('0');
+    expect(reg.createTab({ kind: 'review', url: 'staged:/work/palmux' })).toBe('1');
+    expect(broadcasts).toBe(2);
+    expect(reg.tabs()).toEqual([
+      { id: '0', kind: 'review', url: 'changes:/work/palmux' },
+      { id: '1', kind: 'review', url: 'staged:/work/palmux' },
+    ]);
+    expect(reg.kindOf('0')).toBe('review');
+    expect(store.snapshot()).toEqual([
+      { id: '0', kind: 'review', url: 'changes:/work/palmux' },
+      { id: '1', kind: 'review', url: 'staged:/work/palmux' },
+    ]);
+  });
+
+  it.each([
+    ['no url', undefined],
+    ['an empty url', ''],
+    ['no group prefix', '/work/palmux'],
+    ['an unknown group', 'unstaged:/work/palmux'],
+    ['a relative path', 'changes:work/palmux'],
+    ['an empty path', 'changes:'],
+    ['a url scheme instead of a path', 'changes:https://x.dev'],
+    ['a NUL in the path', 'changes:/work/pal\0mux'],
+    ['a web url', 'https://sb.local'],
+    ['a group prefix with different case', 'Changes:/work/palmux'],
+  ])('refuses a review tab with %s', (_label, url) => {
+    const reg = make();
+    expect(reg.createTab({ kind: 'review', ...(url !== undefined ? { url } : {}) })).toBeNull();
+    expect(reg.tabs()).toEqual([]);
+  });
+
+  it('answers the existing tab for a review whose canonical url is already open', () => {
+    const reg = make();
+    let broadcasts = 0;
+    expect(reg.createTab({ kind: 'review', url: 'changes:/work/palmux' })).toBe('0');
+    reg.onListChanged(() => broadcasts++);
+
+    expect(reg.createTab({ kind: 'review', url: 'changes:/work/palmux' })).toBe('0');
+    // Other spellings of the same project are the same review.
+    expect(reg.createTab({ kind: 'review', url: 'changes:/work/palmux/' })).toBe('0');
+    expect(reg.createTab({ kind: 'review', url: 'changes:/work//palmux' })).toBe('0');
+    expect(reg.createTab({ kind: 'review', url: 'changes:/work/./other/../palmux' })).toBe('0');
+    expect(reg.tabs()).toEqual([{ id: '0', kind: 'review', url: 'changes:/work/palmux' }]);
+    expect(broadcasts).toBe(0);
+  });
+
+  it('stores the canonical spelling', () => {
+    const reg = make();
+    expect(reg.createTab({ kind: 'review', url: 'staged:/work//palmux/' })).toBe('0');
+    expect(reg.tabs()[0]).toMatchObject({ url: 'staged:/work/palmux' });
+  });
+
+  it('two creates in a row for one review yield one tab', () => {
+    const reg = make();
+    const ids = [
+      reg.createTab({ kind: 'review', url: 'changes:/work/palmux' }),
+      reg.createTab({ kind: 'review', url: 'changes:/work/palmux' }),
+    ];
+    expect(ids).toEqual(['0', '0']);
+    expect(reg.ids()).toEqual(['0']);
+  });
+
+  it('keeps Changes and Staged of one project, and two projects, apart', () => {
+    const reg = make();
+    reg.createTab({ kind: 'review', url: 'changes:/work/palmux' });
+    reg.createTab({ kind: 'review', url: 'staged:/work/palmux' });
+    reg.createTab({ kind: 'review', url: 'changes:/work/other' });
+    expect(reg.ids()).toEqual(['0', '1', '2']);
+  });
+
+  it('does not let another kind answer for a review url', () => {
+    const reg = make();
+    reg.createTab({ kind: 'web', url: '/changes:/work/palmux' });
+    expect(reg.createTab({ kind: 'review', url: 'changes:/work/palmux' })).toBe('1');
+  });
+
+  it('reuses the id of a closed review, as every other kind does', () => {
+    const reg = make();
+    reg.createTab({ kind: 'review', url: 'changes:/work/palmux' }); // 0
+    reg.createTab({ kind: 'editor' }); // 1
+    reg.kill('0');
+    expect(reg.createTab({ kind: 'review', url: 'changes:/work/palmux' })).toBe('0');
+    expect(reg.ids()).toEqual(['1', '0']);
+  });
+
+  it('updateTab refuses a review url another tab holds, and still applies the rest', () => {
+    const reg = make();
+    reg.createTab({ kind: 'review', url: 'changes:/work/one' }); // 0
+    reg.createTab({ kind: 'review', url: 'changes:/work/two' }); // 1
+    expect(reg.updateTab('1', { url: 'changes:/work/one', name: 'second' })).toBe(true);
+    expect(reg.tabs()[1]).toMatchObject({ url: 'changes:/work/two', name: 'second' });
+    // The same project spelled differently is held too.
+    reg.updateTab('1', { url: 'changes:/work/one/' });
+    expect(reg.tabs()[1]).toMatchObject({ url: 'changes:/work/two' });
+  });
+
+  it('updateTab accepts a free review url, and a tab keeping its own', () => {
+    const reg = make();
+    reg.createTab({ kind: 'review', url: 'changes:/work/one' }); // 0
+    reg.updateTab('0', { url: 'changes:/work/one' });
+    expect(reg.tabs()[0]).toMatchObject({ url: 'changes:/work/one' });
+    reg.updateTab('0', { url: 'staged:/work//one/' });
+    expect(reg.tabs()[0]).toMatchObject({ url: 'staged:/work/one' });
+  });
+
+  it.each([
+    'javascript:alert(1)',
+    'changes:relative/path',
+    '/work/palmux',
+    'https://sb.local',
+    'changes:',
+    'changes:/work/pal\0mux',
+  ])('updateTab ignores an invalid review url: %s', (url) => {
+    const reg = make();
+    reg.createTab({ kind: 'review', url: 'changes:/work/one' });
+    reg.updateTab('0', { url });
+    expect(reg.tabs()[0]).toMatchObject({ url: 'changes:/work/one' });
+  });
+
+  it('updateTab does not turn another kind into a review url', () => {
+    const reg = make();
+    reg.createTab({ kind: 'editor', url: '/work/a.ts' }); // 0
+    reg.createTab({ kind: 'web', url: 'https://a.dev' }); // 1
+    reg.updateTab('0', { url: 'changes:/work/palmux' });
+    reg.updateTab('1', { url: 'changes:/work/palmux' });
+    expect(reg.tabs()).toEqual([
+      { id: '0', kind: 'editor', url: '/work/a.ts' },
+      { id: '1', kind: 'web', url: 'https://a.dev' },
+    ]);
+  });
+
+  it('a review tab survives a registry restore, url and name included', () => {
+    const store = memoryTabsStore();
+    const first = make(store);
+    first.createTab({ kind: 'review', url: 'changes:/work/palmux', name: 'my review' });
+    first.createTab({ kind: 'terminal' });
+    first.createTab({ kind: 'review', url: 'staged:/work/palmux' });
+
+    const restored = make(store);
+    expect(restored.tabs().filter((t) => t.kind === 'review')).toEqual([
+      { id: '0', kind: 'review', url: 'changes:/work/palmux', name: 'my review' },
+      { id: '2', kind: 'review', url: 'staged:/work/palmux' },
+    ]);
+    // The idempotency rule holds across the restart too.
+    expect(restored.createTab({ kind: 'review', url: 'changes:/work/palmux' })).toBe('0');
+  });
+
+  it('a review tab survives the file-backed store', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'palmux-tabs-'));
+    const fileStore = createTabsStore(dir);
+    const reg = make(fileStore);
+    reg.createTab({ kind: 'review', url: 'changes:/work/palmux' });
+    await new Promise((r) => setTimeout(r, 250));
+    expect(JSON.parse(readFileSync(join(dir, 'tabs.json'), 'utf8'))).toEqual([
+      { id: '0', kind: 'review', url: 'changes:/work/palmux' },
+    ]);
+    expect(make(createTabsStore(dir)).tabs()).toEqual([
+      { id: '0', kind: 'review', url: 'changes:/work/palmux' },
+    ]);
   });
 });

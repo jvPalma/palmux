@@ -2,10 +2,15 @@ import { describe, expect, it } from 'vitest';
 import {
   encodeClientMessage,
   encodeServerMessage,
+  isTabKind,
   parseClientMessage,
   parseServerMessage,
+  TAB_KINDS,
 } from '@palmux/shared';
 import type { ClientMessage, ServerMessage } from '@palmux/shared';
+
+const frame = (fields: Record<string, unknown>) =>
+  parseServerMessage(JSON.stringify({ type: 'scmComments', ...fields }));
 
 describe('parseServerMessage', () => {
   it('round-trips a ready message', () => {
@@ -188,6 +193,47 @@ describe('parseServerMessage', () => {
     expect(parseServerMessage(JSON.stringify({ type: 'extraKeys', extraKeys: 5 }))).toBeNull();
     expect(parseServerMessage(JSON.stringify({ type: 'settings' }))).toBeNull();
   });
+
+  it('round-trips an scmComments message', () => {
+    const msg: ServerMessage = { type: 'scmComments', repo: '/work/palmux', rev: 12 };
+    expect(parseServerMessage(encodeServerMessage(msg))).toEqual(msg);
+    expect(
+      parseServerMessage(JSON.stringify({ type: 'scmComments', repo: '/work/palmux', rev: 0 })),
+    ).toEqual({ type: 'scmComments', repo: '/work/palmux', rev: 0 });
+  });
+
+  it('drops an scmComments frame without a usable repo or rev', () => {
+    expect(frame({ rev: 1 })).toBeNull();
+    expect(frame({ repo: '/work/palmux' })).toBeNull();
+    expect(frame({ repo: '', rev: 1 })).toBeNull();
+    expect(frame({ repo: 7, rev: 1 })).toBeNull();
+    expect(frame({ repo: '/work/palmux', rev: '1' })).toBeNull();
+    expect(frame({ repo: '/work/palmux', rev: -1 })).toBeNull();
+    expect(frame({ repo: '/work/palmux', rev: 1.5 })).toBeNull();
+    expect(frame({ repo: '/work/palmux', rev: null })).toBeNull();
+  });
+
+  it('keeps a review tab, with its url, in a sessions message', () => {
+    const msg: ServerMessage = {
+      type: 'sessions',
+      ids: ['0', '1'],
+      titles: {},
+      tabs: [
+        { id: '0', kind: 'terminal' },
+        { id: '1', kind: 'review', url: 'changes:/work/palmux' },
+      ],
+      groups: [],
+    };
+    expect(parseServerMessage(encodeServerMessage(msg))).toEqual(msg);
+  });
+});
+
+describe('tab kinds', () => {
+  it('includes review, and still refuses an unknown kind', () => {
+    expect(TAB_KINDS).toContain('review');
+    expect(isTabKind('review')).toBe(true);
+    expect(isTabKind('popup')).toBe(false);
+  });
 });
 
 describe('parseClientMessage', () => {
@@ -229,6 +275,11 @@ describe('parseClientMessage', () => {
     expect(parseClientMessage(encodeClientMessage(bare))).toEqual(bare);
   });
 
+  it('round-trips a review createTab with its url', () => {
+    const msg: ClientMessage = { type: 'createTab', kind: 'review', url: 'staged:/work/palmux' };
+    expect(parseClientMessage(encodeClientMessage(msg))).toEqual(msg);
+  });
+
   it('returns null for createTab with an unknown kind (forgiving drop, not a crash)', () => {
     expect(parseClientMessage(JSON.stringify({ type: 'createTab', kind: 'popup' }))).toBeNull();
     expect(parseClientMessage(JSON.stringify({ type: 'createTab' }))).toBeNull();
@@ -257,6 +308,9 @@ describe('parseClientMessage', () => {
 
   it('returns null for an unknown or server-only type', () => {
     expect(parseClientMessage(JSON.stringify({ type: 'ready', cols: 1, rows: 1 }))).toBeNull();
+    expect(
+      parseClientMessage(JSON.stringify({ type: 'scmComments', repo: '/work/palmux', rev: 1 })),
+    ).toBeNull();
     expect(parseClientMessage(JSON.stringify({ type: 'bogus' }))).toBeNull();
   });
 

@@ -6,10 +6,10 @@
 
 import { createReadStream, existsSync, mkdirSync, watch } from 'node:fs';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import fastifyCookie from '@fastify/cookie';
 import fastifyFormbody from '@fastify/formbody';
 import fastifyStatic from '@fastify/static';
@@ -19,12 +19,18 @@ import {
   encodeServerMessage,
   forgivingOrder,
   isEmbeddableUrl,
+  isScmAlgorithm,
+  isScmGroup,
   isTabId,
+  isTabKind,
   nextFreeId,
   normalizeOrder,
   parseClientMessage,
+  parseReviewUrl,
   registerDynamicThemes,
+  reviewUrl,
   type JsonObject,
+  type ScmCommentList,
   type TabGroup,
   type TabKind,
   type TabMeta,
@@ -38,6 +44,8 @@ declare module 'fastify' {
     broadcastUpdating(stage: UpdatingMessage['stage'], version?: string): void;
     /** Close every live WebSocket. Must run before app.close() — see index.ts. */
     closeSockets(): void;
+    /** Tell every client a project's review comments reached `rev` (see scm-comments.ts). */
+    broadcastScmComments(repo: string, rev: number): void;
   }
 }
 import {
@@ -96,6 +104,18 @@ import { bundleZip, contentDisposition, resolveDownload } from './download';
 import { listMdDir, readMdFile } from './markdown';
 import { deletePaths, listDir } from './files';
 import { readTextFile, writeTextFile } from './file-rw';
+import {
+  ScmCommentError,
+  createComment,
+  deleteComment,
+  latestRev,
+  listComments,
+  updateComment,
+} from './scm-comments';
+import { checkRepo, resolveRepo, scmFail, type ScmFailure } from './scm-git';
+import { restoreReceipt, stageFile, unstageFile, type WriteResult } from './scm-index';
+import { readSnapshot } from './scm-snapshot';
+import { getStatus } from './scm-status';
 import { resolveImageFile } from './image-file';
 import { themedManifest } from './manifest';
 import { registerConfigFileRoutes } from './config-file';
@@ -191,6 +211,18 @@ const GROUP_DEFAULT_COLORS = [
   'gray',
 ];
 
+/**
+ * The one spelling of a review url: its group prefix plus an absolute top with
+ * `//`, `.`, `..` and a trailing slash resolved, the way the file routes name a
+ * path. Null for anything else. Two spellings of one project must not become two
+ * tabs.
+ */
+function canonicalReviewUrl(url: string): string | null {
+  const parsed = parseReviewUrl(url);
+  if (!parsed || parsed.top.includes('\0')) return null;
+  return reviewUrl(parsed.group, resolve(parsed.top));
+}
+
 export interface CreateTabSpec {
   kind: TabKind;
   url?: string;
@@ -224,9 +256,16 @@ export interface SessionRegistry {
   groups(): TabGroup[];
   /** The kind of a live tab, or undefined when no tab exists at `id`. */
   kindOf(id: string): TabKind | undefined;
-  /** Create a tab at the lowest free id. Null = invalid spec (web without url). */
+  /**
+   * Create a tab at the lowest free id. Null = invalid spec (web without url, a
+   * review url that is not `changes:`/`staged:` + an absolute path). A review
+   * whose canonical url is already open answers that tab's id and creates nothing.
+   */
   createTab(spec: CreateTabSpec): string | null;
-  /** Patch tab metadata; empty-string name/color clears. False = no such tab. */
+  /**
+   * Patch tab metadata; empty-string name/color clears. False = no such tab. A url
+   * the kind refuses, or a review url another tab holds, is ignored.
+   */
   updateTab(id: string, patch: UpdateTabPatch): boolean;
   /**
    * Apply a new display order (forgiving permutation: unknown ids ignored,
@@ -348,6 +387,14 @@ export function createSessionRegistry(
   // above can call it — hoisted with `tabs` already initialized.
   function groupIdOf(id: string): string | undefined {
     return tabs.get(id)?.groupId;
+  }
+
+  /** The review tab holding `url`, other than `except`. */
+  function reviewTabHolding(url: string, except?: string): string | undefined {
+    for (const [id, r] of tabs) {
+      if (r.kind === 'review' && r.url === url && id !== except) return id;
+    }
+    return undefined;
   }
 
   function applyNormalizedOrder(): void {
@@ -677,6 +724,17 @@ export function createSessionRegistry(
       // data:/protocol-relative so a hostile frame can't be stored + rebroadcast
       // + rendered into an iframe src on every client.
       if (spec.kind === 'web' && !(spec.url && isEmbeddableUrl(spec.url))) return null;
+      // A review tab is identified by its canonical url: a second create for a
+      // review that is already open answers the existing tab. This is the
+      // cross-window backstop; a client selects a live review itself.
+      let reviewKey: string | undefined;
+      if (spec.kind === 'review') {
+        const canonical = spec.url === undefined ? null : canonicalReviewUrl(spec.url);
+        if (canonical === null) return null;
+        const open = reviewTabHolding(canonical);
+        if (open !== undefined) return open;
+        reviewKey = canonical;
+      }
       // A markdown tab's url is a server FILE PATH: optional (no path = the
       // browser view), but when present it must be absolute. An EDITOR tab's
       // url works the same way and is what distinguishes the two things that
@@ -702,6 +760,7 @@ export function createSessionRegistry(
         ...(spec.kind === 'web' && spec.url ? { url: spec.url } : {}),
         ...(spec.kind === 'markdown' && spec.url ? { url: spec.url } : {}),
         ...(spec.kind === 'editor' && spec.url ? { url: spec.url } : {}),
+        ...(reviewKey !== undefined ? { url: reviewKey } : {}),
       });
       order.push(id);
       persist();
@@ -731,6 +790,13 @@ export function createSessionRegistry(
         isAbsolute(patch.url)
       ) {
         rec.url = patch.url;
+      }
+      // A review keeps its url unique: a url another tab holds is refused, since
+      // two tabs over one review would be two scroll positions fighting over one
+      // identity.
+      if (patch.url !== undefined && rec.kind === 'review') {
+        const next = canonicalReviewUrl(patch.url);
+        if (next !== null && reviewTabHolding(next, id) === undefined) rec.url = next;
       }
       persist();
       listChanged();
@@ -810,6 +876,49 @@ export function createSessionRegistry(
     },
   };
 }
+
+// ── Source Control route helpers ────────────────────────────────────────────────
+
+/** A refusal from a scm module, as the JSON every /scm route answers. */
+function sendScmFailure(reply: FastifyReply, failure: ScmFailure): FastifyReply {
+  return reply
+    .code(failure.status)
+    .send(
+      failure.code === undefined
+        ? { error: failure.error }
+        : { error: failure.error, code: failure.code },
+    );
+}
+
+/**
+ * Wraps a /scm handler so a throw is still a JSON error. The scm modules return
+ * their refusals; what reaches here is the comment store's validation or an
+ * unexpected filesystem failure, and neither may fall through to the SPA shell.
+ */
+function scmRoute(
+  handler: (req: FastifyRequest, reply: FastifyReply) => Promise<unknown>,
+): (req: FastifyRequest, reply: FastifyReply) => Promise<unknown> {
+  return async (req, reply) => {
+    try {
+      return await handler(req, reply);
+    } catch (error) {
+      if (error instanceof ScmCommentError) {
+        return reply.code(error.status).send({ error: error.message });
+      }
+      console.warn(
+        `scm: ${req.method} ${req.url.split('?')[0] ?? ''} failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return reply.code(500).send({ error: 'source control request failed' });
+    }
+  };
+}
+
+function isJsonObject(body: unknown): body is Record<string, unknown> {
+  return typeof body === 'object' && body !== null && !Array.isArray(body);
+}
+
+/** A request value as text; anything else reads as blank, which every scm check refuses. */
+const textOrBlank = (value: unknown): string => (typeof value === 'string' ? value : '');
 
 export async function createServer(
   cfg: AppConfig,
@@ -1155,6 +1264,129 @@ export async function createServer(
     return reply.send(createReadStream(res.path));
   });
 
+  // ── Source Control (scm-*.ts; the source-control-review design) ────────────
+  // Absolute paths under /files/list's trust model: the cookie gate is the
+  // boundary. Every request names its project by the work tree's own top level
+  // (`checkRepo`), every failure is JSON `{ error, code? }` with the module's own
+  // status, and the not-found handler answers an unknown /scm/ path with a 404
+  // instead of the SPA shell. The only writes are three index transactions
+  // (stage, unstage, restore) and the comment store under <configDir>/.cache.
+  app.get(
+    '/scm/repo',
+    scmRoute(async (req, reply) => {
+      const q = req.query as Record<string, unknown>;
+      const res = await resolveRepo(q['path']);
+      if (!res.ok) return sendScmFailure(reply, res);
+      return reply.send({ top: res.top });
+    }),
+  );
+
+  app.get(
+    '/scm/status',
+    scmRoute(async (req, reply) => {
+      const q = req.query as Record<string, unknown>;
+      const repo = await checkRepo(q['repo']);
+      if (!repo.ok) return sendScmFailure(reply, repo);
+      const res = await getStatus(repo.top);
+      if (!res.ok) return sendScmFailure(reply, res);
+      // The answer is shared with every concurrent caller: copy it, never add to it.
+      return reply.send({ ...res.status, commentsRev: latestRev(repo.top) });
+    }),
+  );
+
+  app.get(
+    '/scm/file',
+    scmRoute(async (req, reply) => {
+      const q = req.query as Record<string, unknown>;
+      const repo = await checkRepo(q['repo']);
+      if (!repo.ok) return sendScmFailure(reply, repo);
+      const group = q['group'];
+      if (!isScmGroup(group)) {
+        return sendScmFailure(reply, scmFail(400, 'group must be staged or changes'));
+      }
+      const algorithm = q['algorithm'];
+      if (!isScmAlgorithm(algorithm)) {
+        return sendScmFailure(reply, scmFail(400, 'unknown diff algorithm'));
+      }
+      const res = await readSnapshot({
+        top: repo.top,
+        group,
+        path: textOrBlank(q['path']),
+        oldPath: typeof q['oldPath'] === 'string' ? q['oldPath'] : undefined,
+        algorithm,
+      });
+      if (!res.ok) return sendScmFailure(reply, res);
+      return reply.send(res.snapshot);
+    }),
+  );
+
+  // Review comments. Every answer is the whole list and its rev, and every write
+  // tells every client the new rev, so a window never has to poll for them.
+  const commentId = (req: FastifyRequest): string => {
+    const id = textOrBlank((req.query as Record<string, unknown>)['id']);
+    if (id === '') throw new ScmCommentError(400, 'id is required');
+    return id;
+  };
+  const commentRoute = (
+    run: (top: string, req: FastifyRequest) => Promise<ScmCommentList>,
+    broadcastsRev: boolean,
+  ) =>
+    scmRoute(async (req, reply) => {
+      const repo = await checkRepo((req.query as Record<string, unknown>)['repo']);
+      if (!repo.ok) return sendScmFailure(reply, repo);
+      const list = await run(repo.top, req);
+      if (broadcastsRev) app.broadcastScmComments(repo.top, list.rev);
+      return reply.send(list);
+    });
+  app.get(
+    '/scm/comments',
+    commentRoute((top) => listComments(top), false),
+  );
+  app.post(
+    '/scm/comments',
+    commentRoute((top, req) => createComment(top, req.body), true),
+  );
+  app.patch(
+    '/scm/comments',
+    commentRoute((top, req) => updateComment(top, commentId(req), req.body), true),
+  );
+  app.delete(
+    '/scm/comments',
+    commentRoute((top, req) => deleteComment(top, commentId(req)), true),
+  );
+
+  // The three index writes. The body is `{ path, token }`, `{ path, oldPath? }`
+  // and `{ receiptId }`; a body that is not an object reads as empty, which each
+  // module refuses as a missing field.
+  const indexWrite = (run: (top: string, body: Record<string, unknown>) => Promise<WriteResult>) =>
+    scmRoute(async (req, reply) => {
+      const repo = await checkRepo((req.query as Record<string, unknown>)['repo']);
+      if (!repo.ok) return sendScmFailure(reply, repo);
+      const res = await run(repo.top, isJsonObject(req.body) ? req.body : {});
+      if (!res.ok) return sendScmFailure(reply, res);
+      return reply.send(res.result);
+    });
+  app.post(
+    '/scm/stage',
+    indexWrite((top, body) =>
+      stageFile({ top, path: textOrBlank(body['path']), token: textOrBlank(body['token']) }),
+    ),
+  );
+  app.post(
+    '/scm/unstage',
+    indexWrite((top, body) =>
+      unstageFile({
+        top,
+        path: textOrBlank(body['path']),
+        oldPath: typeof body['oldPath'] === 'string' ? body['oldPath'] : undefined,
+      }),
+    ),
+  );
+  app.post(
+    '/scm/restore',
+    indexWrite((top, body) => restoreReceipt({ top, receiptId: textOrBlank(body['receiptId']) })),
+  );
+
   // GET/PUT /config-file — the raw config.json behind the settings editor. The
   // PUT re-runs the boot parser and refuses anything it would ignore, so a
   // saved setting is a setting that will actually load (see config-file.ts).
@@ -1440,6 +1672,9 @@ export async function createServer(
       if (path.startsWith('/artifacts/') || path === '/pane-file') {
         return reply.code(404).send('not found');
       }
+      // A mistyped /scm/ path or method is a JSON 404 the caller can read, not the
+      // app shell (which a `res.json()` would choke on, naming nothing).
+      if (path.startsWith('/scm/')) return reply.code(404).send({ error: 'not found' });
       return reply.sendFile('index.html');
     });
   } else {
@@ -1491,6 +1726,10 @@ function attachWebSocket(
     }
     connections.clear();
     wss.close();
+  });
+
+  app.decorate('broadcastScmComments', (repo: string, rev: number) => {
+    broadcast(encodeServerMessage({ type: 'scmComments', repo, rev }));
   });
 
   app.decorate('broadcastUpdating', (stage: UpdatingMessage['stage'], version?: string) => {
@@ -1589,11 +1828,11 @@ function attachWebSocket(
           : isTmuxSessionName(tmuxParam)
             ? tmuxAttachCommand(tmuxParam)
             : undefined;
+    // Every kind palmux knows, not a hand-kept list: a kind missing from it reads
+    // as "no claim", and an attach by id to a non-terminal tab that is gone would
+    // then spawn a shell on that id.
     const claimedKind = params.get('kind');
-    const expectKind: TabKind | undefined =
-      claimedKind && (['terminal', 'web', 'dashboard', 'editor'] as string[]).includes(claimedKind)
-        ? (claimedKind as TabKind)
-        : undefined;
+    const expectKind: TabKind | undefined = isTabKind(claimedKind) ? claimedKind : undefined;
     wss.handleUpgrade(req, socket, head, (ws) => {
       connections.add(ws);
       handleConnection(ws, sessionId, expectKind, isControl, clientKey, tmuxTarget, {
@@ -1737,8 +1976,10 @@ function handleConnection(
         );
         break;
       case 'settings': {
-        const settings = msg.settings as JsonObject;
-        saveSettings(settings);
+        // The merged object, not the incoming blob: a client that omits a key
+        // (an older bundle, a partial save) must not export the default theme or
+        // broadcast settings it never meant to drop.
+        const settings = saveSettings(msg.settings);
         // Keep <configDir>/theme.sh in sync so the shell/tmux/delta colours
         // follow the palmux theme (unification export).
         writeThemeExport(configDir(), themeIdFrom(settings));

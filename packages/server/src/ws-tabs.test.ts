@@ -107,6 +107,31 @@ describe('WS tab bridge', () => {
     expect(registry.ids()).toEqual(before);
   });
 
+  // The attach kind is the client's claim about a tab that may already be gone. A
+  // kind the server does not read as a claim falls through to "terminal", and an
+  // attach by id to a closed markdown or review tab then spawned a shell on it.
+  it.each(['editor', 'markdown', 'review', 'dashboard'])(
+    'attaching with kind=%s to an UNKNOWN id spawns no terminal',
+    async (kind) => {
+      const before = registry.ids();
+      const { messages, binaryCount } = await collect(`session=78&kind=${kind}`, 300);
+      expect(binaryCount).toBe(0);
+      expect(messages.some((m) => m.type === 'snapshot')).toBe(false);
+      expect(registry.has('78')).toBe(false);
+      expect(registry.ids()).toEqual(before);
+    },
+  );
+
+  it('attaching with kind=review to a LIVE review tab binds no terminal either', async () => {
+    const id = registry.createTab({ kind: 'review', url: 'changes:/tmp/palmux-attach-review' });
+    expect(id).not.toBeNull();
+    const { messages, binaryCount } = await collect(`session=${id}&kind=review`, 300);
+    expect(binaryCount).toBe(0);
+    expect(messages.some((m) => m.type === 'snapshot')).toBe(false);
+    expect(registry.kindOf(id as string)).toBe('review');
+    registry.kill(id as string);
+  });
+
   it('attaching with no kind to an unknown id spawns a terminal (URL model preserved)', async () => {
     const { binaryCount, messages } = await collect(
       'session=88',

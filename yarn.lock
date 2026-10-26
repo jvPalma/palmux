@@ -1391,6 +1391,7 @@ __metadata:
     "@radix-ui/react-dialog": "npm:^1.1.23"
     "@radix-ui/react-dropdown-menu": "npm:^2.2.1"
     "@radix-ui/react-popover": "npm:^1.1.23"
+    "@radix-ui/react-scroll-area": "npm:^1.4.0"
     "@radix-ui/react-select": "npm:^2.3.7"
     "@radix-ui/react-switch": "npm:^1.3.7"
     "@radix-ui/react-toggle-group": "npm:^1.1.19"
@@ -1420,6 +1421,7 @@ __metadata:
     postcss: "npm:^8.4.49"
     react: "npm:^18.3.1"
     react-dom: "npm:^18.3.1"
+    react-window: "npm:2.3.3"
     tailwindcss: "npm:^3.4.17"
     trzsz: "npm:^1.1.6"
     typescript: "npm:^5.6.3"
@@ -2202,6 +2204,34 @@ __metadata:
     "@types/react-dom":
       optional: true
   checksum: 10c0/bf495c46764ff82de1a07645c4cd061e977608bbf81c9c407ba3d162487ff7bfa66897322371866613b4b4409fe9747bddc51b746cf4364aec35050d6becd6db
+  languageName: node
+  linkType: hard
+
+"@radix-ui/react-scroll-area@npm:^1.4.0":
+  version: 1.4.0
+  resolution: "@radix-ui/react-scroll-area@npm:1.4.0"
+  dependencies:
+    "@radix-ui/number": "npm:1.1.3"
+    "@radix-ui/primitive": "npm:1.2.0"
+    "@radix-ui/react-compose-refs": "npm:1.1.5"
+    "@radix-ui/react-context": "npm:1.3.0"
+    "@radix-ui/react-direction": "npm:1.2.0"
+    "@radix-ui/react-presence": "npm:1.1.11"
+    "@radix-ui/react-primitive": "npm:2.2.0"
+    "@radix-ui/react-slot": "npm:1.5.0"
+    "@radix-ui/react-use-callback-ref": "npm:1.1.5"
+    "@radix-ui/react-use-layout-effect": "npm:1.1.4"
+  peerDependencies:
+    "@types/react": "*"
+    "@types/react-dom": "*"
+    react: ^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc
+    react-dom: ^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc
+  peerDependenciesMeta:
+    "@types/react":
+      optional: true
+    "@types/react-dom":
+      optional: true
+  checksum: 10c0/2ea6a73964c63da66a76a60449a7ec943f55664eebef17b1c67a62558cb32397473f5aeee9886feda3c6d8cbbca4b0c50e52acdfccecfb78472b1487dd088c11
   languageName: node
   linkType: hard
 
@@ -5190,6 +5220,16 @@ __metadata:
     "@types/react":
       optional: true
   checksum: 10c0/841938ff16d16a6b76895f4cb2e1fea957e5fe3b30febbf03a54892dae1c9153f2383e231dea0b3ba41192ad2f2849448fa859caccd288943bce32639e971bee
+  languageName: node
+  linkType: hard
+
+"react-window@npm:2.3.3":
+  version: 2.3.3
+  resolution: "react-window@npm:2.3.3"
+  peerDependencies:
+    react: ^18.0.0 || ^19.0.0
+    react-dom: ^18.0.0 || ^19.0.0
+  checksum: 10c0/1f1b1069c0a53a192629ce8e04a0b33190e3f737764a953a94e96b410261f36c28d87fffa4973a78660fb5977033d7ca81fc4e931f89bc2b0243b6aad0ec3465
   languageName: node
   linkType: hard
 

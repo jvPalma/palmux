@@ -110,15 +110,29 @@ export function ensureSettingsSplit(): void {
   saveSettings({ ...shared, ...readJsonFile(localSettingsPath()) });
 }
 
-export function saveSettings(value: JsonObject): void {
+/**
+ * Shallow-merge `incoming` over the stored settings, persist the result and
+ * return it. A top-level key the blob omits keeps its stored value; a key it
+ * carries, an explicit `[]` included, replaces it.
+ *
+ * The merge exists because a client only sends the keys it knows: a window on
+ * an older bundle would otherwise erase every setting added since. Callers must
+ * use the RETURNED object for everything that follows (theme export, the
+ * rebroadcast), since the incoming blob is no longer the whole truth.
+ */
+export function saveSettings(incoming: JsonObject): JsonObject {
+  const merged: JsonObject = loadSettings();
+  for (const [key, v] of Object.entries(incoming)) {
+    if (v !== undefined) merged[key] = v;
+  }
   const shared: JsonObject = {};
   const local: JsonObject = {};
-  for (const [key, v] of Object.entries(value)) {
-    if (v === undefined) continue;
+  for (const [key, v] of Object.entries(merged)) {
     (LOCAL_SETTINGS_KEYS.includes(key) ? local : shared)[key] = v;
   }
   writeJsonFile(sharedSettingsPath(), shared);
   writeJsonFile(localSettingsPath(), local);
+  return merged;
 }
 
 export function extraKeysPath(): string {

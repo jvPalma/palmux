@@ -48,9 +48,18 @@ export const DEFAULT_MAX_DOWNLOAD_BYTES = 1024 * 1024 * 1024;
 // Every workspace slot (/0, /1, …) is a tab. Only `terminal` tabs own a PTY;
 // the other kinds are metadata the server persists and rebroadcasts.
 
-export type TabKind = 'terminal' | 'web' | 'dashboard' | 'editor' | 'markdown';
+// `review` is the Source Control diff review; its `url` is `changes:<abs top>` or
+// `staged:<abs top>` (see `parseReviewUrl`). An older client drops the unknown kind.
+export type TabKind = 'terminal' | 'web' | 'dashboard' | 'editor' | 'markdown' | 'review';
 
-export const TAB_KINDS: readonly TabKind[] = ['terminal', 'web', 'dashboard', 'editor', 'markdown'];
+export const TAB_KINDS: readonly TabKind[] = [
+  'terminal',
+  'web',
+  'dashboard',
+  'editor',
+  'markdown',
+  'review',
+];
 
 export function isTabKind(v: unknown): v is TabKind {
   return typeof v === 'string' && (TAB_KINDS as readonly string[]).includes(v);
@@ -211,6 +220,18 @@ export interface TabCreatedMessage {
   id: string;
 }
 
+/**
+ * A project's review comments were written. Sent to every control socket on each
+ * write, independent of the git status poll; a client showing that project
+ * refetches when `rev` is newer than the one it last applied.
+ */
+export interface ScmCommentsMessage {
+  type: 'scmComments';
+  /** The project's canonical top-level path. */
+  repo: string;
+  rev: number;
+}
+
 /** Liveness reply to a client `ping` — lets the client detect a dead (zombie)
  *  socket that still reads OPEN after a mobile background/network switch. */
 export interface PongMessage {
@@ -243,7 +264,8 @@ export type ServerMessage =
   | SessionsMessage
   | TabCreatedMessage
   | PongMessage
-  | UpdatingMessage;
+  | UpdatingMessage
+  | ScmCommentsMessage;
 
 // ── Client → server ───────────────────────────────────────────────────────────
 
@@ -512,6 +534,17 @@ export function parseServerMessage(data: string): ServerMessage | null {
         stage,
         ...(typeof version === 'string' ? { version } : {}),
       };
+    }
+    case 'scmComments': {
+      const repo = raw['repo'];
+      const rev = raw['rev'];
+      return typeof repo === 'string' &&
+        repo !== '' &&
+        typeof rev === 'number' &&
+        Number.isSafeInteger(rev) &&
+        rev >= 0
+        ? { type: 'scmComments', repo, rev }
+        : null;
     }
     case 'sessions': {
       if (!Array.isArray(raw['ids'])) return null;

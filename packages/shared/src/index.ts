@@ -6,3 +6,5 @@ export * from './tab-order';
 export * from './tab-url';
 export * from './theme-colors';
 export * from './theme-parse';
+export * from './scm';
+export * from './scm-comments';
