@@ -22,20 +22,23 @@ feel like Termux. Full TypeScript stack — no Go, no Cloud Workstations couplin
   `pty.ts` (node-pty), `auth.ts` (token cookie), `config.ts` (secret + opaque settings/extra-keys).
 - `packages/client/` — `App.tsx` (integration), `terminal/` (`useTerminal` xterm host + addons,
   `touch.ts` mouse/selection coordinate helpers), `mobile/` (`ExtraKeysBar`, `useMobileGestures`,
-  `useSoftKeyboard`, `key-encoder`, `extra-keys`, `clipboard`), `settings/`, `tips/`, `lib/ws.ts`.
+  `useSoftKeyboard`, `key-encoder`, `extra-keys`, `clipboard`, `ReviewBar`), `settings/`, `tips/`,
+  `lib/ws.ts`, `scm/` (Source Control view, status store, API wrappers) and `review/` (the review pane,
+  its model, file queue, colouring, anchoring and comments).
 
 ## Wire protocol
 
 `packages/shared/src/protocol.ts` is authoritative. Text frames are a JSON discriminated union
 (`{ type, ... }`); binary frames are raw PTY bytes (both directions).
 Server→client: `ready` (carries `maxUploadBytes` + `webApps`), `settings`, `extraKeys`, `sessions`
-(carries `ids`/`titles` **and** `tabs: TabMeta[]`), `snapshot`, `fonts`, `exit`. Client→server:
+(carries `ids`/`titles` **and** `tabs: TabMeta[]`), `snapshot`, `fonts`, `exit`, `scmComments`
+(`{ repo, rev }`, see "Source Control"). Client→server:
 `resize`, `settings`, `extraKeys`, `kill`, `createTab`, `updateTab`. File upload is out-of-band
 over `POST /upload?session=<id>&filename=<name>` (not a WS frame), returning `{ path }`.
 `settings`/`extraKeys` payloads are **opaque** to the server — it persists and rebroadcasts them; the
 client owns the schema. No protobuf.
 
-**Tabs.** A workspace slot is a tab with a `kind` (`terminal`/`web`/`dashboard`/`editor`/`markdown`); only
+**Tabs.** A workspace slot is a tab with a `kind` (`terminal`/`web`/`dashboard`/`editor`/`markdown`/`review`); only
 `terminal` tabs own a PTY. The registry (`server.ts`) generalizes the old session registry;
 non-terminal tabs + every tab's name/color persist to `~/.config/palmux/tabs.json` (`tabs-store.ts`)
 and survive restarts (terminals keep metadata only, respawn on attach). **Display order is
@@ -299,7 +302,7 @@ a light theme with a dark-background full-screen app that strip still differs fr
 paints, because it is outside the grid and no program can reach it.
 
 **Component kit + side dock.** `client/src/ui/` is a **Radix-headless** kit
-(Button, IconButton, Input, Switch, Segmented, Select, Tooltip, Collapsible, Dialog) styled entirely from the
+(Button, IconButton, Input, Switch, Segmented, Select, Tooltip, Collapsible, Dialog, ScrollArea, VirtualList) styled entirely from the
 eight `--t-*` tokens — deliberately NOT shadcn/ui. shadcn is Radix already dressed in Tailwind, and
 adopting it means adopting Tailwind's colour vocabulary and then teaching it to resolve back to
 `--t-*`: a second source of colour truth with a translation layer between them. What was missing here
@@ -330,8 +333,40 @@ test pins the full list of pragma'd declarations and the exempt selectors (`.ek-
 door is a decision made in that file, and it fails a pragma on a declaration already on the scale.
 The literal scan cannot read `var(--mbtn-h, 30px)`, which is how the kit's heights got round it;
 the kit-height cases close that by resolving every kit control's total box from the sheets.
+**Two scroll surfaces, one scrollbar, and the list is its own scroller** (`ui/ScrollArea.tsx`,
+`ui/VirtualList.tsx`, `ui/scroll.test.tsx`). `ScrollArea` is Radix ScrollArea for BOUNDED content (a
+panel body, a short list): `type="auto"` shows the bar exactly when the content overflows, vertical is
+the default, and `fill` is for a child of a flex column (`flex: 1 1 auto`; without it the area is
+`height: 100%`, which scrolls only when its parent has a height of its own). Radix wraps the content
+in an inline `display: table` box that grows to the widest line, so a long line opens a sideways scroll
+where a vertical area wants it to wrap; the stylesheet cannot beat an inline style short of
+`!important`, so the component sets `display: block` through a prop, and only the horizontal and
+both-ways areas keep the table. `VirtualList` is a thin wrapper over react-window 2.3.3's `List`, whose
+props it takes as written (`rowCount`, `rowHeight` as a number, a function or a `useDynamicRowHeight`
+result, `rowComponent`, `rowProps`, `overscanCount`, `onRowsRendered`, `listRef`) and whose hooks it
+re-exports, so nothing outside the kit imports react-window. It mounts only the rows near the visible
+part: 10,000 rows in a 600px area cost fewer than 100 elements, and a test holds that. **It cannot sit
+inside a `ScrollArea`**: the `List` element IS the scroller, rows are absolutely positioned inside it
+and its row maths read THIS element's scroll offset, so a wrapper would nest two scrollers and break
+them. That is why it wears the browser's thin NATIVE scrollbar (`scrollbar-width: thin`,
+`scrollbar-color`) rather than Radix's, and why a row component must spread the `style` it is handed
+on its root (with a dynamic height, leaving `height` out of it). **One token paints both bars**:
+`--ui-scroll-thumb` (the text colour at 28% over transparent) is the Radix thumb's fill and the native
+`scrollbar-color`, declared once, so a theme change repaints both and neither stylesheet holds a
+colour literal; the `-hover` step exists for the Radix thumb alone, a native scrollbar has none.
+**Both bars are hidden on a phone** (`:root[data-mobile='true']`: the Radix bar is `display: none`, the
+list is `scrollbar-width: none`): the drawer's gesture lives on the right edge and a slider there
+fights it, the reason the terminal's own scrollbar went, and touch panning is native and needs no
+handle. Neither surface sets `touch-action` on the thing that scrolls and nothing in `VirtualList`
+handles a pointer event, so a swipe that starts inside a list pans it and a press there never cancels
+the pan (a test fires a touch `pointerdown` and `touchstart` on a row and asks that neither was
+prevented). Neither belongs inside the terminal grid, which scrolls itself. Two callers today. The
+Source Control view is a `ScrollArea`, and a group over 200 rows (`LONG_GROUP_ROWS`) is a `VirtualList`
+of its own at `60vh` inside it, the one place a list sits in an area: accepted because a group that
+long is rare and the alternative is drawing every row of a 5,000-entry status. The review pane is a
+`VirtualList` with exact row heights (see "Source Control").
 `session/DockPanel.tsx` + `dock.css` is the right-side dock that replaces modals: Settings, Files,
-Dictation and the new-tab chooser are all views of it. It is LAYOUT, not an overlay —
+Source Control, Dictation and the new-tab chooser are all views of it. It is LAYOUT, not an overlay —
 `.content-row` wraps `.content-area` and the dock so the terminal narrows instead of being covered.
 **The desktop settings MODAL is gone** (`SettingsPanel` deleted): the dock is the desktop surface and
 the drawer the mobile one, `SettingsFields` is still the single field list, and the `settings`
@@ -435,10 +470,14 @@ also where the mobile drawer's footer already has them. Tips became a Settings r
 is the one nobody reaches for mid-session — and is also an app-menu item (below). The ⬍ toggle moved
 onto the SPLIT DIVIDER, which is contextual to a split the way the control is; it is `opacity: 0`
 until the divider is hovered, because it floats over the terminal.
-**The rail is ordered by frequency of use**: New tab, Explorer, Dictation, the separator, Upload,
-Download, and Settings PINNED to the bottom edge — what you open mid-session sits at the top, and
-preferences are the thing you reach for least. `DOCK_VIEWS` carries that order (nothing outside
-`DockPanel.tsx` reads it; the mobile drawer's own `SWITCHER_VIEWS` list is a separate order and untouched).
+**The rail is ordered by frequency of use**: New tab, Explorer, Source Control, Dictation, the
+separator, Upload, Download, and Settings PINNED to the bottom edge — what you open mid-session sits
+at the top, and preferences are the thing you reach for least. Source Control sits directly under
+Explorer and over Dictation (`git-branch` icon, `dock-rail-scm`; the `sidebar-dock` spec pins both
+neighbours). `DOCK_VIEWS` carries that order (nothing outside `DockPanel.tsx`
+reads it, and `readDockView` accepts `scm` so a reload reopens it). The mobile drawer's `SWITCHER_VIEWS`
+is a separate list, but it now follows the same relative order; `SessionDrawer.test.tsx` derives the
+expected order from `DOCK_VIEWS` minus New tab and Settings, so the two cannot drift apart.
 Settings leaves the flow through `.dock-rail-pinned { margin-top: auto }` on its OWN button, not
 `justify-content: space-between` on the rail, which would also spread the views and the actions
 apart whenever the rail has spare height. The testids (`dock-rail-<id>`) did not move.
@@ -458,8 +497,19 @@ alignment holds where it is used. It opens `ui/DropdownMenu` — the kit's wrapp
 opened by a BUTTON the way `ContextMenu` is one opened by a right-click or a long press — and the
 dropdown is END-aligned (`align="end"`): at the window's right edge a start-aligned menu runs off the
 screen. It reuses `ContextMenuItemSpec` and the `.ui-menu`/`.ui-menu-item` classes so the two menus
-cannot drift, and the one thing it adds is the transform origin, which comes from
-`--radix-dropdown-menu-content-transform-origin` so it grows out of its trigger. Items: Settings,
+cannot drift. It adds the transform origin, which comes from
+`--radix-dropdown-menu-content-transform-origin` so it grows out of its trigger, and CHOICES: an item
+with `checked` is a `menuitemcheckbox`, or with a `radioGroup` one option of a `menuitemradio` set
+(adjacent items naming the group are one Radix `RadioGroup`), so a screen reader hears `aria-checked`
+rather than a plain command with a check drawn beside it. The check goes in the icon slot every choice
+keeps, so labels line up. A **stepper** item (`decrease`/`increase`/`value`) is a row of two real menu
+items either side of a value that does NOT close the menu (`preventDefault` on Radix's select event),
+because the control is meant to be tapped again and the thing it changes is the feedback. The buttons are
+items so the roving focus reaches them and Enter or Space steps (Radix keeps Tab inside a menu, so a plain
+button would be unreachable), the group is named by the label and the value is a polite live region. It
+is built from the item classes the other rows use and has no sheet of its own, which is also why its two
+buttons are 30px square on a phone, beside 32px rows. The review bar's View options menu (layout, wrap,
+algorithm, code size, in a pane too narrow for the controls) is the caller that needed both. Items: Settings,
 Tips, Reload app. The wordmark was the name of the app you are already inside; the button takes its
 place (it moved from the start of the bar to the end, over the rail). The rail is always drawn on
 desktop, so the menu is a SECOND pointer route into Settings — the rail's pinned Settings button is
@@ -767,6 +817,17 @@ import monaco — a static path from App to the loader would drag the 3.7 MB chu
 every terminal-only session. `defineTheme` alone does not repaint a live editor;
 Monaco re-reads only on `setTheme`, so both run, in that order.
 
+**The editor's size follows the CODE size once one is set, and stops following the terminal**
+(`editorFontSize` in `settings.ts`, read by `EditorPane`). Until a device sets `codeFontSize` the editor
+is the terminal's size plus one (`EDITOR_FONT_OFFSET`), as it always was, so nothing moved when the
+setting arrived. Once it is set that number is the editor's size outright, and a change of the terminal's
+no longer reaches it; clearing it (Settings, an empty field) goes back to following. The live update takes
+the settings the subscription hands it, not a fresh read of `localStorage`, and goes through `updateOptions`,
+so an open editor changes with no reopen. The review reads the same setting but answers `null` differently
+(it keeps its own 12px: see "Source Control"). The markdown viewer is not code and still follows the
+terminal plus one. Measured against a real Monaco at 1440: 15px with the terminal at 14 and nothing set,
+11px once set to 11 and still 11 with the terminal at 18, and back to 19 when cleared.
+
 **`--font-mono` was read in four places and set in none.** The markdown code blocks
 and the tips panel fell back to `ui-monospace` while the terminal and the editor used
 the configured face — visible as a code block in the wrong font beside an editor in
@@ -785,15 +846,23 @@ is the resize storm the motion contract forbids. A hidden pane measures 0 and is
 explicitly not "very narrow" — panes stay mounted, so that happens on every tab
 switch.
 
-**The extra-keys bar is ALWAYS present on mobile, and that is a trap fix rather than
-a preference.** It used to hide unless the active tab was a terminal, which looked
-tidy and left no way out of an editor: mobile has no tab strip, and the bar's
-right→left swipe is the only route to the drawer. Measured on the reported path
+**A bar with the drawer swipe is ALWAYS present on mobile, and that is a trap fix rather than
+a preference.** Which bar depends on the ACTIVE TAB's kind and never on a pane registry: the
+extra-keys bar for every kind except `review`, and the review bar (`mobile/ReviewBar.tsx`, see
+"Source Control") for a review, and never both. The invariant is the ROUTE, not the bar:
+right→left across whichever bar is showing opens the drawer. The extra-keys bar used to hide
+unless the active tab was a terminal, which looked tidy and left no way out of an editor: mobile has
+no tab strip, and that swipe is the only route to the drawer. Measured on the reported path
 (Explorer → open a file): the pane header offered only Read/Edit, the bar was hidden,
 and nothing could switch tabs or close it. `FileTabPane` was also the one pane
 `PaneHost` never passed `onMenu` to — but the fix is the bar, not a `☰` button that
-exists nowhere else (owner decision).
-Its keys now drive an EDITOR when the tab is not a terminal (`mobile/editor-keys.ts`
+exists nowhere else (owner decision). The rule was first written as "the extra-keys bar is always
+present", and the review tab is what showed that the swipe was the only load-bearing part of it: a
+review has no shell to type into and no editor to drive, so it takes the bar's slot with a bar of its
+own, and that bar keeps the swipe. A new tab kind that wants its own bar must carry the swipe too.
+On the extra-keys bar, left→right raises the soft keyboard; on the review bar it goes back to the tab
+the review was opened from, because there is no keyboard to raise.
+The extra-keys bar's keys now drive an EDITOR when the tab is not a terminal (`mobile/editor-keys.ts`
 + `panes/editor-registry.ts`), because a bar of visible dead keys is a UI that lies.
 **They are routed as Monaco COMMANDS, not as keyboard events, and that is measured
 rather than chosen**: real key presses moved the cursor 408px → 448px, a synthetic
@@ -1019,16 +1088,36 @@ touch-target floor, and the strip hit-tests as the scrim with the keyboard up or
 always reach the terminal side to close it. The scrim is token-coloured (`--t-base` at 72%, the kit
 Dialog overlay's mix) and is inert while closed; scrim and slide run on `--mo-surface` in and the
 shorter `--mo-micro` out, and reduced motion drops both transitions. The drawer is the mobile
-container for the SAME four surfaces the desktop dock rail hosts (sessions · settings · files ·
-dictation), ordered for the THUMB, bottom → top: the footer, the bottom-anchored session list, and
-at the very TOP ONE row — a Settings gear, the view switcher, Close (owner decision, 2026-10-25: he
-does not want the switcher at the bottom). The switcher is a kit `Segmented` over THREE segments
-(Sessions · Explorer · Dictation) wearing the rail's own icons; Settings is the gear beside it and not
-a fourth segment, because a segment for it as well would be two entries for one place. The top row
+container for the SAME five surfaces the desktop dock rail hosts (sessions · settings · files ·
+Source Control · dictation), ordered for the THUMB, bottom → top: the footer, the bottom-anchored
+session list, and at the very TOP ONE row — the view switcher and, at its right end, the Settings gear
+(owner decisions: 2026-10-25, he does not want the switcher at the bottom; 2026-10-26, no close control in
+the top row, the gear takes the place Close had). **The drawer has no close button**: it closes through the
+scrim strip, a swipe, every action that leaves it, and **Escape from inside it** (`closeOnEscape`, the
+`<nav>`'s own `onKeyDown`, for a keyboard or assistive tech that has focus in here). It is never a document
+handler: the drawer leaves `#mobile-kbd` focused, so an Escape typed while it is open still belongs to the
+shell. A key something inside already took does not close it as well: the handler ignores a default-prevented
+event (a Radix Select or menu closing prevents it, and renders in a portal outside the nav, so its keydown
+only reaches the handler through React's tree, which the `contains` check also refuses), and an editable
+target (a field cancelling its own edit). The switcher is a kit `Segmented` over FOUR
+segments (Sessions · Explorer · Source Control · Dictation) wearing the rail's own icons in the rail's
+own order (`git-branch` for Source Control, which took the slot between Explorer and Dictation);
+Settings is the gear beside it and not a fifth segment, because a segment for it as well would be two
+entries for one place. The top row
 exists only at the drawer's ROOT: Settings and the new-tab chooser are sub-surfaces whose `‹` back
 header is the top control there, a row above it would push the way back down the screen, and the
-switcher goes with the row — Explorer or Dictation is one back press from Settings, the depth the
-chooser already has. In the row the unselected icons wear `--pill-text` (the strip's inactive text),
+switcher goes with the row — Explorer, Source Control or Dictation is one back press from Settings,
+the depth the chooser already has. **Four segments fit a 390px row with room to spare**: the row is
+329px (390 less the 44px scrim strip, the drawer's 1px border and 2 × 8px of padding), the switcher
+285px once the gear and its gap are out (241px while Close took a second button and gap), and each
+segment 68.3px (57.3px before), measured in Chromium and recomputed from the stylesheets by
+`SessionDrawer.test.tsx` because happy-dom has no layout. That is over the 44px touch floor the strip is
+held to. The drawer's `padding: 0` on a segment is room, not need: at the kit's `--sp-3` (12px a side) a
+segment needs 39px around its 15px icon, still under its 68.3px share, and the test asserts exactly
+that. The zero is headroom for a narrower phone, where the share shrinks (by the same arithmetic it
+reaches 39px at a 273px viewport); a segment's tap target is its whole box either way. The icon is the whole label: each segment's name is
+clipped to a 1px box that stays in the accessibility tree, so nothing in the row can be truncated,
+and the test fails any rule in the row that clips or ellipsises. In the row the unselected icons wear `--pill-text` (the strip's inactive text),
 not the kit's `--t-subtext`, which read as disabled on the drawer's mantle; the selected segment
 restates `--t-accent-ink` on the accent fill in its hover and press states, because the kit's
 `.ui-seg-item:not(:disabled):hover` out-specifies its own selected rule and put pale text on the
@@ -1059,12 +1148,33 @@ own keys); `ui/scale.test.ts` fails a declaration or a read in any stylesheet ou
 alone, inside `.drawer`, in `FilePane`'s header; 28px and 36px; `ui.css` loaded first and last).
 `SessionDrawer.test.tsx` pins the drawer half: no drawer rule resizes a kit control, and `.drawer`
 pins no `--mbtn-h`.
+**Drawer lists are compact on a phone, and the lists are the only thing that is** (owner, 2026-10-26: the
+session rows were too big, in height and in text, beside the footer and the extra-keys bar, whose density he
+called right). A session row, a group header and `+ New tab` take `--drawer-row-h`, declared once on
+`.drawer` as `calc(var(--ctl-h) - var(--sp-1))` (32px on a phone, the extra-keys bar's 33px key; the drawer
+only exists in the mobile layer), instead of `--ctl-h`; a row's title is `--fs-2` (12px, the footer's size)
+where it was `--fs-3` (13px). The two halves of the 4px row gap are still inside the leaf's clip, so the pitch
+is 36px where it was 40px: seven sessions take 252px, not 280px, and the list holds 18 rows above the footer
+where it held 16 (measured in Chromium at 390x844, the top row, the footer and `+ New tab` kept). The
+group header's type is the section-title one (`--fs-1`) and was not touched. What stays `--ctl-h` is the
+rest of the drawer: the top row (the kit's Segmented and IconButton), the footer cells, the `‹` back headers
+and every kit control a hosted view draws, because the kit's heights live in `ui.css` and `scale.test.ts`
+fails a rule outside it that sizes one (so a Source Control group header, which is a kit Collapsible trigger,
+stays 36px: see "The changed-files list is compact on a phone"). `--drawer-row-h` is a custom property
+written from the two tokens, not a literal, so it is on the scale by construction and follows the device
+class; `--ctl-h` itself is declared in exactly two places and a third fails `scale.test.ts`.
 Two things about the switcher. **Availability is DECLARED (`hostedViews`), never inferred from
-`viewContent`**: files and dictation have no body of their own, the host supplies one, and a host can
-only supply it for the view that is ALREADY selected — so inferring left both permanently disabled
-and unreachable. And the Segmented takes `keepFocus`, because Radix selects on CLICK and a click
-focuses the segment, which blurs `#mobile-kbd` and dismisses the soft keyboard — the exact reason
-every other control in here acts on pointerdown + `preventDefault`. That is also why the selection
+`viewContent`**: files, Source Control and dictation have no body of their own, the host supplies
+one, and a host can only supply it for the view that is ALREADY selected — so inferring left all
+three permanently disabled and unreachable (`DRAWER_HOSTED_VIEWS` in App declares them once; a test
+holds `scm` disabled without it and selectable with it, no body needed). The Source Control body is
+the dock's own component, mounted with `visible={drawerOpen}`: the drawer stays mounted while it is
+closed, so being mounted is not being seen, and a closed drawer must not keep the status poll alive
+(the dock mounts it only while open). Choosing a file there calls `closeDrawer()` first and then
+opens the review, because opening navigates and `closeDrawer()` is the one way out of the drawer
+(see the keyboard-hold paragraph below). And the Segmented takes `keepFocus`, because Radix selects
+on CLICK and a click focuses the segment, which blurs `#mobile-kbd` and dismisses the soft keyboard —
+the exact reason every other control in here acts on pointerdown + `preventDefault`. That is also why the selection
 moves INTO pointerdown, and that press marks its gesture (`consumeGesture`, below): selecting swaps
 the drawer's whole body, so the tap's own mousedown and click would land on what the new view drew
 under the finger. The mark swallows them for a touch pointer and a mouse alike. A key, assistive
@@ -1074,7 +1184,7 @@ own handler; the item that is already selected reports `''` for the toggle-off t
 The session LIST is bottom-anchored
 (`margin-top: auto`) so the most-tapped surface sits in thumb reach. There is **no brand row**: a
 `palmux` wordmark + settings icon used to have a row of their own, a duplicate control plus the name
-of the app you are already inside. The one Settings entry is the gear at the left of the top row.
+of the app you are already inside. The one Settings entry is the gear at the right end of the top row.
 `+ New tab` is the list's TAIL box (`.drawer-tail`; the same box that turns into the root drop area
 while a row is lifted, below) and opens the chooser as a sub-surface of this list
 (`‹ New tab` back header over `DashboardBody`) and does NOT close the drawer — closing it to float
@@ -1147,13 +1257,15 @@ always-visible ✕ cell are GONE; closing is the swipe-left action below.
 `.session-tabs, .drawer-sessions` (they lived on `.session-tabs` alone), unchanged in value, so the list
 cannot drift from the strip; `tab-strip-css.test.ts` and `SessionDrawer.test.tsx` read that one rule and
 the drawer's row rules restate no colour mix. `.drawer-session` takes the 1px `--pill-border`, `--r-2`,
-`--pill-text` at weight 500 and stays `--ctl-h` tall; at rest its background is the drawer's own
+`--pill-text` at weight 500 and is `--drawer-row-h` tall (32px on a phone, see "Drawer lists are compact on
+a phone"); at rest its background is the drawer's own
 `--t-mantle`, which reads as "no fill" and keeps it OPAQUE over the Close waiting behind it. The ACTIVE row
 is `--pill-fill`, the `--pill-ring`, `--t-text` and weight 600, and is never filled with the tab colour,
 so a red tab's red lives in its dot and nowhere else; the old 3px `--t-accent` left edge is gone. The ring
 is OUTSET (1.5px) and `.drawer-leaf-inner` clips, so its room is the clip's side padding
 (`--cluster-pad`, 2px) and the row's own vertical margin (half of `--sp-1` each side: two rows are 4px
-apart, and the pitch on mobile went 38px → 40px), both INSIDE the clip. The vertical room is never padding
+apart, and the pitch on mobile went 38px → 40px, and 40px → 36px with the compact rows), both INSIDE the
+clip. The vertical room is never padding
 on the clip: that would hold a leaving leaf open at `0fr`, and the row below would jump when it unmounted.
 The ring and a lifted row's shadow are two layers of one `box-shadow` (`--ring`, `--lift`), as on the
 strip's pill, so a lifted active row keeps its ring.
@@ -1329,6 +1441,655 @@ activation: Dictate is a toggle, and acting twice would start and stop it in one
 The remote-mic bridge (browser mic → server PipeWire: 🎤 cell, `/ws-mic`, `server/mic.ts`,
 `client/mic/`, the `micBridge` keybinding) is REMOVED — it never worked as intended.
 
+## Source Control
+
+The user adds a git **project** (a work tree on the palmux host), the Source Control view lists its
+Merge / Staged / Changes files, a `review` tab shows them as one continuous diff, comments hang off
+lines of it, and **Reviewed** stages a file. The server half is `server/src/scm-*.ts` plus the `/scm`
+routes in `server.ts`; the wire types are `shared/src/scm.ts` and `scm-comments.ts`. The change's
+design is `openspec/changes/source-control-review/design.md`; this section is what a reader of the code
+cannot get from it, and the places where measurement overruled the design.
+
+**Routes and trust model.** Everything is cookie-gated like every route, and takes ABSOLUTE paths under
+`/download`'s trust model (the cookie already grants a shell), so nothing here is confined to a root.
+
+| Route | Does |
+|---|---|
+| `GET /scm/repo?path=` | `{ top }`, the canonical work tree top of any path inside one |
+| `GET /scm/status?repo=` | the grouped status, plus `commentsRev` and `attrEpoch` |
+| `GET /scm/file?repo=&group=&path=&oldPath=&algorithm=` | one file's snapshot; `group`, `path` and `algorithm` are required |
+| `GET` / `POST` / `PATCH` / `DELETE /scm/comments?repo=[&id=]` | comment CRUD; `id` for PATCH and DELETE, the body is the comment (POST) or a patch (PATCH) |
+| `POST /scm/stage?repo=` `{ path, token }` | stage the snapshot the token names |
+| `POST /scm/unstage?repo=` `{ path, oldPath? }` | return the entry to HEAD |
+| `POST /scm/restore?repo=` `{ receiptId }` | undo (or redo) one of palmux's own writes |
+
+`repo` is the project's identity on every request: it must be absolute and EQUAL its own `git rev-parse
+--show-toplevel` after `realpath` (`checkRepo`), so `…/app/src` is refused with a 400 that names the top
+rather than silently reading the parent. `path` and `oldPath` are repository-relative, used exactly as
+given (no trim, no normalise: `a*.ts`, `2:config.ts` and `report ` are the files they say), and refuse an
+empty, `.`, `..` or `.git` component and a NUL (`checkRelPath`; the walk below never calls `resolve`, and
+`a/../b` through a symlinked `a` is not `b`). **Every failure is JSON `{ error, code? }`** with the
+module's own status, and `code` is a `ScmErrorCode`: 400 for every repo or path refusal and a token that
+does not belong to its path; 403 for a path through a symlink; 409 `busy | changed | conflict | df` (and
+a merge-conflicted file, no code); 410 `token` for an expired or unknown token or receipt; 413 for git
+output over the cap; 501 `unsupported` for a submodule, a split index, or a work tree this host cannot
+read safely; 504 for a git timeout. `scmRoute` wraps every handler so that a throw (the comment store's
+validation, a filesystem fault) is still JSON: a fault is logged with its detail and answers `500
+{ error: 'source control request failed' }`, which names no path. The not-found handler answers an
+unknown `/scm/` path or method with a JSON 404, because the SPA shell would be a 200 that `res.json()`
+chokes on without saying what was mistyped.
+
+**One runner, `scm-git.ts`.** Argv arrays only, never a shell: `git -C <top> --no-optional-locks
+--literal-pathspecs -c core.quotepath=false -c core.fsmonitor=false` (the last so a read cannot start a
+daemon that writes into `.git`), with an environment built from a CLEAN BASE on each call, not inherited:
+`GIT_DIFF_OPTS` would override `-U`, and `GIT_DIR`, `GIT_INDEX_FILE`, `GIT_WORK_TREE` and
+`GIT_CONFIG_PARAMETERS` would redirect or reshape a command. `XDG_CONFIG_HOME` stays (git's global config
+and default attributes file live under it). A 10 s timeout kills the whole process group (the child is
+`detached`, so a hook or filter it started cannot outlive the limit) and an 8 MB output cap reports
+`truncated` instead of buffering; `okCodes` is per command (`diff --no-index` exits 1 whenever the sides
+differ, which is success). Untracked nested repositories are listed by git as ONE entry with a trailing
+slash (`vendor/inner/`), which `checkRelPath` refuses as a snapshot path, so a client treats such an entry
+as not reviewable.
+
+**Status, and the poll contract.** `status --porcelain=v2 -z --untracked-files=all --branch --renames
+--no-ahead-behind` is parsed into `merge` (`u` records, never asked for a stage-0 blob), `staged` and
+`changes`, capped at 5,000 entries (`truncated: true`). Line counts come from `diff --cached --numstat -M`
+and **`diff-files --numstat`, not `git diff`**: measured, plain `git diff` rewrites `.git/index` (it takes
+the index lock) even with `--no-optional-locks` and `GIT_OPTIONAL_LOCKS=0`, which is the exact failure
+"reading status never interferes with the user's git" forbids. `status`, `diff --cached`, `diff-files` and
+`ls-files` leave the index's inode and mtime alone (a test pins it against a plain `git status`, which does
+change them), and another test commits in a loop while status loops. A `0 0` numstat record for a
+stat-dirty file is harmless because counts are looked up only for paths status lists. An entry's `fp`
+hashes the record kind, every mode git prints, the object ids, the rename's old path and, for a work tree
+side, one `lstat` (`mtimeMs`, `ctimeMs`, `size`, mode): ctime catches a same-size replacement that kept its
+mtime, the mode catches a chmod. **`attrEpoch`** hashes every `.gitattributes` git could read, so marking
+`yarn.lock` `-diff` turns it binary without an edit to `yarn.lock`: the full `ls-files -s -z` output is
+filtered IN CODE by basename (a `:(glob)` pathspec matches nothing under literal pathspecs), unioned with
+every status entry named `.gitattributes` (git reads the work tree copy first, so an untracked one
+applies), plus `info/attributes`, `core.attributesFile` (else `$XDG_CONFIG_HOME/git/attributes`) and the
+config files' `lstat`; the `ls-files` result is cached per index mtime.
+**Coalescing is per repository**: concurrent `getStatus` calls share one set of git processes and the
+answer is cached for 500 ms, so two windows cost one read. `invalidateStatus(top)` (called by every write)
+bumps a generation, so a read that STARTED before a write never caches its answer. The cached object is
+SHARED, so the route answers `{ ...status, commentsRev: latestRev(top) }` and never writes into it:
+`commentsRev` changes independently of git, and a cached answer must still report the current one. What
+the route adds is one `rev-parse` per request (`checkRepo` is not coalesced), so a poll inside the cache
+window costs one cheap process. **The client half of the contract** (`scm/status-store.ts`): there is no
+watcher (an inotify watch per directory is a firehose on build output, the reason the Explorer polls too).
+Only a subscriber that is visible AND watching the device's active project counts, only while
+`document.visibilityState` is visible, one request in flight, and the next starts `max(1000, 3 × tookMs)`
+ms after the previous answer, capped at 10 s: palmux (10 ms) refreshes every second and a 900 ms
+repository every 2.7 s. When nothing counts, nothing runs.
+
+**The snapshot reader** (`scm-snapshot.ts`) reads both sides of one file ONCE and diffs what it read, so
+an edit during loading can replace a version but never mix two. The client names a file and a group,
+never a blob: HEAD and index identities come from `ls-tree -z` and `ls-files -s -z` under literal
+pathspecs, a staged pair is (HEAD at `oldPath ?? path`, index at `path`), an unstaged pair is (index,
+work tree), an untracked file is (nothing, work tree), and an UNBORN HEAD is never handed to `ls-tree`
+(the old side is `{ id: 'absent', text: '' }`, the shape every addition's old side uses). Blobs are read
+by OBJECT ID with `cat-file blob`, never `show :path` (a file named `2:config.ts` would select merge
+stage 2). **The work tree is read through a descriptor-relative walk.** Node has no `openat`, but on Linux
+`/proc/self/fd/<dirfd>/<name>` resolves `<name>` inside the directory the descriptor already holds, not by
+re-walking a path: open `top` with `O_DIRECTORY`, open each intermediate component that way with
+`O_NOFOLLOW` (a symlink fails the open and the read is refused with a 403), open the final component
+`O_RDONLY | O_NOFOLLOW` and `fstat` it as a regular file, and when that open fails with `ELOOP` read the
+link's target from `readlink('/proc/self/fd/<parentfd>/<name>')`, never from the original pathname. A
+directory swapped for a link at any moment can only make an open fail, never redirect one;
+`walkHooks.onStep` swaps one between two steps in the tests, in both the file and the symlink branch. A
+host without `/proc` fails CLOSED: the work tree side answers 501 `unsupported`, while staged snapshots,
+which read blobs only, still work. **Limits:** 1 MB per side, either over it and the file is `tooLarge`
+with no lines (never half-supported); binary is a NUL in the first 8000 bytes, which is git's own
+`FIRST_FEW_BYTES` and not 8192; unmerged entries answer `unmerged: true` with no diff; a submodule answers
+501. The hunks are GIT'S: both sides go to a private temp directory and `git diff --no-index
+--diff-algorithm=<x> -U3` runs over them with `diff.suppressBlankEmpty`, `diff.noprefix` and
+`diff.mnemonicPrefix` pinned, and with an ISOLATED `HOME`, `XDG_CONFIG_HOME`, `GIT_CONFIG_NOSYSTEM` and a
+ceiling directory, because git applies the user's global `core.autocrlf` and attributes to path-based
+files even in `--no-index` mode (a test fails without the isolation). A work tree side's `id` is git's
+blob oid of its canonical bytes (`hash-object --no-filters --stdin`, no `-w`), so it is in the repository's
+object format and comparable with the oids beside it. `version` hashes the two ids, the modes and `attrs`
+and is independent of the algorithm, so the client keys its row cache by `version + algorithm`.
+**Attributes and line endings.** The snapshot resolves `check-attr` (`text eol crlf diff binary filter
+working-tree-encoding ident`) plus `core.autocrlf` and `core.eol` for the ORIGINAL path. When git would
+convert on check-in, the work tree bytes get the same clean conversion (CRLF to LF) before comparing, so
+a CRLF checkout of an LF blob shows only its real edits. For the AUTO-derived modes (`text=auto`, and an
+unspecified `text` under `core.autocrlf=true|input`) git converts only when the file is text by its own
+stats (no NUL, no lone CR) AND the index blob does not already contain CRLF (`has_crlf_in_index`); an
+untracked file has no index blob and converts. palmux applies that rule with the index blob the pair
+already reads, so a CRLF blob that was never renormalised diffs line for line and Reviewed never stages a
+whole-file renormalisation `git add` would not perform. `-diff` or `binary` marks the file binary whatever
+its bytes are. A path with a `filter` driver, a `working-tree-encoding` or `ident` is NOT reconstructed:
+it answers `converted: true` (in both groups, Staged included, because the spec says a converted path
+shows the notice) and a filter command is never run (an LFS smudge would download). `attrs` is that
+context and carries one extra key, `convert` (`off | on | binary | crlf-in-index`), which is the decision
+record and not part of what staging compares: staging compares the `check-attr` values plus
+`core.autocrlf` and `core.eol`.
+
+**The three writes, and the only ones.** Stage, unstage and undo change only the index entries of the
+paths they name, never the work tree and never a commit. **Stage writes what was SHOWN.** The reader keeps
+every served work tree side in a memory-only cache (64 MB, 10 minutes absolute from creation, LRU by
+bytes) under an opaque `token` binding the repository, path, mode, canonical bytes' id and the `attrs`
+context. `POST /scm/stage` looks the token up (410 `token` if it expired or was evicted; 400 if it
+names another repo or path), re-runs `check-attr` (409 `changed` if the context moved), writes the
+canonical bytes with `hash-object -w --no-filters --stdin` and checks the resulting oid equals the
+snapshot's id BEFORE touching the index. A file the reader could not snapshot (too large, converted,
+refused) gets no token and cannot be staged from palmux, with no live-path `git add` fallback. The client
+recovers from a 410 by refetching and retrying ONCE when the new `version` equals the one on screen. A
+staged deletion is a snapshot too (the work tree side recorded as absent). **Unstage** returns each entry
+to HEAD's mode and oid, or removes it when HEAD has no such path (unborn included); `oldPath` is honoured
+only where it is a real rename source (absent from the index, present in HEAD) and otherwise ignored.
+**Every write is one transaction under git's own lock protocol** (`scm-index.ts`): create `index.lock`
+(`git rev-parse --git-path index` + `.lock`) with `O_CREAT | O_EXCL`; if it exists the answer is 409
+`busy` AT ONCE and nothing waits, retries or deletes a lock. Holding it, copy the index to a private temp
+file, read every affected path's BEFORE entries from that copy (`GIT_INDEX_FILE=<tmp> ls-files -s -z`),
+apply `update-index --add --cacheinfo <mode>,<oid>,<path>` or `--force-remove` (`--add` because the entry
+may be absent: an untracked file, a staged deletion being unstaged, an Undo after a removal), read the
+AFTER entries, write the copy into the lock file, fsync and rename it over the index, which is git's own
+commit step. Any failure unlinks the lock and leaves the index as it was. A split index (`core.splitIndex`
+or a `link` extension that lands exactly on the trailing checksum, so a file NAMED `link` does not
+trigger it) is refused 501. A directory/file conflict `update-index` refuses is 409 `df` carrying git's
+message; **that detection reads git's stderr** (`both a file and as a directory|cannot add|directory/file`),
+matches git 2.43, and is pinned in both directions, so a different wording degrades to a 500 rather than
+to a wrong answer. An in-process queue per repository serialises palmux's own writes, so two quick
+Reviewed taps queue instead of answering busy; a lock left by ANOTHER program, or by a palmux killed with
+SIGKILL, still answers 409 until a human removes it, as git does. **A live lock must not outlive the
+process:** the module keeps the set of lock paths it holds and `releaseAllLocks()` unlinks them
+synchronously, called from `index.ts`'s `exitNow` (every `shutdown` exit) and from `process.on('exit')`
+(the exits that bypass `shutdown`, the handoff included), so `systemctl restart` mid-write never strands
+an `index.lock`. It runs ONLY as the process ends: an unlink while a write is in flight could let that
+write `rename` a stranger's freshly created lock over the index. **Undo is a compare-and-swap on a
+server-held receipt.** Each write records every affected path's before and after entries (rename paths
+included) in the same cache under an opaque `receiptId` and answers it; `POST /scm/restore { receiptId }`
+runs the same transaction, requires every path's CURRENT entry to equal the receipt's AFTER, and only then
+writes the BEFORE, else 409 `conflict` ("nothing was undone"). The client never supplies a mode, an oid
+or a path to restore, so restore can only reinstate entries palmux itself recorded. A successful restore
+consumes the receipt and answers a fresh one, which is how redo works; a refusal does not spend it.
+
+**Comments live outside the repository, under the config dir's `.cache/`** (`scm-comments.ts`). One file
+per project, `<configDir>/.cache/scm/<sha256(top) first 16 hex>.json`, shaped `{ v: 1, repo, rev,
+comments }`, mode 0600 in a 0700 directory. The config dir is dotfiles-tracked, so `.cache/` declares its
+own boundary: the first write creates `.cache/.gitignore` holding `*\n` (flag `wx`, never overwritten),
+which ignores the whole directory without touching the user's root `.gitignore` that
+`ensureConfigGitignore` never rewrites, and `git status` in the reviewed project stays clean (the route test pins the file's content, the
+directory and that clean status). Each operation is one read-modify-write under a
+per-file in-process mutex committed with a temp file and `rename`, so two windows never clobber each
+other. **Every mutation answers the WHOLE list and its `rev`** (`{ rev, comments }`) and the client
+replaces its state with it, so a window can never hold a `rev` whose changes it has not applied. `rev`
+is bumped by every write; deleting an unknown id writes nothing, bumps nothing and answers the current
+list. Validation is strict and shared with the client (`SCM_COMMENT_LIMITS`): `lines.length` must equal
+`end - start + 1`, at most 2,000 lines, 10 context lines per side, 256 KiB of code in all and a 64 KiB
+body (an empty body is valid), the path relative and free of `..`; unknown keys are ignored; PATCH takes
+any subset of the content fields and the MERGED comment is validated whole (an empty patch is a 400, an
+unknown id a 404). A corrupt file reads as empty and stored comments that no longer validate are dropped,
+the way `tabs.json` and `extra-keys.json` forgive. **Other windows learn of a write from the
+`scmComments { repo, rev }` frame**, a control-socket broadcast (`app.broadcastScmComments`, decorated in
+`attachWebSocket` beside `broadcastUpdating`) sent after every successful mutation, to EVERY socket
+(including the writer, whose applied rev already equals it, so it refetches nothing; a delete of an
+unknown id broadcasts the unchanged rev, which nobody applies). It is independent of the git poll, which
+is what keeps the 2-second promise when a slow repository stretches the status interval; `commentsRev` on
+the status answer is the backstop for a missed frame. **Known limit, unfixed:** if `.cache` is deleted the
+rev restarts at 0, and a client that already applied a higher rev drops the lower-rev answers until the
+rev passes it again; closing that needs a persisted epoch. Anchoring and export are client-side
+(design D9).
+
+**The `review` tab kind.** A `review` tab's `url` is `changes:<abs top>` or `staged:<abs top>`
+(`reviewUrl` / `parseReviewUrl` in shared). `createTab` and `updateTab` accept only a known group prefix
+and an absolute path, and store the CANONICAL form: the path goes through `path.resolve`, so `//`, `.`,
+`..` and a trailing slash are gone (the design never defined "canonical"; this is the definition).
+**Creation is idempotent in the registry**, as the cross-window backstop: `createTab` for a url a live
+review already holds returns THAT tab's id in `tabCreated` and broadcasts nothing, and `updateTab` ignores
+a url another tab holds while still applying the name and colour (and returns true, like the `web` kind).
+The client's own rule is stronger and comes first: it never sends `createTab` for a review url live in
+`tabsRef` (it selects that tab and hands over the scroll target, as `openFileTab` does for editor tabs).
+A review persists in `tabs.json` like an editor file tab; an older server drops the unknown kind through
+its `isTabKind` filter on restore, and an older client does the same on a `sessions` broadcast.
+`displayTitle` is `Changes · <basename>` / `Staged · <basename>` and falls back to `review` for a missing
+or unparseable url. **A trap left for the pane:** the `/ws` attach's `&kind=` whitelist
+(`['terminal', 'web', 'dashboard', 'editor']`) omits `review` (and already omitted `markdown`), so an
+attach by id to a review tab that was just killed is read as a terminal and SPAWNS A SHELL there. The
+review pane must use the control socket and never attach by id; widen the whitelist before it ever does.
+
+**The view LISTS, a review SHOWS.** `scm/SourceControlView.tsx` is ONE body for both hosts, the dock's
+`scm` view on a desktop and the drawer's fourth segment on a phone, and it only lists: a row hands
+`{ group, path, oldPath }` to its host (`onOpenFile`), and the diff is a `review` tab in the content
+area, never drawn inside a 300px dock. It starts with NO project. A project is an absolute path the
+user types, validated by `/scm/repo` and stored as the canonical top that answer returns; nothing is
+inferred from the server's cwd, a terminal or an open file. **`scmRepos` is SYNCED** (canonicalised
+with `normalizePin`: the paths are on the server's filesystem, so the same list is right on every
+device, like `explorerPins`) and **`scmActiveRepo`, `scmLayout`, `scmAlgorithm`, `scmWrap` and
+`scmTree` are LOCAL** and never join `SYNCED_KEYS` (`settings.test.ts` pins both halves), because which project this
+device reads and how it draws or lists a diff are preferences of the screen in front of you. The synced list
+leans on the server's settings MERGE (see "An older window no longer erases keys it does not know"),
+which is what lets an explicit `[]` empty it while an older window's save cannot. The groups are kit
+Collapsibles whose open state is per device (`palmux-scm-group-<id>`), rows activate on pointer UP
+(`pressMove`, they live in a scroller), and a conflicted file opens the Changes review. **Opening a
+file never creates a second review**: `App.openReview` selects the live tab whose url is
+`reviewUrl(group, repo)` and otherwise sends `createTab`, coalescing its own pending creates per url
+for `PENDING_REVIEW_MS`; either way the file to scroll to is parked in a ref map keyed by the url
+(read and cleared by the pane, the way the tmux target is) and `reviewOpenTick` is bumped, because a
+mounted pane has no other way to hear that its tab was chosen again for another file. The controller's
+`tabCreated` dissolve, which treats an id that collides with a split-pairing member as a stale ghost,
+is guarded to ids that are not a live tab of the expected kind and url, so the server's idempotent
+answer can never dissolve a split that holds the review (`workspaceController.test.ts` pins that a live
+review keeps the split that holds it).
+
+**Each group is a folder TREE by default, and the tree lists files in the review's order**
+(`scm/scm-tree.ts`; the same `SourceControlView` draws it in the dock and in the drawer). `scmTree`
+(LOCAL, default true) flips every group to the flat list, which is the old view unchanged; the choice is
+an `IconButton` in the project bar ("View as list" / "View as tree", the `sessions` and `folder` glyphs:
+`ui/icons.tsx` has no dedicated pair). The view follows the setting through the settings pub/sub, as
+`EditorPane` does, and writes it back through `onChange`, so neither host passes a prop for it.
+**The tree is built FROM the entry list, in order.** A folder is created when its first file is met and
+sits where that file sat; its children keep the order they were met in. Nothing sorts, and folders do NOT
+come first, because the review walks the same list (`[...merge, ...changes]` for Changes, `staged` for
+Staged) and "next file" has to follow the rows. The SERVER sorts each group by path, in code-unit order
+(`toEntries` in `scm-status.ts`, pinned by `puts each group in path order`); git itself prints every tracked
+change before the untracked files (measured: 55 then 94), so the guarantee is the server's, not git's. A folder's
+files are therefore contiguous and the two orders are the same; only a list that is NOT sorted gathers a folder under its first file, which `treeOrder` computes and a
+test pins. **A chain of folders holding one folder is one row** (`packages/client/src/review`): the collapse
+key is the DEEPEST folder's path, a folder that also holds a file never joins a chain, and the name is drawn as
+a shrinkable head and a fixed tail (`scm-chain-*`) because the folder a row is about is its last one, which
+an end ellipsis would have cut first in a 300px dock. A file and a folder may share a name (a typechange leaves
+both in Staged), so row keys are `f:<path>` and `d:<path>`; a nested repository listed as `vendor/inner/` keeps
+its slash on the name. The folder row is a real `<button>` with `aria-expanded` and an `aria-label` that says
+its file count, the chevron turns on the micro tier, and a file row keeps the chevron's column empty so its icon
+stands under its siblings' folder icons. **It is `pressMove`, so Enter and Space are the button's own click.**
+ArrowRight expands a collapsed folder; ArrowLeft collapses an open one, and from a collapsed folder or a file it
+moves focus to the parent; any other arrow, or one with a modifier, is left to the browser. Focus is requested
+by key and taken by the row as it mounts, because a long group draws only the rows near the view: the parent is
+scrolled in first (`scrollToRow`), measured in a 600-row group where it was 30 rows out of the window.
+**Which folders are collapsed is per device, project and group** (`palmux-scm-collapsed`, `{v:1, byRepo:
+{[top]: {[group]: paths}}}`, forgiving parse, swallowed storage errors). Every write is ONE change applied to
+what is stored now, never a mount's whole set (the Explorer's rule: the dock and the drawer can both be live). It
+is NEVER pruned against the current tree, because no listing is proof that a folder is gone: a folder with no
+changes today comes back collapsed when its changes do. A cap of 500 per group, oldest first, bounds it instead.
+A group is keyed `<repo>:<group>`, so a project switch remounts it and re-reads. **`LONG_GROUP_ROWS` counts the
+group's FILES, not the rows a tree shows**, so folding a folder never swaps the virtual list for plain rows under
+the user's focus; `.scm-vlist` is `min(60vh, --scm-rows × --scm-row-h)`, so a mostly folded long group does not leave a
+tall empty box (verified: 5 rows are 140px on a desktop).
+
+**The changed-files list is compact on a phone** (owner, 2026-10-26: the drawer's tree was too large, 36px
+rows and a 12px indent a level). `scm.css` states a row's metrics once, on `.scm-view`: `--scm-row-h`
+(`--ctl-h`), `--scm-indent` (`--sp-3`) and `--scm-gap` (`--sp-2`), and `:root[data-mobile='true'] .scm-view`
+restates the three for a phone as `calc(var(--ctl-h) - var(--sp-1))` (32px), `--sp-2` (8px a level) and
+`--sp-1` (4px between a row's chevron, glyph and name). The rows, the folder rows and the virtual list's
+height cap all read them, so they cannot disagree, and the desktop is exactly what it was (28px, 12px, 8px).
+The text was already the body size, `--fs-2` (12px): the contract's "13px" is `--fs-3`, so a row's text is
+unchanged and the saving is the height and the indent. A file four folders deep starts its name 16px further
+left, and the drawer's 329px row leaves room for ~30 characters after it. Measured in Chromium at
+390x844 with the owner's tree (30 staged files, every folder open): rows 32px (were 36px), 18 rows fully on
+screen above the footer (were 16). **One thing is not compact, on purpose: the three group headers** (Merge
+Changes, Staged Changes, Changes) are the kit's Collapsible trigger, `--ctl-h` (36px on a phone), and a
+consumer cannot size it: `scale.test.ts` fails any stylesheet but `ui.css` that sizes a kit control, and
+`--ctl-h` may not be redeclared in a subtree. Compacting them is a kit change (a dense Collapsible), so it
+is left as a follow-up rather than done by a rule the guard exists to refuse.
+
+**The review pane is a flat array of rows on one `VirtualList`** (`review/ReviewPane.tsx`; what it
+keeps that is not React state is `review-model.ts`, and React sees a version number and the rows).
+`rows.ts` turns a status entry and, once fetched, its snapshot into rows of ten types: `fileHeader`,
+`notice` (binary, too large, converted, unmerged, rename, mode, symlink), `placeholder`, `hunkHeader`,
+`gap`, `line` (unified), `split`, and three that carry comments, `comment`, `editor` and `unplaced`.
+Every row carries its file's `path` and a `key` unique across the whole list (`<path>|file` for a
+header), which is how a visible row maps back to its file and is recognised again after a rebuild. A
+split row pairs the i-th removed line with the i-th added one inside each change block and leaves the
+rest alone (GitHub's pairing); only a paired row gets inner marks. An unchanged line in unified takes
+the new side's number. Hunks are git's, and the hidden lines between them (and before the first, after
+the last) are a `gap` that reveals 20 lines at a time from either end, out of the full side texts the
+snapshot already carries. Rows are built PER FILE and cached under a signature of everything that shapes
+them (the snapshot key, layout, collapse, reveals, comments and drafts, the entry's fingerprint), then
+concatenated, so one snapshot landing rebuilds one file and the other 399 keep their arrays. A file not
+fetched yet is one `placeholder` whose height is estimated from the status counts (changed lines plus
+three context lines a side, at 20px; a binary or mode-only file is one row), and its header already shows
+the counts.
+
+**Row heights are exact, not measured by index, and this is where measurement overruled the design**
+(D6 said `useDynamicRowHeight`). Heights keyed by index go stale the moment a rebuild shifts the rows (a
+file loads above the viewport, a gap opens), and a placeholder several thousand pixels tall would skew
+the average every unmeasured row falls back to. So `review-metrics.ts` derives a height from the row and
+hands react-window a function: fixed for every row whose height is known (`ROW_METRICS`), an estimate
+for a row that wraps until the browser has measured it, then the measured height keyed by the row's own
+`key`, never its position, in a map that restarts whenever `layout|wrap|width bucket|code size` changes
+(64px buckets). `review.css` declares the same numbers as `--rv-*-h` custom properties written from the
+`--sp-*` scale (a custom property is a declaration `scale.test.ts` cannot see, and spelled from the scale
+it cannot be off it), and `review-css.test.ts` resolves each and holds it equal to its twin: a row drawn
+taller than it was sized overlaps the next, and no type error says so. They are not `--ctl-h`, which is
+28px on a desktop and 36px on a phone, because this geometry is a number JavaScript must know. Nothing
+in the pane animates: it is the busiest surface in the app, and a transition on a row is work per frame.
+
+**On a phone the structural rows are shorter, as a second exact table** (owner, 2026-10-26: "too much lost
+space", with the gap rows marked). `COMPACT_ROW_METRICS` is `ROW_METRICS` with a file header of 36px (40), a
+gap of 28px (32) and a hunk header of 20px, one code line (24); a code line, a notice and an error row are
+what they were, so the code keeps its size and the rows between code lines are what gave way. It is chosen by
+`HeightContext.compact`, which the pane takes from `useCompactReview()` (`review-density.ts`): the same
+`data-mobile` flag on `:root` that raises `--ctl-h`, read through `useSyncExternalStore` over one
+`MutationObserver` on that attribute, so a change of the mobile mode while a review is open takes effect at
+once. It keys on the device class and NOT on the pane's width (as `review-layout.ts` does for the layout),
+because a phone held sideways has a wide pane and still has little height. The pane writes `data-dense` on
+`.rv-frame` from the same value, and `.rv-frame[data-dense='true']` restates `--rv-head-h`, `--rv-gap-h`,
+`--rv-hunk-h` and `--rv-chip-h` from the scale; `review-css.test.ts` resolves that block and holds it equal to
+`COMPACT_ROW_METRICS` the way it holds the first block to `ROW_METRICS`, and `review-metrics.test.ts` and
+`ReviewPane.test.tsx` hold the sums (each row starts where the one above ends; landing and stepping put a
+file's header exactly at the top with the shorter rows). Measured values are not keyed by it: it changes only
+fixed heights. **A gap's controls are plain `.rv-chip` buttons on a phone**, 24px tall inside the 28px row,
+because the kit's small button is `--ctl-h` less a step, 32px, which does not fit it, and the kit's sizes may
+not be restated outside `ui.css`; on a desktop they are the kit's Buttons still. The chip reads as the ghost
+variant (hairline, secondary text, a press that fills) with an inset focus ring, and keeps its test ids and
+accessible names. The file header stays one row, 36px around the kit's 32px small buttons, and the state word
+beside the counts ("Modified") is hidden by CSS there (the letter keeps it as its `title`, and
+`.rv-current` above the list names the file): it was what truncated the path to eleven characters. On a
+390x844 phone with the owner's `keybindings.ts` review: gap rows 28px (32), hunk headers 20px (24), the file
+header 36px (40), the review bar 37px (45), so the list is 734px tall (726) and shows 26 code lines in full
+(25), and the room gained also pulls one wrapped line (two rows tall) into view.
+
+**The code size is the DEVICE'S, apart from the terminal's, and a code line is the only height that moves**
+(`codeFontSize: number | null` in `settings.ts`). The terminal font is a pinch away on a phone, and a diff
+that shrank under a pinch meant for the shell is not what anyone wants, so the review's lines, line numbers
+and inline marks read their own setting. It is local like `fontSize`: not in `SYNCED_KEYS`, so it never
+reaches the server or the dotfiles-tracked `settings.json` (`settings.test.ts` pins that, down to a
+byte-identical synced payload across a change, and `App.test.tsx` that a real change sends nothing), it
+takes the terminal's range (6–48, `clampFontSize`), and the sanitiser turns anything that is not a finite
+number into `null`. **`null` is "never chosen", and the review keeps what it always drew** (12px, `--fs-2`,
+`DEFAULT_CODE_FONT_PX`), which does NOT follow the terminal: a review that began following it the day this
+setting arrived would be a jump nobody asked for. The editor's null is different (see the Monaco notes), so
+a first tap of minus in the review writes 11 and the editor, which was at the terminal's size plus one,
+moves to 11 with it; that is one setting meaning one size once it is set. The pane writes `--rv-code-fs`
+and `--rv-code-lh` inline on `.rv-frame` from the same `codeLineHeight` (`round(size × 20 / 12)`, so 20px
+at the default and always whole pixels) that `review-metrics.ts` hands react-window, so the sheet and the
+list are given one number and cannot disagree; the sheet declares the default pair for a frame without
+them and `review-css.test.ts` holds it equal to `ROW_METRICS.line`. Only `.rv-line` and `.rv-split` read the
+pair, so a file header, hunk header, gap, notice and comment are chrome and keep their heights whatever the
+code is drawn at, and `.rv-no`/`.rv-sign` follow because their widths are in `ch`. The measured-height map
+is part of the geometry key, so heights the browser reported at the old size are dropped and a wrapped row
+is estimated afresh (`textColumns` uses the size's advance, 0.6em) until it is measured again; the scroll
+anchor holds across a change because the pane already restores it on every new geometry, by the same
+distance from the top. What it does not repair: a placeholder remembers the pixel height its file had when
+it was evicted, and keeps it until the file loads again, as it already did across a layout change.
+**The control is a stepper in the view menu, and in the bar when the pane is wide.** Below 500px it is the
+kit's stepper row in the ⋯ menu (Smaller code, the value, Larger code; the menu stays open, so two taps
+are two steps), above it the same minus, value and plus sit at the end of the bar. The bar has room only
+from a body of about 762px, so a pane between 500 and 762px now wraps the controls onto a second row where
+it used to wrap only below about 662px; that is the wrap the bar was always allowed, and the compact menu
+was not widened to avoid it. Measured at 1440 and at 390: rows aligned to the pixel at every size from 10
+to 16, the terminal grid unchanged (`stty size` the same at 9, unset and 30), and the value surviving a
+reload.
+
+**Fetching follows the viewport, and memory is bounded** (`review/file-queue.ts`, a framework-free class
+with an injected `fetch`, D7). `onRowsRendered` reports the first and last visible row, the model maps
+them to files, and the queue wants every file within `FETCH_WINDOW` (2) files of that range, nearest
+first, with at most `FETCH_CONCURRENCY` (4) requests in flight. One `/scm/file` answer carries the hunks
+AND both sides' text, so a file's lines, colours and comment positions always describe one version. It
+keeps `MAX_LOADED_FILES` (60) files and `MAX_LOADED_BYTES` (40 MB, the `.length` of both sides' text),
+least recently used first, and an evicted file goes back to a placeholder holding the height its rows were
+last DRAWN at (`measureRows`), so the scroll position does not jump (a file removed from the group is
+simply gone). A loaded file is refreshed wherever it is when it goes stale (its `fp`, the status's
+`attrEpoch` or the algorithm changed), because a stale snapshot that scrolls into view must not show the
+old version, and eviction cancels a refresh nobody is looking at. An unmerged file is never fetched (no
+stage-0 blob); a failed file keeps its message and a Retry, and scrolling away and back retries it. A
+hidden review or a paused one starts nothing (`setEnabled(false)`, answers in flight still land) and
+takes no new entries until it is shown; `load()` is the one door that ignores that, because next change
+into a file that is not loaded yet is a person asking. **Every request belongs to a per-file generation.**
+Anything that changes what a file should show starts a new one (`supersede`: bump it, abort the
+controller), and an answer from an older generation is dropped, so a slow response never overwrites a
+newer version. The cap counts a superseded request until it SETTLES and not until it is aborted, so "at
+most four in flight" holds for a fetch that ignores its abort signal. An answer with the same
+`snapshotKey` (`version|algorithm`) as the one held lands as `changed: false`: only the staging token was
+renewed, and no rows or colours are rebuilt. `version` is algorithm-free by design, so the algorithm joins
+it in every cache key.
+
+**Scroll anchoring relocates by TEXT, not by line number** (`review/scroll-anchor.ts`). Row indices mean
+nothing across a rebuild, and neither do line numbers once the file changed: ten lines inserted above
+must leave the same code in view. The pane captures an anchor on every scroll (a passive listener, and a
+hidden pane's scroller reports a zero offset that is not the reader's, so it is ignored): the first
+visible row's file, side, line number and pixel offset, scanning up to 12 rows below the top because
+headers and gaps come first, or the file's header when a placeholder is at the top, which stays and so
+opens the view onto the first lines of what loaded. When a snapshot is REPLACED the model calls
+`onReplace` while both texts are at hand, and `relocateAnchor` finds the line again with the same function
+that places a comment (`anchor.ts`): every exact match of the line's text is scored by how many of three
+context lines either side agree, then by distance from the old number, and **the old position gets no
+head start**, because a `}` or a blank line left at the old number must never beat the real line ten
+rows down; a tie is not a guess. A deleted line falls back to the nearest surviving line of its hunk, then
+to the file header. After every rebuild a layout effect sets `scrollTop` to the row's top minus the
+recorded offset when that differs by a pixel, and a layout or wrap switch is a rebuild like any other, so
+it holds the reader's place too. **A programmatic scroll is a REQUEST, not a write** (next change, next
+file, Reviewed moving on, a Source Control row): it stores a row key and bumps a counter, and the same
+layout effect applies it once the rows it names exist, falling back to the file's header when the row
+was rebuilt under another key.
+
+**A jump has to LAND, and a scroller sized from an average cannot hold one.** react-window 2.3.3 sizes
+its scroller with one in-flow `aria-hidden` spacer, the list's last child, as tall as its ESTIMATE: the
+row count times the average height of the rows it has laid out so far (read in its dist: the bounds cache
+fills lazily from row 0 to the furthest row it has drawn, and starts over whenever the `rowHeight`
+function changes, which is every new geometry). A review's rows run from a 20px line to a placeholder
+thousands of pixels tall, so that average is rarely the real one, and it errs both ways. Too SHORT, and
+the browser clamps a jump past the estimate to the end of the content it was given, so the view stops
+short of the file: `in a group whose files are not the height they were estimated at`
+(`ReviewPane.test.tsx`) is the shape that failed on a real screen, placeholders estimated from the
+status counts far from the rows they turn into and a target past what react-window had sized for. The
+answer is `.rv-extent`, a 1px box inside the list, absolutely positioned at its top, `visibility:
+hidden` and `pointer-events: none`, as tall as the geometry's real total (`offsets[rows.length]`): an
+absolutely positioned child still counts toward the scroller's scrollable overflow, so it raises the
+scroller to the rows. Too TALL (the rows laid out first are taller than the rest), and the reader
+scrolls past the last file into blank space, which the extent box alone cannot take back, so the sheet
+also takes react-window's spacer out (`display: none` on `.rv-list > [aria-hidden='true']:not(.rv-extent)`)
+and the extent box is the ONLY thing that sizes the scroller, in both directions. Measured in the
+happy-dom browser model, not on a device: a 16,120px placeholder over 99 one-line files made the spacer
+337,600px over 33,980px of rows, and End without the rule put the top of the view 303,020px below the
+end of the last file.
+The rule leans on react-window's DOM, so the model does not name the spacer: `browserScrolling`
+(`review-test-support.tsx`, which clamps an offset as a browser does and reports it a turn later)
+reads the `display: none` rules for list children from `review.css` and applies them with `matches()`
+to react-window's real elements, and `the scroller is exactly as tall as the rows` fails if an upgrade
+moves the spacer or drops its `aria-hidden`.
+Four more things keep a landed jump where it landed. **A file's header lands as ITSELF**: `land()`
+records the anchor as the header row (`kind: 'row'`), not the first line found near it, because the
+files above it are mostly placeholders that each move it when they load or measure differently from
+their estimate, and the notices under it do too. **The echo of the pane's own write is skipped**: every
+programmatic offset goes through `writeScrollTop`, which keeps in `writtenTop` what `scrollTop` reads
+back after the write (the browser may round or clamp it), and a `scroll` event within 1px of that is
+the browser reporting the write, not the reader moving. Read as the reader's, it would replace the
+anchor with whatever row sat at the landed offset, and the view would go off with that row as the rows
+above load; any other offset clears `writtenTop`. **The restore runs INSIDE the list**: `BeforeList`, a child of the
+`VirtualList`, runs `restoreView` as its layout effect, because React runs a child's layout effects
+before its parent's and react-window picks the rows it draws in a layout effect of its own, from the
+scroller's offset at that moment. Restored from the pane, react-window would read the offset a rebuild
+left behind, draw the wrong place for a frame and report those rows, and the queue would fetch the files
+there, each of which moves the view again as it loads. **`.rv-list` sets `overflow-anchor: none`**: the
+browser's own scroll anchoring shifts the offset when content above the view changes size, which is
+the change the pane already corrects, and two corrections for one change fight each other.
+
+**Layout is by PANE width, and the observer reports only the crossing** (`review/review-layout.ts`).
+Below `REVIEW_SPLIT_MIN_PX` (720) a review is unified, because two readable code columns need room, and
+the rule keys off the pane and not the device for `editor-layout.ts`'s reason: the dock is 300px on a
+desktop too. `observeReviewWidth` reports a change only when the width crosses the threshold, and once at
+the start, because re-laying out a review on every frame of a dock animation is the resize storm the
+motion rules forbid; a hidden pane measures 0 and is ignored, since panes stay mounted and that happens on
+every tab switch. `scmLayout` (`auto` | `split` | `unified`, per device) overrides the rule. **Split always
+wraps** (two half-width columns cannot share one horizontal scroll); unified follows the Wrap toggle
+(`scmWrap`, where `null` follows the width rule: wrap exactly when narrow). Unwrapped lines make the list
+scroll sideways and a file header is `position: sticky; left: 0`, and a sticky box needs a parent as wide as
+the scrolled content to have room to stick in, so the other rows are given the width of the widest LINE on
+screen (`--rv-scroll-w`) and their controls the view's width (`--rv-view-w`). Both are read from the lines
+once a frame and never from the scroller's own `scrollWidth`, which the rows given that width would hold
+up for ever, and both are REMOVED when lines wrap, since a width left over from no-wrap would hold every
+sticky box at the width the view had then. A current-file bar over the list names the file of the first
+visible row. D6 also made it the phone's file switcher, and it is not: the review bar's Files button
+opens the file list in the drawer, so the bar stays a label.
+
+**Colouring uses Monaco's tokenizer over the WHOLE side, and lines render plain first**
+(`review/colorize.ts`, `line-html.ts`, `inner-diff.ts`). Each side's full text goes through
+`monaco.editor.colorize(text, languageOf(path), {})` and is split on `<br/>` into per-line HTML. It is the
+whole side and not the hunk so that a line inside a block comment that starts above the hunk is coloured
+as a comment; it is the same 23 grammars and the same `palmux` theme as the editor and the markdown
+viewer, one colour source for all three. Nothing imports Monaco at module load: the loader is a dynamic
+import reached only when a side has a grammar to colour with, so a file with none, an empty side and a
+side over 20,000 lines (`MAX_COLORIZED_LINES`; the snapshot's 1 MB limit is already behind it) never load
+the chunk, and a terminal-only session still downloads none of it. Work is one job at a time through
+`requestIdleCallback` (a 1 s timeout so a scroll that never idles cannot starve it, `setTimeout` where it
+is missing), with the two sides coloured one after the other because both at once would be one long task on
+the main thread. **The cache is keyed `path` + `version` + `side`, and the path is part of the key**
+because a version names a pair of blobs and not a file: a copy not yet edited, or two identical new files,
+share one. Keyed by version alone, forgetting one file erased the colours its twin was drawing, and a
+plain-text twin's "stays plain" entry kept a file that has a grammar plain. A line renders plain, then
+swaps to coloured HTML with NO change of height, which is why the two shapes must lay out identically:
+Monaco expands a tab to 4-column stops and writes every space as `&#160;`, so plain text is expanded the
+same way and the markup has its `&#160;` turned back to spaces, and `white-space: pre-wrap` keeps both.
+Inner marks (the changed characters between a paired removed and added line) are computed here and not
+by git (`--word-diff` is a non-goal), on the SOURCE text, between lines the rows model already paired:
+word and punctuation tokens, the shared head and tail trimmed, then an LCS bounded to lines under 400
+characters and 10,000 comparison cells, because this runs on the main thread while a phone scrolls. They
+are spliced into Monaco's markup only if its decoded text is exactly the line; a markup that disagrees
+with the text it claims to colour is drawn without marks and never with misplaced ones. Nothing from the
+file is inserted as markup: plain text goes through React and the markup is Monaco's own escaped output.
+
+**The theme bridge is a subscription list, and a pane recolours only on a REAL palette change**
+(`panes/monaco-theme.ts`). `applyThemeTokens` publishes the profile through `setEditorProfile`, which was
+one listener that `monaco-loader.ts` occupied with `applyTheme`; it now notifies a list, and
+`onEditorProfile(cb)` adds one and returns the way to remove it. Listeners run in registration order,
+except that a subscriber that asks for `{ first: true }` sits ahead of the rest, and **the loader asks**:
+it registers only when Monaco first loads, which can be long after a review pane subscribed at mount,
+so plain registration order would put it second, and `colorize` reads whatever theme Monaco holds at that
+moment (Monaco's theme must be defined before a review recolours). One subscriber that throws does not
+stop the others (the first failure is rethrown once everyone has run), so a review that failed to repaint
+cannot leave Monaco's theme undefined, or the reverse. A pane subscribes on mount and unsubscribes on
+unmount, so a closed review stops listening. **App publishes the profile on every `themes` message, which
+every reconnect brings**, so the pane compares what it drew with (`JSON.stringify(buildMonacoTheme(profile))`)
+against the latest one and a palette equal to the drawn one is no change at all: only a different one
+clears the colour cache and requests the loaded snapshots again (`model.recolor()`). A hidden pane draws
+nothing, so it records the latest palette and recolours in a LAYOUT effect when it is shown, so the old
+colours never reach the screen, and N hidden reviews do not each colour their files at the instant a
+theme changes (a hidden review that saw the palette change and change back draws nothing at all). Tests
+hold that every open review updates on one profile change, that a closed one stops listening, and that
+an equal palette recolours nothing.
+
+**Only the ACTIVE project is read, and a paused review shows and does not write.** The status store counts
+a subscriber only when it is visible AND on `scmActiveRepo`, so two reviews of two projects never mean
+two reads. A review of another project (the unfocused half of a split, or one the dock has since moved
+off) draws the last status it retained under a `Paused · Make <name> active` bar and issues no request;
+a review of a project removed from `scmRepos` is a notice ("Project removed") and never reads again unless
+the project is added back. Focusing a review makes its project active, in an App effect keyed on the
+focused tab and its repo and NOTHING else, so choosing another project in the dock while the review stays
+focused is not undone by the next tab broadcast (the review is then paused until it is focused again); a
+removed project is never made active, and in a split only the focused slot drives it because `sessionId`
+follows focus. Reviewed, Unstage and comments are gated on the review being the written one, because the
+comments store holds the active project's comments only: a comment saved from a paused review would land
+in the other project.
+
+**Six chords, and they are letters, not F7** (`keybindings.ts`): Ctrl+Alt+G `openSourceControl`,
+Ctrl+Alt+J / Ctrl+Alt+Shift+J `scmNextChange` / `scmPrevChange`, Ctrl+Alt+N / Ctrl+Alt+Shift+N
+`scmNextFile` / `scmPrevFile`, and Ctrl+Alt+Enter `scmReviewed`. VS Code's F7 is out because GNOME takes
+Alt+F7 (move window) before the browser sees it and a Mac's F-row is media keys; VS Code's Ctrl+Shift+G
+for Source Control is out because it is `copyLastOutput` here and `matchAction` answers the FIRST match, so
+reusing it would make one of the two unreachable. Ctrl+Alt+K stays `downloadFile`. The model is one `Chord`
+per action end to end (`DEFAULT_BINDINGS`, `loadBindings`, `matchAction`, the panel), so each action has
+exactly one default, and a test asserts every default chord is unique and that `copyLastOutput` keeps
+Ctrl+Shift+G. **The five review actions are wired only while the active tab is a review**, found by tab id
+through `review/review-registry.ts` (a ref registry like `panes/editor-registry.ts`, read when the key is
+pressed so a handler never re-binds as a pane re-renders), so with any other tab focused the chord falls
+through to the terminal and the palette does not offer them, and a hidden review ignores them.
+`openSourceControl` is the exception: the dock view on a desktop, the drawer's view on a phone, and one
+function behind the chord, the palette entry and the review bar's Files button. A CHANGE is one block of
+changed lines; a file with no line to show (binary, too large, converted, conflicted, a mode change, a
+pure rename, collapsed) counts as ONE change at its header, so stepping never passes a file in silence.
+Next change at a file's last change goes to the next file's first, FETCHING an unloaded file first
+(`findChange` answers `load`, the pane awaits it and looks again; a file that cannot load becomes a stop at
+its header). A jump lands three lines above the change so its context shows, which means the row at the
+top afterwards is not the change, and reading the top row would make "next" land on the same one:
+`landedRef` remembers where the last jump left the view and, while `scrollTop` is still there, that is the
+position; once the reader scrolls it is read from the offset. Previous file from inside a file goes to its
+own start first, like a media player.
+
+**Reviewed, Unstage and Undo** (`review/review-writes.ts`, `write-log.ts`). Reviewed in a Changes review
+stages the version the review SHOWED (the snapshot's token) and then jumps to the next file, the one that
+was next in the list before this file left it; the same key in a Staged review is Unstage, and the status
+is re-read at once so the reader does not wait a second for the file to leave. A 410 `token` is not an
+error to show: the file is fetched again and, when its `version` is unchanged, the stage is retried ONCE
+with the new token and the reader never knows; a different version is shown with "changed since you
+looked" and nothing is staged, because the newer change must be seen before it is called reviewed. Each
+refusal says what to do (`describeFailure`: `busy` is `index.lock` and nothing waited, `conflict`, `changed`,
+`unsupported`, `df`). Reviewed is disabled WITH its reason for a conflicted file, a file not loaded yet and
+a snapshot with no token (too large, converted), and there is no fallback that stages what was not shown;
+Unstage needs no snapshot, so a staged file palmux cannot read can still be unstaged. **A file with a
+comment open on it is not staged or unstaged until the comment is saved or cancelled**, because the write
+takes the file out of the review and the open editor with it: its text stays in the store but nothing would
+draw it, and the reader would watch the comment vanish unsaved. The Undo toast holds 6 s, and the writes of
+those 6 s are kept in `write-log.ts` because the app has ONE toast and a second write used to replace the
+first one's: its Undo silently gone while the file it staged stayed staged. The toast names them all ("Staged
+2 files"), one Undo restores them newest first, each a compare-and-swap on its own receipt, and it STOPS at
+the first refusal and says how far it got, because undoing out of order would restore an older entry over a
+newer one. The log is module state on purpose (two reviews of a window share the one toast) and holds
+receipt ids and names only; a receipt is restored in the project that issued it.
+
+**Comments on the client: the store is the window's, a version is provenance, and display is
+content-driven** (storage and validation are in the comments paragraph above). `review/comments-store.ts`
+holds the ACTIVE project's comments in `useSyncExternalStore` shape and REPLACES its state with each answer
+(every read and write answers the whole list and its `rev`), dropping any answer whose `rev` is not newer
+than the one applied, so two windows converge whatever interleaving the server saw. **It polls nothing.**
+It learns of another window's write from the `scmComments` frame (App feeds `observeRev`), from
+`commentsRev` on every status answer (`connectCommentsToStatus`, the backstop for a missed frame) and from
+a `refresh()` on every `ready`, since frames were missed while the socket was down; a newer rev refetches
+only while a subscriber counts (visible, on the active project), so a hidden view costs no request and
+catches up when shown, and a failed read retries on the next frame or answer, never in a loop. That is what
+keeps the 2-second promise when a slow repository stretches the status interval. **A comment's `version`
+(`head` | `index` | `worktree`) is the content the commented side showed** (`versionOf`: Staged compares
+HEAD with the index, Changes the index with the work tree), and it is provenance, not an address.
+`placeComments` tries both sides of the open review, the side that shows the comment's own version first
+(else the side it was made on), and draws it on the first where `anchorLines` finds it, one side per
+comment; a tie for best counts as not found there. So the flow the owner uses, comment on Changes, tap
+Reviewed, open Staged, still shows the comment on Staged's new side, where the same lines now are. A
+comment found nowhere is OUTDATED and never moved onto a neighbour: it is listed at the end of its file
+with the code it was about quoted. Two more reasons a comment is listed and not drawn on a line: its lines
+sit in a gap nobody expanded (`hidden`, with where the anchor found it), and palmux never read the file
+(`unread`: too large, converted), which is NOT outdated, since nothing says the code left, and the export
+says "not shown" for it. **What a comment is about is captured when its editor OPENS, not when it is saved**
+(the lines and three of context a side): a file edited while the comment is typed must not move it onto
+whatever now sits at those numbers. **Drafts live in the store and not in the pane**, because the review is
+virtualised and the editor row unmounts when it scrolls away; a draft is keyed by path, side, range, the
+comment it edits and its SCOPE, the group, because a project's Changes and Staged can show the same lines
+and two editors must not type into one draft. An edit of a stored comment is a draft of its own; if another
+window deletes that comment while it is open, the editor says so and offers Save as new (on the code the
+draft kept) or Discard, instead of saving into a comment that no longer exists, and no edit is drawn
+until the comments have loaded, or it would look deleted. A range is picked on the line NUMBERS of one side
+of one file (a comment belongs to one of each): drag across numbers or shift-click on a desktop, tap then
+tap on a phone (a long-press would fight the browser's own text selection; the first tap already picks one
+line, so a one-line comment is one tap and Comment), Enter or Space on a focused number with a keyboard,
+Shift to widen. The editor is a real `<textarea>` so the soft keyboard and IME work as anywhere; Escape
+cancels it, and focus returns to `#mobile-kbd` after a save or cancel only if that held focus when the
+draft opened (recorded per draft in the pane, since the editor unmounts). Delete asks once, and only for
+a non-empty body. **Export** (`export-md.ts`, "Copy comments" in the view) writes files in path order, a
+comment as `**L10–14** (new)`, a fenced block in the file's language holding the STORED lines (the fence
+one backtick longer than any run in the code), then the body. `copy-comments.ts` reads the snapshot of
+each group a file is in and places the comments exactly as the review does, so the copy and the screen
+cannot disagree: a comment is "(outdated)" only if it anchors in NONE of its file's groups, and a file in no
+group, or a read that failed, marks nothing, because "unknown" must not be reported as "outdated".
+
+**On a phone a review has a bar of its own, and it keeps the swipe** (`mobile/ReviewBar.tsx`). While the
+ACTIVE TAB is a review App renders it in the extra-keys bar's slot and does not render the extra-keys bar
+(which returns with the next tab that is not a review); the choice reads the active tab's kind, as the
+editor routing does and not the pane registry, because panes stay mounted. Four buttons one step below
+`--ctl-h` (`calc(var(--ctl-h) - var(--sp-1))`: 32px on a phone, the extra-keys bar's own 33px key): Files
+(opens the drawer on Source Control), ↑ previous file, ↓ next file, and ✓ Reviewed (Changes) or ↩ Unstage
+(Staged). The bar is 37px (a hairline, 2px, the button, 2px) where it was 45px, against the extra-keys bar's
+67px: one key row, because a review is read on a phone and the bar's height is code it does not show (owner,
+2026-10-26). Replacing the extra-keys bar was an owner decision (2026-10-25), and the bar has no terminal keys,
+so nothing on it can reach a shell. **One release-time classifier handles taps and swipes, and no `press*`
+helper is used**, because `press` and `pressClick` act on pointerdown and a drawer swipe that began on ✓
+would have staged the file before anyone could tell it was a swipe. Pointerdown only records (and prevents
+the default and captures the pointer on the BAR, never on a button, for the extra-keys bar's reasons: a
+focusable capture target or a focus-moving mousedown would dismiss the soft keyboard, and here it would also
+pull focus out of a comment being typed). A release within 10px of where the finger landed acts on the
+button it landed on; horizontal travel past 60px is a swipe and acts on nothing; any other movement, or a
+`pointercancel` (the OS's own bottom-edge gesture), acts on nothing. The release that acts marks its
+gesture (`consumeGesture`), because Reviewed moves the view and the tap's trailing click would land on what
+it drew, and a click with `detail === 0` (a key, assistive tech, `element.click()`) acts once. The two
+thresholds are copies of the extra-keys bar's `MOVE_CANCEL_PX` and `DRAWER_SWIPE_PX`, kept so the files do
+not reach into each other, and `ReviewBar.test.tsx` fails if they drift; its tests start a swipe on every
+button, in both directions, and assert that none activates. **The swipes**: right→left opens the drawer,
+as on the extra-keys bar, and left→right goes back to the last tab that was NOT a review (`returnTabRef`,
+recorded as the selection moves, from the list as broadcast: a tab id the server has not announced reads as
+a terminal, and a review just created must not be taken for the tab to return to), or to the first
+terminal when that tab has closed. From one review to another it is still that tab, so swiping back
+twice never ping-pongs between two reviews. List rows in the drawer's Source Control view and in the
+review use `pressMove`, so a pan never activates a row (a test pans over a row and asserts it does not).
+
 ## Build / run
 
 ```bash
@@ -1418,8 +2179,12 @@ single worst thing to sync), the generated `theme.{sh,tmux,json}`, and `*.log`. 
 because people keep their own scripts in there (`theme-hook.mjs`, `hooks.d/`, a pager) and an
 allowlist would silently stop tracking them; the price is that a new generated file needs a line.
 Note it only governs UNTRACKED files — anything already committed stays tracked.
+**`.cache/` is the one directory that carries its own ignore**: review comments live in
+`.cache/scm/<sha256(project top) first 16 hex>.json`, and the first write creates `.cache/.gitignore`
+holding `*` (never overwritten), so the whole directory is ignored without a line in the root
+`.gitignore` that `ensureConfigGitignore` leaves alone (see "Source Control").
 **`themeId` is the awkward one.** The client already withholds its purely-local settings
-(`fontSize`, `mobileMode` are not in `SYNCED_KEYS`, so the server never sees them), but `themeId`
+(`fontSize`, `codeFontSize`, `mobileMode` are not in `SYNCED_KEYS`, so the server never sees them), but `themeId`
 cannot take that route: `theme-export.ts` reads it AT BOOT, with no browser connected, to
 regenerate `theme.sh`/`theme.tmux`/the Claude Code theme — browser-only storage would leave every
 boot on the default palette and silently re-source tmux with the wrong colours. So it stays on the
@@ -1957,7 +2722,11 @@ null once the process is gone, so nothing after the exit could find it.
   was a second door to it; the `onOpenDictationHistory` prop is gone from the form and from both
   hosts, `App` and `SessionDrawer`). The history modal (`DictationHistory`) is still behind its
   `dictationHistory` keybinding and command-palette entry. **Import theme left the form too**: the
-  Appearance card holds Theme, Font, Font size, Cursor and Cursor blink.
+  Appearance card holds Theme, Font, Font size, Code font size, Cursor and Cursor blink. **Code font
+  size** is Font size's twin: the same number input and range (`FONT_SIZE_MIN`/`MAX`), empty with the
+  placeholder "Default" until the device chooses, and an empty field is `null` (a cleared field is
+  not 0). It is in both hosts because both render `SettingsFields`, and it is per-device like the row
+  above it.
   `KeybindingsPanel` still uses the bare `.field`
   rules, so those stay. **Reload app** (`settings/app-reload.ts`) is a row, not a nicety: an installed
   PWA has no reload button, and `location.reload()` re-runs against the HTTP cache — a cached
@@ -2145,17 +2914,28 @@ most recent real scheme switch or explicit choice.
 the whole synced snapshot, `themeId` included, and the server replaces it and re-exports. If device
 A writes `themeId` on a scheme change and device B saves an unrelated setting in the milliseconds
 before A's broadcast reaches it, B's stale `themeId` wins the export until the next real scheme
-change. Closing it needs patch semantics on the server — another restart, which ends every
-terminal — for a window one broadcast round trip wide whose only effect is the tmux/Claude palette,
-so it is documented instead.
-**Rollout: older bundles erase the new keys, so reload every window BEFORE switching Match system
-on.** A window still on a bundle from before Match system neither reads nor sends
-`themeMode`/`themeDark`/`themeLight`, and the server replaces the whole settings object on every
-save (`saveSettings(settings)`), so that window's next save of ANYTHING erases them — whenever it
-happens, not only in a race. After a deploy, reload every open palmux window (the phone PWA and
-every desktop: Settings › Reload app) onto the new bundle first. A server-side merge that preserves
-omitted keys would remove the ordering, but it is a server change and a restart for a one-time
-rollout.
+change. The server-side merge (below) does not close it: B's blob CARRIES `themeId`, so it replaces,
+and the merge only protects keys a save OMITS. Closing it needs patch semantics from the client —
+another restart, which ends every terminal — for a window one broadcast round trip wide whose only
+effect is the tmux/Claude palette, so it is documented instead.
+**An older window no longer erases keys it does not know: the settings write is a MERGE.** It used to
+replace the stored object with whatever a client sent, and a window on a bundle from before a setting
+existed neither reads nor sends it, so that window's next save of ANYTHING erased `themeMode` /
+`themeDark` / `themeLight`, whenever it happened and not only in a race; the only defence was reloading
+every window onto the new bundle before switching Match system on. `saveSettings` now shallow-merges
+over what is stored and RETURNS the merged object: a top-level key the blob omits keeps its stored value,
+and a key it carries replaces it, an explicit `[]` included (that is how `scmRepos` is emptied). The
+`settings` handler uses that one object for the persistence, the theme export AND the broadcast, because
+exporting or broadcasting the incoming blob would let a partial save without `themeId` regenerate
+`theme.sh`/`theme.tmux` from the default palette and re-source tmux with it. The consequences: an older
+window's save leaves `themeMode`, `scmRepos` and every other newer key in place, so no reload ordering is
+needed any more; the sender is still excluded from the broadcast, so an older window never hears the
+merged keys it cannot use anyway; and a key can only be removed by sending a value for it (a stale key
+for a setting a later release deletes stays on disk). The ordering still matters for exactly one
+interval: a server still running the pre-merge build replaces the whole object, so the merge protects
+nothing until the restart that ships it (it rides the same restart as the `/scm` routes). `ws-handlers.test.ts`
+pins the handler (theme, exports and broadcast survive a partial save, and a carried `[]` replaces),
+`config.test.ts` the merge itself.
 
 **Diff colours come from git-delta, not the palette** (`delta-colors.ts`). The six Claude diff keys
 are read from the user's own delta config via `git config --global --get-regexp '^delta\.'` (git is

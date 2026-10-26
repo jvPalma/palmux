@@ -1,1 +1,32 @@
 schema: spec-driven
+
+# Artifact rules are injected by `openspec instructions <artifact>` into every workflow
+# that writes that artifact (ff, continue, update). This is how /opsx:ff uses the
+# curated review logic: the opsx-* agents live in ~/.claude/agents/.
+rules:
+  proposal:
+    - "Answer, in plain language: the objective (no jargon), how it works today and its limits, what is new, who it affects, the main risks, and how success is measured"
+    - "State scope, out-of-scope and non-goals explicitly"
+    - "If a brief exists in openspec/brainstorms/ for this change, use it as the source and keep its decisions"
+    - "Before finishing this artifact, spawn the opsx-zoom-out agent (Agent tool, Mode PROPOSAL, passing only the proposal path) and address its Critical findings; mention any you disagree with in the proposal's Impact section"
+  specs:
+    - Every requirement has at least one `#### Scenario:` block
+    - Use `## MODIFIED` (not `## ADDED`) for requirements that already exist in openspec/specs/
+  design:
+    - "Record alternatives considered and why they were rejected"
+    - "Cover migration/backward compatibility, observability and cost when the change touches data, APIs or external services"
+  tasks:
+    - "Use `## N. Phase` headers and `- [ ] N.M Task` lines; /opsx:implement targets tasks by N.M (1.2, 1.*, 1~5)"
+    - "Zero-Decision Rule: leave no design choice to the implementer (schema, API shape, dependency, error handling, edge cases are all decided here)"
+    - "Each task names the files to create or modify, the precise change, its tests, and the spec scenario it satisfies; state dependencies explicitly (e.g. depends on 1.2)"
+    - "Each phase leaves the codebase buildable and testable"
+    - "Before finishing this artifact, spawn the opsx-readiness-reviewer agent (Agent tool, passing only the change folder path) and fix its Critical findings"
+
+operations:
+  apply:
+    guidance:
+      - Implement only the targeted task(s); with no target, the next single task, then stop
+      - Run the project's type-check, lint and tests before marking a task done
+  archive:
+    guidance:
+      - Run /opsx:verify before archiving if it was not run for this change
