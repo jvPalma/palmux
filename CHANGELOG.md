@@ -57,6 +57,9 @@ fresh code inspection and a browser end-to-end pass before it went live.
   size on this device, apart from the terminal's. The review also has a − and + stepper for it.
 - **Download from `~/`.** The Download prompt and `GET /download` accept a path or glob that
   starts with `~/` (or a bare `~`), read as the server's `$HOME`.
+- **`palmux download`.** Run `palmux download <path>...` in a palmux terminal, tmux included, and
+  the window showing that terminal downloads the files. Relative paths, `~/`, folders and quoted
+  globs work. Link `scripts/palmux` onto your PATH to get the command.
 
 ### Changed
 
