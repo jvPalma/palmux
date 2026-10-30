@@ -18,9 +18,10 @@ export const USAGE = `usage: palmux download <path>...
 Downloads files or folders from this machine in the palmux window you run it in.
 Run it inside a palmux terminal (tmux in one is fine).
 
-  <path>   a file, a folder (sent as a .zip) or a quoted glob such as '*.mp4'
-           (one .zip). Relative paths are read from the current directory, and
-           ~/ is your home.
+  <path>   a file, a folder, or a quoted glob such as '*.mp4'. A folder or a
+           glob arrives as one .zip (or as the file, when it holds just one).
+           Relative paths are read from the current directory, and ~/ is
+           your home.
 
 Paths that cannot be downloaded are listed and the others still go. The exit
 status is 1 when any path failed.`;

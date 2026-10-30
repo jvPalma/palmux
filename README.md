@@ -507,6 +507,11 @@ turns on the on-screen affordances:
   tools). Also works as a plain URL: `GET /download?path=<path-or-glob>` (cookie-gated like
   everything else — same trust boundary as the shell itself, which can already read any file).
   Caps: 500 files / 256 MB per zip.
+- **`palmux download` from the shell** — inside a palmux terminal (tmux in it is fine), run
+  `palmux download <path>...` and the browser window showing that terminal downloads each path:
+  relative paths are read from the current directory, `~/` is your home, a folder or a quoted glob
+  (`'*.mp4'`) arrives as one zip. Paths that cannot be downloaded are listed and the rest still go.
+  Put it on your PATH once: `ln -s "$PWD/scripts/palmux" ~/.local/bin/palmux` (from the checkout).
 
 ### Install as an app (PWA)
 

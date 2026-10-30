@@ -2833,6 +2833,21 @@ user-facing interaction.
   `isAbsolute` on the raw string; a blank pattern is a 400, as is a relative or leading-space one.
   The one rewrite is a leading `~` or `~/`, which becomes the server's `os.homedir()` ($HOME), as a
   shell reads it, because paths are copied out of the terminal; `~user` is NOT expanded (still a 400).
+- **`palmux download <path>...`** (`server/palmux-cli.ts`, entry `palmux-cli-main.ts`, launcher
+  `scripts/palmux` run with the checkout's tsx; route `server/cli-api.ts` `POST /cli`). The CLI
+  resolves relative paths against its cwd (a `~`/`~/` path and an absolute one go as typed), posts
+  `{cmd:'download', tty, paths}` with the secret as the session cookie to the port
+  `resolveAppConfig` names, and the server sends a `download {paths}` frame on the DATA socket
+  attached to the terminal on that tty (`terminalSockets`, last attach wins); `TerminalPane` fetches
+  each path from `/download`, one after the other. **The tty is the join key, as for the restore
+  hints**: under tmux the CLI asks `tmux display-message -p '#{client_tty}'` (the palmux shell's
+  tty, verified against a live palmux shell), because an env var would be the tmux server's stale
+  copy. `registry.terminalOnTty` re-reads `ttyOf` for a record whose spawn-time capture missed:
+  zsh's startup points fd 0 at a pipe for a while (measured in `cli-api.test.ts`). Each path is
+  checked with `resolveDownload` first; the ones that fail are answered to the CLI (exit 1) and
+  the rest still go. A request with an `Origin` is refused (403): only the CLI posts here, and a
+  cross-site browser POST would carry the cookie. No terminal on the tty, or none attached: 409.
+  The old `packages/cli` + `focusTab` design is on branch `jvPalma/dev` (6db54ba), not here.
 - **Inline images** (`@xterm/addon-image` + `terminal/image-support.ts`, `settings.inlineImages`,
   DEFAULT ON): real pixels in the terminal — **SIXEL** and **iTerm2 IIP**, drawn onto the addon's own
   `xterm-image-layer` canvas above the WebGL one (verified live: `timg -ps` renders in colour with
