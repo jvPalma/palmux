@@ -4,6 +4,111 @@ All notable changes to palmux are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] — 2026-10-30
+
+Source Control with a full review pane, a desktop content area split into panes like VS Code's
+editor groups, and real detached windows you can drag tabs between. The phone layout is denser
+throughout. Each feature shipped as reviewed batches, with an independent plan review, a build, a
+fresh code inspection and a browser end-to-end pass before it went live.
+
+### Highlights
+
+- **Source Control.** Add a git project, see its Staged and Changes files, and read them in one
+  continuous diff. Comment on lines, then tap Reviewed to stage exactly what you saw.
+- **Panes.** Drag a tab to the edge of a pane to split it. Panes nest in rows and columns, each
+  with its own tab strip, and the layout survives a reload.
+- **Detached windows.** "Open in new window" moves the tab into a window of its own with the same
+  panes. Drag tabs between windows, and closing a window gives its tabs back.
+- **A denser phone.** The drawer is narrower, its rows are compact, and the review pane fits more
+  code on screen.
+
+### Added
+
+- **Source Control view.** A rail entry on desktop (Ctrl+Alt+G) and a fourth drawer segment on a
+  phone. You add projects by path; the view shows only the one you select and stays idle when
+  hidden. Files are grouped as Merge, Staged and Changes, as a folder tree by default or as a flat
+  list. Which folders you collapse is remembered per device. Reading status never takes git's
+  index lock, so it cannot get in the way of your own git, lazygit or editor.
+- **Review pane.** Choosing a file opens a review tab of its whole group, scrolled to that file.
+  It has side-by-side and unified layouts, git's four diff algorithms, word wrap, syntax colour in
+  your theme and highlighted changed words. It stays fast on thousands of changed lines and keeps
+  your place when the file changes on disk.
+- **Review keys.** Ctrl+Alt+J and Ctrl+Alt+Shift+J step through changes, Ctrl+Alt+N and
+  Ctrl+Alt+Shift+N step through files, and Ctrl+Alt+Enter marks a file reviewed.
+- **Reviewed and Unstage.** Reviewed stages the exact version the review showed and moves on to
+  the next file. In a Staged review the same action is Unstage. Both offer a 6-second Undo that
+  restores the index entry exactly, and a file that changed since you looked is never staged.
+- **Line comments.** Comment on a line or a range on either side of a diff, like a pull request
+  review. Comments are stored per project under `~/.config/palmux/.cache/`, never in the
+  repository, follow their code when the file changes, sync between windows within 2 seconds, and
+  copy out as one markdown document.
+- **Mobile review bar.** While a review is open on a phone, a bar with Files, previous file, next
+  file and Reviewed (or Unstage) replaces the extra-keys bar. Right to left still opens the drawer;
+  left to right goes back to the tab you came from.
+- **Editor groups (desktop).** The content area is a tree of panes with draggable sashes. Drag a
+  tab over a pane to see where it lands: an edge makes a new pane on that side, the centre or
+  another pane's strip moves the tab there. Split right (Ctrl+Shift+D) and Split down
+  (Ctrl+Shift+E) are in the tab menu. New tabs open in the focused pane.
+- **Detached windows (desktop).** "Open in new window" moves the tab into a window with its own
+  panes, strips and `+`. Inside it, the tab menu offers "Move to main window". Tabs drag between
+  any two palmux windows of the same browser, onto a strip, a pane's centre, a pane's edge or the
+  New-tab page. Every main window, on every device, hides tabs a detached window holds.
+- **Code font size.** Settings › Appearance › Code font size sets the review's and the editor's
+  size on this device, apart from the terminal's. The review also has a − and + stepper for it.
+
+### Changed
+
+- **No topbar on desktop.** Each pane draws its own tab strip, and the app menu is the first
+  control of the dock rail.
+- **Mobile drawer.** It now takes three quarters of the width, at most 340px. The top row is the
+  view switcher (Sessions, Explorer, Source Control, Dictation) with the Settings gear at its end;
+  the Close button is gone, and the drawer closes with the scrim, a swipe or Escape. Session rows
+  are 28px tall with 12px titles.
+- **Compact review on a phone.** A hunk has one divider row that carries its hidden-lines count,
+  its controls and its heading, and file headers are shorter. Changed-file rows in Source Control
+  are 24px with a smaller indent.
+- **Editor font size.** Once you set a code font size, the editor follows it instead of the
+  terminal's size.
+- **Rail order.** New tab, Explorer, Source Control, Dictation, Upload, Download, with Settings
+  pinned to the bottom.
+
+### Fixed
+
+- **Older windows no longer erase newer settings.** A settings save now merges into what is
+  stored, so a window still running an older build cannot drop settings it does not know, such as
+  the Match system theme slots. The 1.1.0 upgrade note asking you to reload every window first no
+  longer applies.
+- **No false "Opened somewhere else."** A slow connection that was replaced no longer delivers a
+  late takeover notice to the pane that replaced it, and moving a tab between windows never shows
+  the notice.
+- **Editor theme.** An open editor and every review repaint when the theme changes, and nothing
+  recolours when a reconnect sends the same palette.
+
+### Removed
+
+- **The fused split pill.** Split pairings, slot eject, divider swap, the rotate handle and the
+  `toggleSplitOrientation` keybinding are replaced by panes. A saved split is ignored and a fresh
+  layout starts with one pane.
+- **The old pop-out.** The single-tab pop-out window, its return bar and its Take back are
+  replaced by detached windows. `/popout/<id>` and `/<id>?popout=1` still work and open a detached
+  window holding that tab.
+
+### Upgrade notes
+
+- **Restart the server.** Source Control, detached windows and the settings merge are
+  server-side and take effect after a restart (`yarn service:update` or
+  `systemctl --user restart palmux`). A restart ends open terminals; tmux sessions survive it.
+  "Open in new window" stays hidden until the client sees a server that supports it.
+- **Panes start fresh.** The first desktop load after the upgrade opens one pane holding every
+  tab. The layout is kept per window from then on.
+- **Known limits.**
+  - A detached window left open on an idle computer keeps hiding its tabs from your phone until
+    you close it.
+  - Deleting `~/.config/palmux/.cache/` resets the comment revision, and another open window may
+    ignore new comments until it reloads.
+  - Two windows that create a terminal in the same instant can pick the same id; one of them then
+    offers Take back for a tab nobody else holds.
+
 ## [1.1.0] — 2026-10-25
 
 A full UI rework for desktop and mobile, a safer file API, and voice dictation that works with
@@ -130,6 +235,7 @@ See the GitHub release for v1.0.1.
 
 Initial release.
 
+[1.2.0]: https://github.com/jvPalma/palmux/releases/tag/v1.2.0
 [1.1.0]: https://github.com/jvPalma/palmux/releases/tag/v1.1.0
 [1.0.1]: https://github.com/jvPalma/palmux/releases/tag/v1.0.1
 [1.0.0]: https://github.com/jvPalma/palmux/releases/tag/v1.0.0

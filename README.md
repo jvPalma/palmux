@@ -3,7 +3,7 @@
 A self-hostable, GPU-accelerated web terminal. Open a browser tab, get a real shell on
 the host running the server. No multiplexer required — and when you do run `tmux`, the mobile layer is built to make it genuinely usable.
 
-<img src="docs/screenshots/hero.png" alt="palmux — your terminal, in a browser tab" width="100%">
+<img src="docs/screenshots/hero.png" alt="palmux with three panes: btop, git and a diff review with a comment" width="100%">
 
 ## What it is
 
@@ -24,46 +24,59 @@ It is coupled to no cloud and no host: anywhere Node 22 and a shell run, palmux 
 <table>
   <tr>
     <td colspan="2">
-      <img src="docs/screenshots/terminal-tabs-split.png" alt="Two terminals side by side in a split, fused into one tab" width="100%">
-      <p><b>A real terminal, with tabs that behave like a browser's.</b><br>
-      <sub>GPU-rendered xterm.js over a persistent PTY. Name and colour tabs, gather them into collapsible groups, drag to reorder, and split two side by side — the pair fuses into one tab.</sub></p>
+      <img src="docs/screenshots/source-control.png" alt="Source Control tree in the dock beside a split diff review with a line comment" width="100%">
+      <p><b>Review your changes, then stage exactly what you read.</b><br>
+      <sub>Add a git project and its Staged and Changes files open as one continuous diff, coloured by the editor's own grammars. Step through changes with the keyboard, comment on a range of lines, and tap Reviewed to stage the version on screen — with Undo.</sub></p>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/dictation.png" alt="Dictation panel with a record button and a history of transcriptions" width="62%">
-      <p><b>Voice dictation into the shell.</b><br>
-      <sub>Speak, and the cleaned-up text is typed at the prompt. Bring your own provider — Gemini, any OpenAI-compatible API such as OpenRouter, or Anthropic for the clean-up — with separate models for the audio and the clean-up pass. Every clip is kept, so a failed transcription can be retried.</sub></p>
+      <img src="docs/screenshots/editor-groups.png" alt="A tab dragged over the bottom half of a pane, previewing a split" width="100%">
+      <p><b>Panes like VS Code's editor groups.</b><br>
+      <sub>Drag a tab to the edge of a pane to split it, into rows and columns as deep as you like. Every pane has its own tab strip, sashes resize them, and the layout survives a reload.</sub></p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/settings-and-editor.png" alt="Settings panel beside a code editor" width="100%">
-      <p><b>Configuration that reaches past the browser.</b><br>
-      <sub>Themes (import any Gogh scheme), fonts, cursor, scrollback, SIXEL and iTerm2 inline images, rebindable keys, and an installable PWA. The theme can also drive your shell prompt and tmux bar through an exported palette file.</sub></p>
+      <img src="docs/screenshots/detached-windows.png" alt="The main palmux window and a detached window holding an editor and a shell" width="100%">
+      <p><b>Real detached windows.</b><br>
+      <sub>Open in new window moves a tab into a window of its own, with the same panes and strips. Drag tabs between windows; close one and its tabs come back.</sub></p>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/mobile-terminal.png" alt="palmux on a phone with the extra-keys bar" width="49%">
+      <img src="docs/screenshots/mobile-terminal.png" alt="palmux on a phone with the extra-keys bar and CTRL armed" width="49%">
       <img src="docs/screenshots/mobile-drawer.png" alt="palmux on a phone with the tab drawer open" width="49%">
       <p><b>Built for a phone first.</b><br>
       <sub>A Termux-style extra-keys bar with sticky CTRL/ALT/SHIFT, native text selection, pinch-to-zoom and swipe-to-scroll into tmux. Swipe the bar to open the drawer with every tab, group and panel.</sub></p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/new-tab-types.png" alt="New tab chooser listing terminal, editor, URL, markdown and tmux sessions" width="100%">
-      <p><b>More than terminals in a tab.</b><br>
-      <sub>Open a shell, attach straight into an existing tmux session, start a scratch editor, frame a URL or a dev server running on the host, keep bookmarks, and see which ports are listening.</sub></p>
+      <img src="docs/screenshots/mobile-scm.png" alt="Source Control file tree in the phone drawer" width="49%">
+      <img src="docs/screenshots/mobile-review.png" alt="A compact diff review on a phone with its review bar" width="49%">
+      <p><b>Code review from the phone.</b><br>
+      <sub>The same Source Control view lives in the drawer, and a review gets compact rows and a bar of its own: previous and next file, and Reviewed under your thumb.</sub></p>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
+      <img src="docs/screenshots/dictation.png" alt="Dictation panel with a record button and a history of transcriptions" width="55%">
+      <p><b>Voice dictation into the shell.</b><br>
+      <sub>Speak, and the cleaned-up text is typed at the prompt. Bring your own provider — Gemini, any OpenAI-compatible API such as OpenRouter, or Anthropic for the clean-up — with separate models for the audio and the clean-up pass. Every clip is kept, so a failed transcription can be retried.</sub></p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/settings-and-editor.png" alt="Settings panel beside a Monaco editor" width="100%">
+      <p><b>Full editing, and configuration that reaches past the browser.</b><br>
+      <sub>Monaco with syntax highlighting for 20+ languages, coloured from the terminal's palette; saves are atomic. Themes (import any Gogh scheme), fonts, a separate code size, SIXEL and iTerm2 inline images, rebindable keys, and an installable PWA. The theme can also drive your shell prompt and tmux bar.</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/new-tab-types.png" alt="New tab chooser listing terminal, editor, URL, markdown and tmux sessions" width="100%">
+      <p><b>More than terminals in a tab.</b><br>
+      <sub>Open a shell, attach straight into an existing tmux session, start a scratch editor, frame a URL or a dev server running on the host, keep bookmarks, and see which ports are listening.</sub></p>
+    </td>
+    <td width="50%" valign="top">
       <img src="docs/screenshots/explorer-markdown.png" alt="File explorer beside a rendered markdown document" width="100%">
       <p><b>A file explorer like VS Code's.</b><br>
       <sub>Pin folders as roots, open files as tabs, and read markdown rendered with task lists, collapsible blocks and syntax-highlighted code. Download a file, or a whole folder as a zip, from the tree.</sub></p>
-    </td>
-    <td width="50%" valign="top">
-      <img src="docs/screenshots/editor.png" alt="Monaco editor with syntax highlighting" width="100%">
-      <p><b>Full editing, in your theme.</b><br>
-      <sub>Monaco with syntax highlighting for 20+ languages, coloured from the same palette as the terminal. Saves are atomic, and it never creates a file you did not open.</sub></p>
     </td>
   </tr>
 </table>
