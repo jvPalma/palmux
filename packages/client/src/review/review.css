@@ -37,7 +37,8 @@
  * switches on with `data-dense` from the mobile flag): a file header, a gap and a hunk
  * header are the second table in `review-metrics.ts`, and `review-css.test.ts` holds
  * that block to it too. Code lines are not in it, so the lines keep their size and the
- * rows between them are what gives way.
+ * rows between them are what gives way. A divider is ONE 20px row there: the gap row also
+ * carries the heading of the hunk below it, because two rows per hunk cost 48px a hunk.
  */
 
 .rv-frame {
@@ -62,15 +63,27 @@
   font-size: var(--fs-2);
 }
 
-/* The compact rows of a phone: a file header 36px (the kit's small button is 32px under
-   the mobile class, and it needs a pixel either side), a gap 28px and a hunk header one
-   code line, 20px, where they are 40px, 32px and 24px. The chip is what a gap's controls
-   are drawn at, a step inside their row (`.rv-chip`). */
+/* The compact rows of a phone (owner, 2026-10-26, twice): a divider is ONE row of 20px, one
+   code line, holding the hidden-lines count, its small controls and the hunk heading; a hunk
+   header with nothing hidden above it is 20px too, and a file header 28px, where they are
+   32px + 24px and 40px. The chip is what a control of those rows is drawn at: the row's own
+   height (`.rv-chip`), since the kit's small button is 32px under the mobile class. */
 .rv-frame[data-dense='true'] {
-  --rv-head-h: calc(var(--sp-6) + var(--sp-3));
-  --rv-gap-h: calc(var(--sp-6) + var(--sp-1));
+  --rv-head-h: calc(var(--sp-6) + var(--sp-1));
+  --rv-gap-h: var(--sp-5);
   --rv-hunk-h: var(--sp-5);
-  --rv-chip-h: calc(var(--rv-gap-h) - var(--sp-1));
+  --rv-chip-h: var(--rv-gap-h);
+}
+
+/* The divider row spends its width on what it says: the count, the three controls and the
+   heading sit 4px apart and the controls' own padding is 4px, so the heading (which ends in an
+   ellipsis when the row is full) keeps as much of the hunk's range and context as fits. */
+.rv-frame[data-dense='true'] .rv-gap .rv-sticky {
+  gap: var(--sp-1);
+}
+
+.rv-gap .rv-chip {
+  padding: 0 var(--sp-1);
 }
 
 /* The file header already says what the file is (its letter and its colour) and
@@ -379,9 +392,10 @@
   font-size: var(--fs-1);
 }
 
-/* A gap's control on a phone, where the kit's small button (32px) would not fit the
-   row. It reads as that button's ghost variant: the hairline, the secondary text, a
-   press that fills. Inset focus ring: the row's own scroller would clip an outset one. */
+/* A control of a structural row on a phone, where the kit's small button (32px) would not
+   fit the row: a divider's expand controls and the file header's Reviewed and Open. It reads
+   as that button's ghost variant: the hairline, the secondary text, a press that fills.
+   Inset focus ring: the row's own scroller would clip an outset one. */
 .rv-chip {
   display: inline-flex;
   align-items: center;
@@ -406,6 +420,24 @@
   color: var(--t-text);
 }
 
+.rv-chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The kit's primary button: the accent fill under its own ink. */
+.rv-chip-primary {
+  border-color: var(--t-accent);
+  background: var(--t-accent);
+  color: var(--t-accent-ink);
+}
+
+.rv-chip-primary:active {
+  border-color: color-mix(in srgb, var(--t-accent) 72%, var(--t-text));
+  background: color-mix(in srgb, var(--t-accent) 72%, var(--t-text));
+  color: var(--t-accent-ink);
+}
+
 .rv-chip:focus-visible {
   outline: 2px solid var(--t-accent);
   outline-offset: -2px;
@@ -419,6 +451,13 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* On a divider that also carries the hunk heading, the heading takes what its count and
+   controls leave and gives way first: those stay whole, and the heading ends in an ellipsis. */
+.rv-gap .rv-hunk-text {
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 .rv-placeholder {

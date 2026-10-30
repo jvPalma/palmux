@@ -11,6 +11,7 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
+  type ComponentProps,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
@@ -42,7 +43,7 @@ import {
   type FileHeaderRow,
   type GapDirection,
   type GapRow,
-  type HunkHeaderRow,
+  type HunkLabel,
   type LineCell,
   type LineRow,
   type NoticeRow,
@@ -68,7 +69,7 @@ export interface ReviewRowProps {
   repo: string;
   wrap: boolean;
   layout: RowsLayout;
-  /** A phone: a gap's controls are drawn small enough for its shorter row. Absent is false. */
+  /** A phone: the structural rows' controls are drawn small enough for their shorter rows. Absent is false. */
   compact?: boolean | undefined;
   writes: ReviewWrites;
   comments: CommentActions;
@@ -100,7 +101,7 @@ const splitPath = (path: string): { dir: string; name: string } => {
 };
 
 /** The hunk heading as drawn: the range, then the context git found (if it sent only that). */
-const hunkText = (row: HunkHeaderRow): string => {
+const hunkText = (row: Pick<HunkLabel, 'header' | 'range'>): string => {
   if (row.header.startsWith('@@')) return row.header;
   return row.header === '' ? row.range : `${row.range} ${row.header}`;
 };
@@ -186,12 +187,45 @@ const LineBody = ({ path, side, cell, mate, model }: LineBodyProps) => {
 
 // ── Row kinds ───────────────────────────────────────────────────────────────
 
-const ReviewButton = ({ path, writes }: { path: string; writes: ReviewWrites }) => {
+/**
+ * A control of a structural row. On a phone those rows are 20px to 28px tall, below the kit's
+ * small button (32px under the mobile class), so there it is a plain button on the row's own
+ * scale (`.rv-chip`, `--rv-chip-h`) and the kit's button stays everywhere else.
+ */
+type RowButtonProps = Omit<ComponentProps<'button'>, 'className' | 'type'> & {
+  compact: boolean;
+  variant?: 'primary' | 'ghost';
+};
+
+const RowButton = ({ compact, variant, children, ...props }: RowButtonProps) =>
+  compact ? (
+    <button
+      type="button"
+      className={`rv-chip${variant === 'primary' ? ' rv-chip-primary' : ''}`}
+      {...props}
+    >
+      {children}
+    </button>
+  ) : (
+    <Button size="sm" {...(variant ? { variant } : {})} {...props}>
+      {children}
+    </Button>
+  );
+
+const ReviewButton = ({
+  path,
+  writes,
+  compact,
+}: {
+  path: string;
+  writes: ReviewWrites;
+  compact: boolean;
+}) => {
   const { blocker, busy } = writes.stateOf(path);
   const staged = writes.group === 'staged';
   return (
-    <Button
-      size="sm"
+    <RowButton
+      compact={compact}
       variant={staged ? 'ghost' : 'primary'}
       disabled={blocker !== null || busy}
       title={
@@ -206,19 +240,21 @@ const ReviewButton = ({ path, writes }: { path: string; writes: ReviewWrites }) 
     >
       <Icon name={staged ? 'undo' : 'check'} size={14} />
       {staged ? 'Unstage' : 'Reviewed'}
-    </Button>
+    </RowButton>
   );
 };
 
 const FileHeader = ({
   row,
   repo,
+  compact,
   writes,
   onToggle,
   onOpenFile,
 }: {
   row: FileHeaderRow;
   repo: string;
+  compact: boolean;
   writes: ReviewWrites;
   onToggle: (path: string) => void;
   onOpenFile: (path: string) => void;
@@ -226,6 +262,9 @@ const FileHeader = ({
   const { dir, name } = splitPath(row.path);
   const renamed = row.oldPath !== undefined && row.oldPath !== row.path;
   const label = STATUS_LABEL[row.status];
+  const openFile = pressMove(() =>
+    onOpenFile(repo === '/' ? `/${row.path}` : `${repo}/${row.path}`),
+  );
   return (
     <div className="rv-sticky rv-head-inner">
       <button
@@ -260,16 +299,29 @@ const FileHeader = ({
           <span className="rv-count-del">−{row.removed ?? 0}</span>
         </span>
       )}
-      <ReviewButton path={row.path} writes={writes} />
-      <IconButton
-        label="Open file"
-        size="sm"
-        data-testid="review-file-open"
-        disabled={row.status === 'D'}
-        {...pressMove(() => onOpenFile(repo === '/' ? `/${row.path}` : `${repo}/${row.path}`))}
-      >
-        <Icon name="external" size={14} />
-      </IconButton>
+      <ReviewButton path={row.path} writes={writes} compact={compact} />
+      {compact ? (
+        <RowButton
+          compact
+          aria-label="Open file"
+          title="Open file"
+          data-testid="review-file-open"
+          disabled={row.status === 'D'}
+          {...openFile}
+        >
+          <Icon name="external" size={14} />
+        </RowButton>
+      ) : (
+        <IconButton
+          label="Open file"
+          size="sm"
+          data-testid="review-file-open"
+          disabled={row.status === 'D'}
+          {...openFile}
+        >
+          <Icon name="external" size={14} />
+        </IconButton>
+      )}
     </div>
   );
 };
@@ -299,11 +351,7 @@ const Notice = ({
   );
 };
 
-/**
- * One of a gap's controls. The kit's small button is `--ctl-h` less a step (32px under
- * the mobile class), which does not fit the 28px row a phone gets, so there it is a plain
- * button on the row's own scale (`.rv-chip`) and the kit's button stays everywhere else.
- */
+/** One of a gap's controls: a `RowButton` that expands the gap one way. */
 const GapControl = ({
   compact,
   row,
@@ -320,23 +368,22 @@ const GapControl = ({
   testId: string;
   label?: string;
   children: ReactNode;
-}) => {
-  const props = {
-    'data-testid': testId,
-    ...(label === undefined ? {} : { 'aria-label': label }),
-    ...pressMove(() => onExpand(row.path, row, direction)),
-  };
-  return compact ? (
-    <button type="button" className="rv-chip" {...props}>
-      {children}
-    </button>
-  ) : (
-    <Button size="sm" {...props}>
-      {children}
-    </Button>
-  );
-};
+}) => (
+  <RowButton
+    compact={compact}
+    data-testid={testId}
+    {...(label === undefined ? {} : { 'aria-label': label })}
+    {...pressMove(() => onExpand(row.path, row, direction))}
+  >
+    {children}
+  </RowButton>
+);
 
+/**
+ * A divider: how many lines are hidden and the controls to show them. On a phone it also
+ * carries the heading of the hunk below it (`row.hunk`), so one row of 20px does what a gap
+ * and a hunk header did in two. The heading is the part that gives way when the row is full.
+ */
 const Gap = ({
   row,
   compact,
@@ -378,6 +425,11 @@ const Gap = ({
       <GapControl {...control} direction="all" testId="review-gap-all">
         Show all
       </GapControl>
+      {row.hunk && (
+        <span className="rv-hunk-text" data-testid="review-gap-hunk">
+          {hunkText(row.hunk)}
+        </span>
+      )}
     </>
   );
 };
@@ -667,6 +719,7 @@ export const ReviewRow = ({
         <FileHeader
           row={row}
           repo={repo}
+          compact={compact}
           writes={writes}
           onToggle={onToggle}
           onOpenFile={onOpenFile}

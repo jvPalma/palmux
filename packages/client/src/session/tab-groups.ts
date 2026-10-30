@@ -71,44 +71,12 @@ export type StripItem =
       collapsed: boolean;
       firstMemberId: string;
     }
-  | { kind: 'tab'; tab: TabMeta }
-  | { kind: 'fused'; a: TabMeta; b: TabMeta };
-
-/**
- * Which visible tabs fuse into one strip entry: for each adjacent pair in
- * VISIBLE order (collapsed members already excluded), a pairing fuses them
- * when its two ids equal that adjacent pair (in either strip order — the
- * emitted item keeps the pairing's OWN a/b slot order, not strip order).
- * Returns id-of-first-visible-member → the pairing, plus the set of second
- * members to skip when the main loop walks `tabs`.
- */
-function planFusions(
-  visibleIds: string[],
-  pairingByTab: Map<string, { a: string; b: string }>,
-): { starts: Map<string, { a: string; b: string }>; skip: Set<string> } {
-  const starts = new Map<string, { a: string; b: string }>();
-  const skip = new Set<string>();
-  let i = 0;
-  while (i < visibleIds.length - 1) {
-    const x = visibleIds[i]!;
-    const y = visibleIds[i + 1]!;
-    const p = pairingByTab.get(x);
-    if (p && ((p.a === x && p.b === y) || (p.a === y && p.b === x))) {
-      starts.set(x, p);
-      skip.add(y);
-      i += 2; // both members consumed, resume after the pair
-    } else {
-      i += 1;
-    }
-  }
-  return { starts, skip };
-}
+  | { kind: 'tab'; tab: TabMeta };
 
 export function buildStrip(
   tabs: TabMeta[],
   groups: TabGroup[],
   collapsed: ReadonlySet<string>,
-  pairings?: { a: string; b: string }[],
 ): StripItem[] {
   const byId = new Map(groups.map((g) => [g.id, g]));
   const count = new Map<string, number>();
@@ -118,15 +86,6 @@ export function buildStrip(
     count.set(t.groupId, (count.get(t.groupId) ?? 0) + 1);
     if (!firstMember.has(t.groupId)) firstMember.set(t.groupId, t.id);
   }
-
-  const tabById = new Map(tabs.map((t) => [t.id, t]));
-  const pairingByTab = new Map<string, { a: string; b: string }>();
-  for (const p of pairings ?? []) {
-    pairingByTab.set(p.a, p);
-    pairingByTab.set(p.b, p);
-  }
-  const visibleIds = tabs.filter((t) => !(t.groupId && collapsed.has(t.groupId))).map((t) => t.id);
-  const { starts: fusedStarts, skip: fusedSkip } = planFusions(visibleIds, pairingByTab);
 
   const chipDone = new Set<string>();
   const items: StripItem[] = [];
@@ -143,12 +102,6 @@ export function buildStrip(
       });
     }
     if (t.groupId && collapsed.has(t.groupId)) continue; // hidden member
-    if (fusedSkip.has(t.id)) continue; // second half, already emitted at its partner
-    const fp = fusedStarts.get(t.id);
-    if (fp) {
-      items.push({ kind: 'fused', a: tabById.get(fp.a)!, b: tabById.get(fp.b)! });
-      continue;
-    }
     items.push({ kind: 'tab', tab: t });
   }
   return items;

@@ -894,6 +894,110 @@ function revealAll(snapshot: ScmFileSnapshot, layout: RowsLayout): Row[] {
   }
 }
 
+// A phone draws ONE divider row per hunk (owner, 2026-10-26): a gap with hidden lines takes
+// the heading of the hunk below it, and the header row that heading was is not built.
+describe('merged dividers', () => {
+  // 200 lines, edits at 10 and 97: gaps 0 (start), 1 (between) and 2 (end) around two hunks.
+  const before = numbered(200);
+  const after = before.map((t, i) => (i === 9 || i === 96 ? `${t} edited` : t));
+  const snapshot = snapshotOf(before, after);
+  const types = (rows: readonly Row[]) =>
+    rows
+      .map((r) => r.type)
+      .filter((t) => t === 'gap' || t === 'hunkHeader')
+      .join(',');
+  const merged = (extra: Partial<Parameters<typeof buildFileRows>[1]> = {}) =>
+    build(snapshot, 'unified', { merged: true, ...extra });
+
+  it('is two rows per hunk by default: a gap, then the hunk header', () => {
+    expect(types(build(snapshot))).toBe('gap,hunkHeader,gap,hunkHeader,gap');
+    expect(types(build(snapshot, 'unified', { merged: false }))).toBe(
+      'gap,hunkHeader,gap,hunkHeader,gap',
+    );
+    expect(gaps(build(snapshot)).every((g) => g.hunk === undefined)).toBe(true);
+  });
+
+  it('is one row per hunk when merged: each gap carries the heading of the hunk below it', () => {
+    const rows = merged();
+    expect(types(rows)).toBe('gap,gap,gap');
+    const [start, between, end] = gaps(rows);
+    expect(start?.hunk).toMatchObject({ hunkIndex: 0, range: '@@ -7,7 +7,7 @@' });
+    expect(between?.hunk).toMatchObject({ hunkIndex: 1, range: '@@ -94,7 +94,7 @@' });
+    // The trailing gap has no hunk below it.
+    expect(end?.hunk).toBeUndefined();
+  });
+
+  it('carries git’s own heading text and the range, the same as the header row it replaces', () => {
+    const headed = snapshotOf(before, after, {
+      hunks: makeHunks(before, after).map((h, i) => ({ ...h, header: `context ${i}` })),
+    });
+    const [start, between] = gaps(build(headed, 'unified', { merged: true }));
+    const [first, second] = ofType(build(headed), 'hunkHeader');
+    for (const [row, label] of [
+      [first, start?.hunk],
+      [second, between?.hunk],
+    ] as const) {
+      expect(label).toEqual({
+        hunkIndex: row?.hunkIndex,
+        header: row?.header,
+        range: row?.range,
+      });
+    }
+  });
+
+  it('keeps the gap row’s own key, index and counts, so expanding and anchoring read it as before', () => {
+    const plain = gaps(build(snapshot));
+    const joined = gaps(merged());
+    expect(joined.map(({ hunk: _hunk, ...rest }) => rest)).toEqual(plain);
+  });
+
+  it('keeps a hunk header row for a hunk with nothing hidden above it', () => {
+    // Show all of the first gap: the first hunk has nothing hidden above it.
+    const first = must(gaps(merged())[0]);
+    const rows = merged({ reveals: expandGap({}, first, 'all') });
+    expect(types(rows)).toBe('hunkHeader,gap,gap');
+    expect(ofType(rows, 'hunkHeader').map((h) => h.hunkIndex)).toEqual([0]);
+    expect(gaps(rows).map((g) => [g.gapIndex, g.hunk?.hunkIndex])).toEqual([
+      [1, 1],
+      [2, undefined],
+    ]);
+  });
+
+  it('keeps a hunk header row for a hunk with no gap above it at all', () => {
+    // A hunk on the file's first line has no start gap.
+    const top = before.map((t, i) => (i === 0 ? `${t} edited` : t));
+    const rows = build(snapshotOf(before, top), 'unified', { merged: true });
+    expect(types(rows)).toBe('hunkHeader,gap');
+    expect(gaps(rows)[0]?.hunk).toBeUndefined();
+  });
+
+  it('puts the revealed lines where they were: above the gap, and between the heading and the hunk', () => {
+    const between = must(gaps(merged()).find((g) => g.position === 'between'));
+    const reveals = expandGap(expandGap({}, between, 'down'), between, 'up');
+    const rows = merged({ reveals });
+    const at = rows.findIndex((r) => r.type === 'gap' && r.gapIndex === 1);
+    const gap = rows[at] as GapRow;
+    expect(gap.hidden).toBe(80 - 2 * GAP_STEP);
+    // Twenty revealed lines sit above the row, twenty below it, and the hunk's own lines follow.
+    expect(rows.slice(at - GAP_STEP, at).every((r) => r.type === 'line')).toBe(true);
+    expect(rows.slice(at + 1, at + 1 + GAP_STEP).every((r) => r.type === 'line')).toBe(true);
+    expect(rows[at - GAP_STEP - 1]?.type).not.toBe('hunkHeader');
+    expect(rows.filter((r) => r.type === 'hunkHeader')).toHaveLength(0);
+  });
+
+  it('merges the same way in split layout', () => {
+    const rows = build(snapshot, 'split', { merged: true });
+    expect(types(rows)).toBe('gap,gap,gap');
+    expect(gaps(rows)[1]?.hunk?.hunkIndex).toBe(1);
+  });
+
+  it('holds every line of the file once, merged or not', () => {
+    const lineTexts = (rows: readonly Row[]) =>
+      rows.map((r) => rowLine(r)).filter((l) => l !== null);
+    expect(lineTexts(merged())).toEqual(lineTexts(build(snapshot)));
+  });
+});
+
 describe('rows over random edits', () => {
   const seeds = Array.from({ length: 150 }, (_, i) => i + 1);
 

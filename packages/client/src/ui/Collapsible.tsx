@@ -36,6 +36,11 @@ export interface CollapsibleProps {
   /** localStorage key for the per-device open state; omit to not persist. */
   storageKey?: string | undefined;
   defaultOpen?: boolean | undefined;
+  /**
+   * `xs` is a step below Button's small one (`--ctl-h` less `--sp-3`: 24px on a phone), for a
+   * header that heads rows as short as itself. Only a dense list opts in; `md` is `--ctl-h`.
+   */
+  size?: 'xs' | 'md' | undefined;
   className?: string | undefined;
   'data-testid'?: string | undefined;
 }
@@ -66,6 +71,7 @@ export function Collapsible({
   children,
   storageKey,
   defaultOpen = true,
+  size = 'md',
   className,
   'data-testid': testId = 'ui-collapsible',
 }: CollapsibleProps) {
@@ -87,7 +93,7 @@ export function Collapsible({
       data-testid={testId}
     >
       <RadixCollapsible.Trigger
-        className="ui-collapsible-trigger"
+        className={`ui-collapsible-trigger${size === 'xs' ? ' ui-collapsible-trigger-xs' : ''}`}
         data-testid={`${testId}-trigger`}
       >
         {/* The span keeps its class so the rotate rule in ui.css still applies. */}

@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import type { TabGroup, TabMeta } from '@palmux/shared';
-import type { StripItem } from './tab-groups';
 import {
   buildStrip,
   decideGroupDrop,
@@ -35,13 +34,7 @@ describe('buildStrip', () => {
     const tabs = [t('0', 'gA'), t('1', 'gA'), t('2'), t('3', 'gB')];
     const items = buildStrip(tabs, [g('gA', 'blue', 'proj'), g('gB', 'green')], new Set());
     expect(
-      items.map((i) =>
-        i.kind === 'chip'
-          ? `chip:${i.group.id}`
-          : i.kind === 'fused'
-            ? `fused:${i.a.id}-${i.b.id}`
-            : `tab:${i.tab.id}`,
-      ),
+      items.map((i) => (i.kind === 'chip' ? `chip:${i.group.id}` : `tab:${i.tab.id}`)),
     ).toEqual(['chip:gA', 'tab:0', 'tab:1', 'tab:2', 'chip:gB', 'tab:3']);
     const chipA = items[0];
     expect(chipA?.kind).toBe('chip');
@@ -53,11 +46,7 @@ describe('buildStrip', () => {
     const items = buildStrip(tabs, [g('gA')], new Set(['gA']));
     expect(
       items.map((i) =>
-        i.kind === 'chip'
-          ? `chip:${i.group.id}(${i.memberCount})`
-          : i.kind === 'fused'
-            ? `fused:${i.a.id}-${i.b.id}`
-            : `tab:${i.tab.id}`,
+        i.kind === 'chip' ? `chip:${i.group.id}(${i.memberCount})` : `tab:${i.tab.id}`,
       ),
     ).toEqual(['chip:gA(2)', 'tab:2']);
     const chip = items[0];
@@ -65,7 +54,7 @@ describe('buildStrip', () => {
     expect(chip?.kind === 'chip' ? chip.firstMemberId : '').toBe('0');
   });
 
-  it('3-arg calls (no pairings) are byte-compatible with the pre-fusion behavior', () => {
+  it('plain tabs with no groups are one tab item each', () => {
     const tabs = [t('0'), t('1'), t('2')];
     const items = buildStrip(tabs, [], new Set());
     expect(items).toEqual([
@@ -75,37 +64,25 @@ describe('buildStrip', () => {
     ]);
   });
 
-  const label = (i: StripItem): string => {
-    if (i.kind === 'chip') return `chip:${i.group.id}`;
-    if (i.kind === 'fused') return `fused:${i.a.id}-${i.b.id}`;
-    return `tab:${i.tab.id}`;
-  };
-
-  it('fuses an adjacent pairing at the first member position, slot order preserved', () => {
-    const tabs = [t('0'), t('1'), t('2'), t('3')];
-    const items = buildStrip(tabs, [], new Set(), [{ a: '1', b: '2' }]);
-    expect(items.map(label)).toEqual(['tab:0', 'fused:1-2', 'tab:3']);
-  });
-
-  it('fused a/b follow pairing SLOT order even when reversed vs. strip order', () => {
-    const tabs = [t('1'), t('2')];
-    const items = buildStrip(tabs, [], new Set(), [{ a: '2', b: '1' }]);
-    expect(items.map(label)).toEqual(['fused:2-1']);
-    const fused = items[0];
-    expect(fused?.kind === 'fused' ? fused.a.id : null).toBe('2');
-    expect(fused?.kind === 'fused' ? fused.b.id : null).toBe('1');
-  });
-
-  it('a pairing whose members are not adjacent-visible renders as two plain tabs', () => {
-    const tabs = [t('0'), t('1'), t('2')];
-    const items = buildStrip(tabs, [], new Set(), [{ a: '0', b: '2' }]);
-    expect(items.map(label)).toEqual(['tab:0', 'tab:1', 'tab:2']);
-  });
-
-  it('a fused pair inside a collapsed group stays hidden like any members', () => {
-    const tabs = [t('0', 'gA'), t('1', 'gA'), t('2')];
-    const items = buildStrip(tabs, [g('gA')], new Set(['gA']), [{ a: '0', b: '1' }]);
-    expect(items.map(label)).toEqual(['chip:gA', 'tab:2']);
+  // Each pane runs `buildStrip` over its own subset of the server's list, so a colour group that
+  // spans two panes draws a chip (and a frame) in each, counting only that pane's members.
+  it('a group spanning two panes draws a chip in each, counting its own members', () => {
+    const all = [t('0', 'gA'), t('1', 'gA'), t('2', 'gA'), t('3')];
+    const groups = [g('gA', 'blue', 'proj')];
+    const left = buildStrip(
+      all.filter((x) => x.id === '0' || x.id === '3'),
+      groups,
+      new Set(),
+    );
+    const right = buildStrip(
+      all.filter((x) => x.id === '1' || x.id === '2'),
+      groups,
+      new Set(),
+    );
+    const label = (i: (typeof left)[number]): string =>
+      i.kind === 'chip' ? `chip:${i.group.id}(${i.memberCount})` : `tab:${i.tab.id}`;
+    expect(left.map(label)).toEqual(['chip:gA(1)', 'tab:0', 'tab:3']);
+    expect(right.map(label)).toEqual(['chip:gA(2)', 'tab:1', 'tab:2']);
   });
 });
 

@@ -51,8 +51,8 @@ open action instead of failing silently.
 
 #### Scenario: Release inside a drop zone does not pop out
 
-- **WHEN** the drag ends on an internal split drop zone
-- **THEN** a split forms and no popup opens
+- **WHEN** the drag ends on a pane's edge, centre or strip
+- **THEN** the editor-group drop applies and no popup opens
 
 ### Requirement: Popped-out mode hides the shell chrome and offers a return path
 
@@ -116,18 +116,6 @@ client that just took over.
 - **WHEN** a resize arrives from a socket that has already been evicted
 - **THEN** the PTY keeps the active client's grid
 
-### Requirement: Popping out a tab in a split keeps the split
-
-Popping out a tab that occupies a split slot SHALL NOT collapse the main window's split — the main
-window keeps the slot, showing the taken-over state for a terminal. "Return to main" SHALL apply the
-strip-selection rule (Rule R) to decide the target slot.
-
-#### Scenario: Pop out a split slot's tab
-
-- **WHEN** the user pops out the tab shown in one slot of a split
-- **THEN** the main window still shows the split with that slot, and that slot shows the
-  taken-over state with Take back
-
 ### Requirement: Only the OS-focused window answers terminal queries
 
 Each window's pane SHALL keep the per-document `hasFocus()` report gate, so a DA/DSR query emitted
@@ -148,3 +136,13 @@ main window (the web cannot drag across OS windows); the return affordance is th
 - **WHEN** the user wants a popped-out tab back in the main window
 - **THEN** the documented mechanism is the "return to main" button (or closing the popup and
   clicking the tab), not a drag gesture
+
+### Requirement: Popping out a tab in a pane keeps the pane
+
+Popping out a tab SHALL NOT move it out of its pane in the main window: the pane keeps the tab and, for a terminal,
+shows the taken-over state with Take back. "Return to main" SHALL select the tab in its pane and focus that pane.
+
+#### Scenario: Pop out a pane's terminal
+
+- **WHEN** the user pops out the terminal shown in pane B of three panes
+- **THEN** the main window still has three panes, and pane B shows the taken-over state with Take back

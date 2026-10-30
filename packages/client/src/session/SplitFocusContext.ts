@@ -3,13 +3,14 @@
 // Panes register their API here; App-owned shared surfaces (the soft keyboard,
 // extra-keys bar, upload picker, and the Ctrl+Shift+C/V dispatcher) read the
 // FOCUSED pane at call time. Ref-held (not React state) so the send closures
-// stay stable and never force a re-bind. In single-slot mode there is one slot
-// ('a'), always focused; split (stage 2) adds slot 'b'. Only terminal panes
-// register — a focused non-terminal slot yields a null focused API.
+// stay stable and never force a re-bind. A slot is a pane's id (a leaf of the
+// pane grid), and any number can be registered; none is focused until App says
+// which. Only terminal panes register — a focused non-terminal slot yields a
+// null focused API.
 
 import type { Terminal } from '@xterm/xterm';
 
-export type SlotId = 'a' | 'b';
+export type SlotId = string;
 
 /** What a TerminalPane exposes to the shared input surfaces. */
 export interface PaneApi {
@@ -53,28 +54,35 @@ export interface PaneApi {
 export interface SplitRegistry {
   /** Register a pane for a slot; returns an unregister fn. */
   register(slot: SlotId, api: PaneApi): () => void;
-  focusedSlot(): SlotId;
+  /** The focused slot, or null until App sets one. */
+  focusedSlot(): SlotId | null;
   setFocusedSlot(slot: SlotId): void;
   /** The focused pane's api, or null when the focused slot has no terminal pane. */
   focusedApi(): PaneApi | null;
   apiFor(slot: SlotId): PaneApi | null;
+  /** Visit every registered pane (a font or theme refresh reaches all of them, not just one). */
+  forEachApi(fn: (api: PaneApi, slot: SlotId) => void): void;
 }
 
 export function createSplitRegistry(): SplitRegistry {
-  const panes: { a: PaneApi | null; b: PaneApi | null } = { a: null, b: null };
-  let focused: SlotId = 'a';
+  const panes = new Map<SlotId, PaneApi>();
+  let focused: SlotId | null = null;
   return {
     register(slot, api) {
-      panes[slot] = api;
+      panes.set(slot, api);
       return () => {
-        if (panes[slot] === api) panes[slot] = null;
+        if (panes.get(slot) === api) panes.delete(slot);
       };
     },
     focusedSlot: () => focused,
     setFocusedSlot: (slot) => {
       focused = slot;
     },
-    focusedApi: () => panes[focused],
-    apiFor: (slot) => panes[slot],
+    focusedApi: () => (focused === null ? null : (panes.get(focused) ?? null)),
+    apiFor: (slot) => panes.get(slot) ?? null,
+    forEachApi: (fn) => {
+      // A copy, so a visitor that registers or unregisters a pane cannot disturb the walk.
+      for (const [slot, api] of Array.from(panes)) fn(api, slot);
+    },
   };
 }

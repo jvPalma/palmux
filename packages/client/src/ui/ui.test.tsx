@@ -286,6 +286,27 @@ describe('Segmented', () => {
 });
 
 describe('Collapsible', () => {
+  it('is the control height by default and takes the extra-small step only when asked', () => {
+    const { unmount } = render(
+      <Collapsible title="Changes">
+        <p>Rows</p>
+      </Collapsible>,
+    );
+    expect(screen.getByTestId('ui-collapsible-trigger')).not.toHaveClass(
+      'ui-collapsible-trigger-xs',
+    );
+    unmount();
+    render(
+      <Collapsible title="Changes" size="xs">
+        <p>Rows</p>
+      </Collapsible>,
+    );
+    expect(screen.getByTestId('ui-collapsible-trigger')).toHaveClass(
+      'ui-collapsible-trigger',
+      'ui-collapsible-trigger-xs',
+    );
+  });
+
   it('keeps its content mounted while closed, so it has a full height to open to', () => {
     render(
       <Collapsible title="Appearance" defaultOpen={false}>
@@ -375,6 +396,31 @@ describe('Dialog', () => {
       <Dialog open={false} onOpenChange={vi.fn()} title="Kill terminal 3?" onConfirm={vi.fn()} />,
     );
     expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  // A dialog that asks nothing (a surface hosted in one) closes, and that is its one action: a
+  // confirm beside the close would be two controls that both just close it.
+  it('renders its close as the only action when it has no confirm', () => {
+    const onOpenChange = vi.fn();
+    render(
+      <Dialog open onOpenChange={onOpenChange} title="New tab" cancelLabel="Close">
+        <p>body</p>
+      </Dialog>,
+    );
+    const actions = screen.getByRole('dialog').querySelectorAll('.ui-dialog-actions button');
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toHaveTextContent('Close');
+    expect(screen.queryByTestId('ui-dialog-confirm')).toBeNull();
+    fireEvent.click(actions[0]!);
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  // It is centred by a transform, so content taller than the window would run off both edges with
+  // nothing to scroll: a New-tab chooser in a short detached window is that case.
+  it('scrolls content taller than the window instead of clipping it', () => {
+    const rule = /\.ui-dialog-content\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
+    expect(rule).toMatch(/max-height:\s*calc\(100vh - 2 \* var\(--sp-4\)\)/);
+    expect(rule).toMatch(/overflow:\s*auto/);
   });
 });
 

@@ -48,17 +48,19 @@ tabs.json's ARRAY ORDER — no schema field; new tabs append, even on a recycled
 sorts. Client drag-along-the-strip → `reorderTabs { ids }` (server applies a forgiving permutation
 — unknown ids dropped, omitted known ids appended in prior relative order — so no request can lose
 or duplicate a tab), applied optimistically in `App.doReorder` + `reorderIds` (`tab-meta.ts`).
-Strip drops ONLY reorder — the old drag-back-to-strip collapse gesture is retired (⏏ eject
-un-splits). **Closing the active tab** navigates to its LEFT strip neighbor (else right;
+A strip drop reorders a tab the pane already holds; a tab from ANOTHER pane dropped on the strip
+moves into that pane at its server-order place (`onDropFromOtherPane` → `moveTab`, no
+`reorderTabs`; see "Editor groups"). **Closing the active tab** navigates to its LEFT strip neighbor (else right;
 `neighborAfterClose` in `tab-meta.ts`, guarded by `seenTermIds` so fresh terminals are never
-yanked); with nothing left the New-tab chooser renders as an ACTUAL page (`chooserPage` — no pane
+yanked (the flat path; panes use `pending`, see "Editor groups")); with nothing left the New-tab chooser renders as an ACTUAL page (`chooserPage` — no pane
 mounts, so the dead id can't respawn), and the pane exit overlay is delayed 250ms so the Reconnect
-UI never flashes mid-navigation (it still shows in popouts). **The `[+]` chooser opens in this
+UI never flashes mid-navigation (a pane that stays still shows it). **The `[+]` chooser opens in this
 device's CONTAINER, never a floating box** — the dock's New-tab view on desktop, and on mobile a
 sub-surface of the drawer's session list (a `‹ New tab` back header over `DashboardBody`, same shape
 as the drawer's Settings). It was an anchored popover; on mobile it anchored to the `[+]` button,
 which does not exist there (no strip), and fell back to a box floating over the screen corner. Both
-hosts render `DashboardBody`, so there is one chooser. Attaching `/ws` to a
+hosts render `DashboardBody`, and so does a detached window's `Dialog` (a window with neither host,
+see "Detached windows"), so there is one chooser. Attaching `/ws` to a
 non-terminal tab is metadata-only: handshake + `sessions` broadcasts, but no `snapshot`, no binary,
 and input/resize are ignored. `sessions.ids`/`titles` are retained (derived) for back-compat, and an
 older server with no `tabs` is handled client-side by synthesizing terminal tabs from `ids`/`titles`.
@@ -80,9 +82,10 @@ the framed page is the one with no alternative — a pane cannot reach its own h
   distinction is the whole feature.** `sessionStorage` is per browsing CONTEXT; `localStorage` is per
   ORIGIN. Two palmux windows on the same host must hold different tabs — that is what having two
   windows means — and a shared key that every window READ would make the second window yank the
-  first. Tabs, groups and order stay server state and stay synchronised across every window; only the
-  SELECTION is local. A tab opened in one window therefore appears in the other's strip and does not
-  steal its view. `sessionStorage` alone has one cost, and an installed PWA pays it on every launch:
+  first. Tabs, groups and order are server state; which WINDOW shows a tab is server state too; the
+  SELECTION is local. A tab opened in one main window therefore appears in the other's strip and does
+  not steal its view (a detached window's tabs are the exception: see "Detached windows").
+  `sessionStorage` alone has one cost, and an installed PWA pays it on every launch:
   its window is a browsing context the OS ends whenever it likes (Android kills it freely), so a
   relaunch had no selection and opened the first tab. So the device's last selected tab is ALSO kept
   in `localStorage['palmux-last-tab']` (same `{id, kind}`), and `readSelection` returns the window's
@@ -101,7 +104,10 @@ the framed page is the one with no alternative — a pane cannot reach its own h
   reload as a change and copied this window's older tab over a newer choice another window had made
   since. The seed is skipped while the device holds no usable value, so the boot choice initialises
   it; `?new=1`, a legacy `/<id>` and a remembered tab that is gone (the window lands elsewhere) all
-  still write. A pop-out writes neither key. `?new=1` and a legacy `/<id>` still outrank any stored value.
+  still write. A detached window writes neither key: it keeps its selection under
+  `palmux-window-tab:<wid>` and never reads the device-wide one (see "Detached windows"). `?new=1` and
+  a legacy `/<id>` still outrank any stored value, unless another window holds that tab (the legacy id
+  then boots as a plain `/` would).
 - **The stored value carries the `kind`, not just the id.** Ids are recycled lowest-free, so a
   remembered `2` can come back as a different kind of tab entirely; a kind mismatch is treated as
   gone, for the window's own value and the device-wide one alike. Boot then falls back to the FIRST
@@ -111,14 +117,28 @@ the framed page is the one with no alternative — a pane cannot reach its own h
   "The tab I was viewing was closed from another window, move me to its neighbour" needs the
   PREVIOUS strip order, and that broadcast is the only place holding it; at boot there is no
   "before" for a dead id to be a neighbour of. Two owners for one rule would cost more than the
-  duplication it saves.
-- **Four addresses still exist, and all of them normalise to `/`** (`session/session-url.ts`
+  duplication it saves. With editor groups on (the desktop) the rule moved with the selection:
+  `reconcile` in `session/pane-grid.ts` owns it per pane, against the previous order the layout
+  hook keeps, and the controller keeps only "the last tab went, show the New-tab page" there and
+  the flat rule for the mobile layer (see "Editor groups").
+- **Mid-session, with editor groups, a kind change is a pane event.** The layout holds `{id, kind}`
+  for every tab, so a selected tab whose id comes back from the server as ANOTHER kind (editor `3`
+  is closed and another window creates terminal `3` before this window hears the close) is a dead
+  tab and a new one: the old entry leaves its pane, the pane shows its neighbour by the usual rule,
+  and the new tab joins the focused pane without becoming active. Nothing attaches a terminal to an
+  id the window held as an editor. The flat path (the mobile layer) has no layout to
+  hold the kind and keeps the old behaviour: `sessionId` stays and the pane shows whatever kind
+  the id now is.
+- **Every boot address normalises to `/` except a detached window's own** (`session/session-url.ts`
   `readBootIntent`, applied once at boot with `replaceState` so no entry is added):
-  `/popout/<id>` is the chrome-less pop-out and is the ONLY one that keeps its address, because a
-  pop-out must survive a hard reload knowing which tab it is; `/<id>` is the legacy path, still
-  honoured; `?new=1` is an INTENT, consumed exactly once (a reload must not create a second
-  terminal); `/` is the app. `GET /new` 302s to `/?new=1`. The `?new=1` consume is DEFERRED to the
-  first `sessions` broadcast and seeds `tabsRef` from it — `nextFreeId` reads the tab list, so
+  `/window/<wid>` is a detached window and is the ONLY one that keeps its address, because a detached
+  window must survive a hard reload knowing which window it is (its `?tab=` is consumed once and
+  removed); `/popout/<id>` and `/<id>?popout=1` are the retired pop-out and open a detached window
+  under a fresh id that claims tab `<id>` itself; `/<id>` is the legacy path, still honoured: it names
+  its tab but waits for the first `sessions` broadcast, like `?new=1` and a plain `/`, because another
+  window may hold that tab, and one it holds boots as a plain `/` would; `?new=1` is an INTENT,
+  consumed exactly once (a reload must not create a second terminal); `/` is the app. `GET /new` 302s
+  to `/?new=1`. The `?new=1` consume is DEFERRED to the first `sessions` broadcast and seeds `tabsRef` from it — `nextFreeId` reads the tab list, so
   creating at mount allocated from an empty list and collided with tab 0.
 - **The id space is deliberately unchanged.** Numeric lowest-free recycling stays, with all of its
   cost (a recycled id inheriting a snapshot, a stored selection matching a stranger — hence the
@@ -180,73 +200,449 @@ distinct browser rules break it in ways that all look identical (a blank frame, 
    `/ws`, i.e. reach the shell. It only ever reaches loopback ports on the palmux host, so it trusts
    what you already chose to run there. `/artifacts/*` keeps the opaque origin.
 
-**Split view (desktop-only) + de-singletonized terminal.** The terminal is NOT a singleton: each
-on-screen terminal is a `terminal/TerminalPane.tsx` owning its own xterm + data `/ws?session=<id>`
-socket + replay-suppression + DA/DSR report gate (per-document `hasFocus()`, unchanged — two split
-terminals are different PTYs, so slot focus plays no part) + fit + exit overlay (per-pane reconnect)
+**Terminal panes (desktop split) + de-singletonized terminal.** The terminal is NOT a singleton:
+each on-screen terminal is a `terminal/TerminalPane.tsx` owning its own xterm + data
+`/ws?session=<id>` socket + replay-suppression + DA/DSR report gate (per-document `hasFocus()`,
+unchanged — two split terminals are different PTYs, so pane focus plays no part) + fit + exit
+overlay (per-pane reconnect) + `useFileUpload` + gestures. `App.tsx` owns a persistent **control
+socket** (`/ws?control=1`, a tab-unbound metadata attach) carrying ALL app state
+(`sessions`/`settings`/`fonts`/`tabCreated`) and all control sends; pane data sockets ignore those
+broadcasts. Shared input surfaces (soft keyboard, extra-keys, upload picker, the hoisted
+Ctrl+Shift+C/V combo) route to the focused pane via `session/SplitFocusContext.ts` (a ref registry
+of `PaneApi`s keyed by pane id, with `forEachApi` for the font and theme refresh across every pane;
+no pane is focused until App sets one). Which panes exist, and what each holds, is "Editor groups"
+(below): a tree of panes on the desktop and in a detached window, one virtual pane while the mobile
+layer is active. **One active client per terminal (last attach wins)**:
+`pty.ts` keeps a single `attachment` (client token + `clientKey` +
+onData/onExit/onEvict); a new `attach` installs itself FIRST, then evicts the previous one (whose
+cleanup calls its own detach — the `client` identity guard stops it tearing down its successor).
+**`clientKey` is the LOGICAL client** (`&client=` on the ws URL, a per-pane uuid held in a ref so it
+survives reconnects AND Take-back): equal keys mean the same pane reconnecting after a blip, so the
+spent socket is closed QUIETLY — without it every reconnect read as a rival and the pane evicted
+itself ("opened somewhere else" with one client). An empty key never matches, so an older client
+keeps takeover semantics. The client side matters too: `ws.ts` `abandon()` nulls a replaced
+socket's handlers (and the pong watchdog nulls `onmessage` before closing), because a socket judged
+dead is often just SLOW — its late `detached` would otherwise surface on the very pane that
+replaced it. A genuinely rival evicted socket still gets `detached` (protocol) then a close; the client calls `ws.stopReconnect()` and shows the
+exit overlay as "Opened somewhere else." + **Take back**, which re-attaches and evicts the current
+owner — symmetric, and the stopReconnect is what stops the two fighting forever. `resizeClient`
+ignores a non-active client (an evicted socket can have a resize in flight), so the sole owner
+drives the grid; smallest-client-wins is GONE, as is `dropClient` (detach does it). `emptySince()`
+now tracks attach/detach rather than first-resize. **Open in new window** MOVES the tab into a
+detached window instead of mirroring it, so a terminal is never attached from two windows and this
+takeover is not the path it takes (see "Detached windows"). **Terminal input hygiene**: `terminal/mouse-frames.ts` gates SGR mouse reports in
+`TerminalPane.onData` — pure-motion frames (btn 32–63) are dropped while the document is unfocused
+and throttled latest-wins (33ms) while focused; clicks/wheel always pass (pending motion flushed
+first). Mobile swipe→wheel forwarding (`touch.ts` `drainScrollUnits`, `useMobileGestures`) emits
+**one notch per line of finger travel** (`WHEEL_CELLS_PER_NOTCH = 1`). It was 3, assuming apps
+multiply per-notch (~3, as tmux copy-mode/less do); a full-screen TUI that takes the wheel itself
+(Claude Code) scrolls ONE line per notch, so that cost a 3× under-scroll. The per-flush cap is now
+a TRAVEL limit (`MAX_WHEEL_TRAVEL_CELLS = 12`, notch count derived) so a finer notch can't make a
+flick silently lose distance — at the old 3 cells/notch, 12 cells was exactly the old 4-notch cap.
+Excess carries bounded to ≤1 further flush, and every frame anchors at the **gesture-start cell** so a swipe
+crossing a tmux pane border keeps scrolling the origin pane; local scrollback stays 1 line per
+cell-height. Fast swipes multiply finger travel up to 4× (`velocityGain`, px/ms, 1× ≤0.5 →
+4× ≥2.5) so flicks cover fling-like distance while slow drags stay precise.
 
-- `useFileUpload` + gestures. `App.tsx` owns a persistent **control socket** (`/ws?control=1`, a
-  tab-unbound metadata attach) carrying ALL app state (`sessions`/`settings`/`fonts`/`tabCreated`) and
-  all control sends; pane data sockets ignore those broadcasts. Shared input surfaces (soft keyboard,
-  extra-keys, upload picker, the hoisted Ctrl+Shift+C/V combo) route to the focused pane via
-  `session/SplitFocusContext.ts` (a ref registry). Split state (`session/useSplit.ts`) is a
-  **multi-pairing array**: each pairing is two `{tabId, kind}` slots + `row`/`column` + ratio
-  0.15–0.85 + focused, persisted to `localStorage['palmux-splits']` (`{v:2, pairings}`; the old
-  single-pairing `palmux-split` blob is parsed once as a fallback and never deleted), desktop-only
-  (forced empty while the mobile layer or a pop-out window is active). Layout is rect-driven
-  (`SplitView` geometry + `PaneHost` positions panes by rect, NEVER reparents, so iframes/editors
-  don't reload); `SplitDivider` resizes, `SplitDropZones` handles drag-to-split with a
-  claimed-half hover PREVIEW (`.split-drop-preview`).
-  **Split fusion (supersedes display scoping):** a pairing renders in the strip as ONE fused
-  pill (`buildStrip`'s `fused` items; a split glyph then two segments of min 90px, the focused one
-  raised, clicking a segment activates+focuses that member) at its first member's position — members are
-  ALWAYS strip-adjacent and share group membership (fuse-time `fuseSync` effect: one
-  `groupUpdate`-or-`reorderTabs` moves the partner next to the anchor + adopts its membership; the
-  server stays fusion-ignorant). Any number of pairings coexist (a tab in ≤1); only the ACTIVE
-  pairing (its fused button is active — the URL id is either member, focused slot drives the URL
-  via replaceState) is tiled through `SplitView`. `reconcilePairings` self-heals on every
-  broadcast: a dead/kind-recycled member, broken adjacency (external reorder), or split membership
-  dissolves ONLY that pairing (navigate to the survivor iff it was the active pairing). New tabs
-  (`[+]`/`tabCreated`) never consume a slot; slot replacement is the explicit drag-onto-slot
-  gesture (`SlotDropZones` → `slotReplace`: old tab pops out standalone, newcomer adopts); ⏏
-  un-splits (both tabs stay adjacent, the OTHER goes full-width); a fused button drags as one
-  unit (block reorder / whole-pair group join) and never lights the content drop zones. The old
-  ◧/◨ badges, `splitDisplayed`, and hidden-pairing behavior are gone. **One active client per
-  terminal (last attach wins)**: `pty.ts` keeps a single `attachment` (client token + `clientKey` +
-  onData/onExit/onEvict); a new `attach` installs itself FIRST, then evicts the previous one (whose
-  cleanup calls its own detach — the `client` identity guard stops it tearing down its successor).
-  **`clientKey` is the LOGICAL client** (`&client=` on the ws URL, a per-pane uuid held in a ref so it
-  survives reconnects AND Take-back): equal keys mean the same pane reconnecting after a blip, so the
-  spent socket is closed QUIETLY — without it every reconnect read as a rival and the pane evicted
-  itself ("opened somewhere else" with one client). An empty key never matches, so an older client
-  keeps takeover semantics. The client side matters too: `ws.ts` `abandon()` nulls a replaced
-  socket's handlers (and the pong watchdog nulls `onmessage` before closing), because a socket judged
-  dead is often just SLOW — its late `detached` would otherwise surface on the very pane that
-  replaced it. A genuinely rival evicted socket still gets `detached` (protocol) then a close; the client calls `ws.stopReconnect()` and shows the
-  exit overlay as "Opened somewhere else." + **Take back**, which re-attaches and evicts the current
-  owner — symmetric, and the stopReconnect is what stops the two fighting forever. `resizeClient`
-  ignores a non-active client (an evicted socket can have a resize in flight), so the sole owner
-  drives the grid; smallest-client-wins is GONE, as is `dropClient` (detach does it). `emptySince()`
-  now tracks attach/detach rather than first-resize. **Pop-out**: `openPopout(id)` →
-  `/popout/<id>` (a chrome-less window — it takes the session OVER rather than mirroring, since
-  the rule is uniform); return via origin-validated `postMessage` to `window.opener`. This is the
-  ONE address palmux still keeps, because a pop-out must survive a hard reload knowing which tab it
-  is, and it writes NO selection — a pop-out must never overwrite the parent window's remembered
-  tab. The server serves the SPA shell there (anchored so no static mount claims it) and Vite's own
-  history fallback covers dev; a dev-proxy entry would serve the built bundle and kill HMR. The old
-  `/<id>?popout=1` is still accepted and normalised. **Terminal input hygiene**: `terminal/mouse-frames.ts` gates SGR mouse reports in
-  `TerminalPane.onData` — pure-motion frames (btn 32–63) are dropped while the document is unfocused
-  and throttled latest-wins (33ms) while focused; clicks/wheel always pass (pending motion flushed
-  first). Mobile swipe→wheel forwarding (`touch.ts` `drainScrollUnits`, `useMobileGestures`) emits
-  **one notch per line of finger travel** (`WHEEL_CELLS_PER_NOTCH = 1`). It was 3, assuming apps
-  multiply per-notch (~3, as tmux copy-mode/less do); a full-screen TUI that takes the wheel itself
-  (Claude Code) scrolls ONE line per notch, so that cost a 3× under-scroll. The per-flush cap is now
-  a TRAVEL limit (`MAX_WHEEL_TRAVEL_CELLS = 12`, notch count derived) so a finer notch can't make a
-  flick silently lose distance — at the old 3 cells/notch, 12 cells was exactly the old 4-notch cap.
-  Excess carries bounded to ≤1 further flush, and every frame anchors at the **gesture-start cell** so a swipe
-  crossing a tmux pane border keeps scrolling the origin pane; local scrollback stays 1 line per
-  cell-height. Fast swipes multiply finger travel up to 4× (`velocityGain`, px/ms, 1× ≤0.5 →
-  4× ≥2.5) so flicks cover fling-like distance while slow drags stay precise.
+**Editor groups (desktop-only).** The content area is a tree of panes, VS Code's editor groups: a
+branch splits its space into a `row` or a `column` of children, a leaf is a pane with its own tab
+strip, and every tab is in exactly one pane. `session/pane-grid.ts` is the model, pure (no React,
+no DOM): `PaneLayout { v: 3, root, focused, nextId }`, `PaneLeaf { id, tabs: {id, kind}[], active,
+size }`, `PaneBranch { orientation, children, size }`, where `size` is a node's fraction of its
+parent's main axis and siblings sum to 1. Every operation (`splitPane`, `removeTab`, `removeLeaf`,
+`moveTab`, `activate`, `focusLeaf`, `addTab`, `resizeSash`, `layoutRects`, `reconcile`,
+`parseLayout`, `singleLeaf`) returns a new layout, and the SAME object when nothing changed,
+because a title broadcast arrives every 300 ms and must not re-render or re-save anything.
+**Two functions are ported from VS Code and carry its MIT notice in a head comment**: the
+side → sibling-or-wrap decision of `grid.ts getRelativeLocation` (in `splitPane`: a drop on a side
+whose orientation the parent already has inserts a sibling and halves the TARGET's size; any other
+side wraps the target in a new branch) and the sibling collapse of `gridview.ts removeView` (in
+`removeLeaf`: the freed size goes to the siblings in proportion, a branch left with one child is
+replaced by it, a same-orientation child is spliced into the grandparent). Nothing else is ported
+(no sizing modes, snapping, hidden views or layout priority), because VS Code's grid REPARENTS
+views on every split and merge and pulls ~12k lines of `vs/base`, while its tree algebra is small
+and pure. The libraries fail the same test or worse: dockview and FlexLayout make a panel a TAB
+(one xterm per tab, and Chromium allows ~16 WebGL contexts) and own the chrome `SessionTabs`
+already is; allotment and rc-dock reparent; react-mosaic's drag stack fights the native strip drag.
+Leaf ids are `p` + a base-36 counter kept in the layout (`nextId`) and never a tab id: the earlier
+split keyed itself by its first tab, which a swap of sides renamed.
+**Rendering is FLAT, from percent rects, and nothing is ever reparented.** `session/GroupsView.tsx`
+draws every pane's strip box, its terminal, the ONE `PaneHost`, a drop overlay per pane and a sash
+per boundary as absolutely positioned DIRECT children of one `.groups-view` (`position: absolute;
+inset: 0` in the stylesheet, so it is the positioned ancestor of all of them), at the rects
+`layoutRects` computes. The tree is never rendered as nested elements: nesting would move a
+`PaneHost` child to a new parent on every split or merge, and an iframe or a Monaco editor reloads
+when its DOM parent changes (`GroupsView.test.tsx` holds that a web node keeps its identity across
+a split beside it). A pane's body is its rect minus its strip, and the strip height is a TOKEN,
+`--group-strip-h` on `.content-area` (`calc(var(--ctl-h) + 2 * (var(--cluster-pad) + 1px) + 1px)`:
+the strip's own min-height plus the box's 1px bottom border, because every box is border-box and a
+token that left the border out squeezed the strip by 1px), so the rect maths stays percentages only
+and the offset is a CSS `calc` (`rectCss(rect, bodyOffset)`, which `PaneHost` takes as
+`bodyOffset`). `--cluster-pad` is declared on `:root` as well as on the strip, because a custom
+property resolves where it is USED and the content area is not inside a strip.
+`groups-css.test.ts` and `tab-strip-css.test.ts` hold these numbers, since happy-dom has no layout.
+With the mobile layer the token is `0px` (`.app.mobile .content-area`, and inline on the root) and no
+strip is drawn; a detached window draws strips as the main window does and has no rule of its own. One pane renders the same elements as ten: there is
+no single-pane path. While the New-tab PAGE is up only the focused pane's strip renders, with no
+body, so nothing mounts and a dead id cannot respawn.
+**One order, the server's.** A pane's strip is `tabs.filter(in this pane)` in broadcast order;
+there is no per-pane order, so a reorder, a colour group and "Close tabs to the right" mean what
+they always meant. A strip drop of a tab already in the pane goes through
+`doReorder(leafTabIds, …)`: the index is resolved against THAT pane's visible entries and mapped to
+the full order (past the pane's last entry the tab lands right after the pane's last tab, not at
+the end of a list another pane may occupy). A strip drop of a tab from ANOTHER pane is a
+membership move only (`moveTab`, no `reorderTabs`): the tab shows among the target's tabs at its
+server-order place, and the strip lights whole (`.session-tabs.drop-into`) instead of drawing an
+insertion bar that would lie. A positional cross-pane drop is a follow-up. "Close other tabs" and
+"Close tabs to the right" stay computed from the FULL order across every pane of THIS window (owner, 2026-10-27), and never
+reach a tab another window shows (see "Detached windows").
+Colour groups are per pane in how they DRAW: each strip runs `buildStrip` over its own subset, so a
+group spanning two panes draws a chip and a frame in each; membership and contiguity stay server
+rules. The collapse guard reads every pane (`useTabGroups` takes `activeIds`, `stripOf` and
+`switchTo`): collapsing a group is refused, with the existing toast, when ANY pane whose active tab
+is a member has no tab outside the group, and otherwise each such pane switches to its nearest
+outside tab first; auto-expand keys on every pane's active tab.
+**The layout is the source of truth for the selection while panes are on.** `sessionId` is a
+READING of the focused pane's active tab (`focusedActive`, in an App effect that writes
+`sessionIdRef` first and skips `null`, so the New-tab page keeps its dead id as the persist effect
+expects). Every navigation path (`showTab`, the controller's `navigate`, close-navigation,
+`openFileTab`, `openReview`) already went through `setSessionId`; with panes on, that one
+function is the choke point and calls the hook's `show({ id, kind, known })`: a tab some pane holds
+is activated THERE and that pane focused, otherwise it joins the focused pane as active. `kind` and
+`known` come from `tabsRef` (ahead of the render), and `known` is false only for a terminal this
+window just picked an id for. A `show` made before the layout exists (`?new=1`, whose terminal is
+created inside the first `sessions` handler, and a legacy `/<id>`, shown there too once both lists
+exist, unless another window holds that tab) is parked and applied as the
+selection on the first ready render. `window-selection.ts` still answers the BOOT question:
+`bootSelection` is passed only when the stored value resolves to a live tab of its kind
+(`resolveStoredSelection`, no `tabs[0]` guess) and is `null` otherwise, so a restored layout's own
+focus stands (the guess would override a valid one). Its private `isKind` omitted `review`, so a
+window on a review always reloaded onto the first tab; it uses the shared `isTabKind` now.
+**`pending` keeps a terminal this window created alive until the server lists it.** A terminal
+exists on the server only once its pane attaches, and the client picks its id (`nextFreeId`,
+excluding every id in the list AND in the layout). The layout holds that id in `pending`, so a
+broadcast that lacks it (the title debounce, an empty list that landed before the attach) does not
+drop the pane that is about to create it; an id leaves `pending` the first time a broadcast lists
+it. At boot `pending` is empty, so a saved terminal that is gone is dropped and never attached.
+**The `sessions` handler deletes every listed id from `pending` itself, synchronously**, beside the
+`tabsRef` writes: the hook forgets ids as it renders a list, but two frames handled before one
+render show it only the SECOND, so a terminal that frame one listed and frame two omitted (killed
+in between) stayed pending for ever and its pane stayed mounted, a shell the server no longer had.
+The one id it keeps is an id the layout holds as ANOTHER kind than the list states (a guessed
+terminal that is an editor): reconcile adopts the listed kind only while the id is pending, and the
+hook forgets it after the render that adopted it. **Accepted limit:** two frames batched into one
+render, where the first lists a pending id as another kind (so it is kept pending for adoption)
+and the second omits it, show the hook only the second, so the guessed terminal ref stays and the
+pane attaches and spawns a shell for that id. It needs a cross-window id collision and a kill of
+that tab inside one batch.
+**Reconcile runs on every broadcast, during render, and is idempotent.** `reconcile(layout, tabs,
+prevOrder, pending)` drops every tab that is gone or whose kind changed (ids are recycled; a
+pending id is kept and takes the kind the list states when it first appears), re-picks a pane's
+active tab by the close rule against the PREVIOUS order, removes an emptied pane (never the last),
+adds every tab no pane holds to the FOCUSED pane without making it active, and gives a pane that
+shows none of its tabs its first in server order. **A BLANK window stays blank**: one pane that is
+empty, or already showed nothing, keeps `active: null` on this and every later broadcast, so tabs
+another window creates appear in its strip and do not become its selection (a window on the
+New-tab page is not yanked off it). It is state derived DURING render and not an effect, because
+an effect commits one frame with the old layout, and a pane for a dead terminal attaches in that
+frame. `commit` and `setLive` reconcile whatever layout they are handed against the list the held
+layout agrees with, so a layout computed from a stale capture can never bring back a tab a
+broadcast removed. Reconcile never creates a tab and sends nothing. It owns per-pane
+close-navigation: closing a pane's active tab shows its LEFT neighbour in THAT pane's strip, else
+its right, and no other pane moves; an emptied pane goes and focus moves only when the pane that
+went was the focused one.
+**Persistence is per WINDOW, and there is no device copy on purpose.** The layout is
+`sessionStorage['palmux-layout']` (`PaneLayout` as JSON, written on every committed change and, for
+a sash drag, on release; a storage exception is swallowed; `parseLayout` discards anything that
+fails its shape checks, such as a tab in two panes, a stale `nextId` or an `active` outside its
+pane). A fresh window or a relaunched PWA opens ONE pane holding every tab, on the selection
+`window-selection.ts` picks. A device-wide copy would let a new window inherit N panes, and N
+terminals attached at once would EVICT the same terminals from every other open window (last
+attach wins). The price is that a relaunched PWA loses its panes: accepted for v1, and a device
+copy is the follow-up if it is reported. `palmux-splits` and `palmux-split` are never read again
+and never deleted, so a rollback to the old client still finds them. A detached window keeps its own copy under `palmux-layout:<wid>` (`useEditorGroups`' `storageKey`:
+`window.open` may have copied the opener's `sessionStorage`, so reading the main key would boot it from
+the main window's panes). The mobile
+layer neither reads nor writes the key: `useEditorGroups(false)` returns one virtual pane holding
+every tab with `active = sessionId`, whose id is the held layout's focused pane (else `p0`) so its
+terminal keeps its key when the layer flips, and an `active` that names no tab is appended as a
+terminal, which is the spawn-on-attach fallback a phone creating a terminal relies on. Turning the
+mobile layer off restores the saved layout and shows the window's selection in it; if the saved
+focused pane does not hold that tab it moves panes like any other move, and `ws.ts` `abandon()` is
+what keeps the replaced socket's late `detached` off the pane.
+**Boot gating.** `layout` is `null` until the first `sessions` broadcast has landed and been
+reconciled (`ready`), on every path, and `GroupsView` renders nothing for `null`: no pane mounts
+before then, so a saved pane for a terminal that closed since is dropped during reconcile and never
+attaches (an attach to an unknown id spawns a shell).
+**Drop regions are VS Code's** (`session/GroupDropOverlay.tsx`, one per pane while a tab drag is
+on): horizontal thirds first (the left third, the right third), then vertical thirds (top,
+bottom), and the middle cell is the centre. An edge drop creates a pane on that side of the target
+(`splitPane`) and the new pane takes focus; a centre drop or a strip drop moves the tab into the
+pane (`moveTab`). The overlay mounts only while `dragTabId` is set, which only a tab pill
+(`TAB_DND_TYPE`) sets, or while a tab from another window is over this one (`externalDrag`, see
+"Detached windows"), so an OS file drag (the upload drop), a group chip and the drawer's rows
+never show it. Its `z-index` is 40, above `.pane-host` (20) and `.newtab-page` (25), so a drag over
+an iframe still reaches it. The preview is `.group-drop-preview`, the matching half of the pane or
+the whole pane for the centre, the accent at 20% over a 2px inset ring, with no transition because
+it floats over the terminal grid. A drop that would change nothing shows no preview and is not
+cancelled: a pane's only tab on its own pane's edge or centre, since a pane cannot mirror itself
+(the old gesture spawned a fresh terminal, which is not what dropping a tab means anywhere else).
+**`dragTabId` has a fallback at the window.** A pill that unmounts mid-drag (a broadcast took its
+tab) fires no `dragend`, so a `dragend` and a `drop` listener on `window` (capture, so a handler
+that stops propagation cannot hide it) clear it. The clear WAITS one timer tick: the overlay's own
+`drop` handler reads the id, and a discrete event's update renders before the event reaches its
+target, so clearing at once would unmount the overlay under it and lose the drop (ASSUMED from
+React's scheduling, not measured in a browser; happy-dom cannot reproduce it).
+**One tab, one pane.** The same tab in two panes is a non-goal: two xterms on one PTY are two
+attachments, and the last attach wins, so the other pane would evict itself ("Opened somewhere
+else."). Opening a tab that is already open (a file or review from the dock) selects it in ITS
+pane and focuses that pane (a tab another window holds is the exception: see "Detached windows"). A new tab opens in the FOCUSED pane, or in a strip's own pane from its
+`+`, which focuses its pane first so every creation path targets "the focused pane" and none needs
+to correlate a request with its answer. A server-created kind appears either in a broadcast first
+(reconcile adds it to the focused pane, inactive) or as the `tabCreated` answer first (its
+`navigate` shows it wherever it is); if the focus moves between the request and the answer it
+opens in the pane focused when it arrives, as VS Code does. Split right and Split down (the tab
+menu, `Ctrl+Shift+D` / `Ctrl+Shift+E`, which had no handler before this) move the tab into a new
+pane; on a pane's ONLY tab they open a new terminal there instead (`splitLone`: an id from
+`nextFreeId`, held in `pending`), an explicit request for a second terminal, which dropping that
+tab on its own pane is not. `toggleSplitOrientation` is deleted, and a persisted binding for it is ignored (`loadBindings`
+iterates `ACTIONS`).
+**Sashes** (`session/Sash.tsx`): one between every two adjacent children of a branch, an 8px hit
+area (`--sp-2`) centred on the boundary around a 2px line, with pointer capture and an rAF
+throttle. Only the two siblings either side move (the old divider's rule, not VS Code's multi-view
+priority resize), each clamped to 15% of its BRANCH. The drag reports a CUMULATIVE delta as a
+fraction of the branch's main axis and App applies it to the layout captured when the drag
+started (`setLive(resizeSash(start, …))`), never to the live one, or the deltas compound per
+frame. Rects update every frame; the terminals' resize and the save happen on RELEASE only
+(`resizePaused` on every `TerminalPane` while dragging, then one refit a frame later, so each
+shell gets one SIGWINCH). While it is dragged `.content-area` takes `data-sash-drag="true"` and
+iframes lose pointer events (VS Code's `sash.ts` does the same), or the drag is lost the moment
+the pointer crosses a web pane. A broadcast that reshapes the layout mid-drag ends the drag's
+capture (later frames are ignored and the release commits what the broadcast left), and layout
+commands such as `menuSplit` are refused while a drag is on, because the next frame would undo
+them. **Accepted limit:** a sash-drag frame adopted after ANOTHER window closed a pane's active tab
+re-picks that pane's first surviving tab, not its left neighbour (rare: `adopt` has no previous
+order).
+**Focus.** Exactly one pane is focused. Clicking inside its body or on its strip (pointerdown,
+capture, primary button) focuses it, and its active tab is the window's selection. The mark is the
+focused strip's 1px bottom border turning `--t-accent` (`.group-strip.group-strip-focused`, a
+selector that names the box because the edge is declared on `.group-strip`) and NOTHING in the
+terminal: there is no ring on a pane's body, because nothing inside the grid animates or repaints
+for focus. A strip box sets no `z-index`: its context menu is `position: fixed` inside it and has
+to rise into the outer stacking context.
+
+**Detached windows (desktop-only).** "Open in new window" MOVES a tab into a window of its own, VS
+Code's auxiliary window: the editor-groups window of the main one, minus the dock. It replaced a
+pop-out that showed one tab with no strip and left the tab in the main window, where its terminal froze
+on "Opened somewhere else." (owner, 2026-10-27). The design is `openspec/changes/detached-windows/`
+(D1–D15); code is `session/session-url.ts`, `session/window-selection.ts`, `session/useEditorGroups.ts`,
+`session/workspaceController.ts`, `App.tsx`, `shared/protocol.ts` and `server.ts`.
+- **Identity is minted by the opener and lives in the address (D1).** `newWindowId()` is `w` plus 10
+  base-36 characters from `crypto.getRandomValues`, checked on both sides by the shared `isWindowId`
+  (`/^w[0-9a-z]{6,16}$/`). The window lives at `/window/<wid>` and keeps it across reloads; `?tab=<id>`
+  names the tab it was opened for and is consumed at boot. A malformed `/window/<x>` is a main window at
+  `/`. Rejected: an id in `sessionStorage` (`window.open` copies the opener's, a browser behaviour not
+  measured here, so two windows would share it) and the window NAME (not reliably readable across a
+  reload, and a dedupe key today). The server serves the SPA shell there through its not-found handler,
+  and Vite's history fallback covers dev; a dev-proxy entry for `/window` would serve the built bundle
+  and kill HMR.
+- **Ownership is a server field, in memory (D2).** `TabMeta.window` is the detached window holding the
+  tab, absent for the main one; `parseTabMeta` keeps it only when `isWindowId`. `TabRecord.window` is
+  emitted by `tabs()` and is NOT written to `tabs.json` (`persist` whitelists fields, so it cannot leak):
+  a restart releases every tab and the reclaim below takes them back, which is cheaper than a second
+  restore path for an event that already costs every terminal. It dies with the record. The owner chose
+  "every device" over a per-device rule: every main window on every device shows only tabs with no
+  `window`, so a phone's drawer stops listing a tab a desktop window holds.
+- **Two messages and two optional fields (D3).** `moveToWindow { ids, window: string | null }` sets or
+  clears `window` on each known id (unknown ids ignored, an invalid `window` rejected), broadcasts
+  `sessions` once (the broadcast is the answer, there is no ack) and touches neither order nor groups.
+  `windowClosing {}` is sent from `pagehide` and marks that socket so its close starts the short grace.
+  `createTab.window` and `&window=<wid>` on a data-socket URL make a tab born in its window:
+  `registry.get(id, { command, window })` sets `window` ONLY in the branch that creates the record for a
+  NEW id, before `listChanged()`, so no broadcast lists the tab without it and a new terminal never
+  flashes in main. A live record, and a dormant restored one that respawns, are never claimed by an
+  attach (narrower than the tmux target, which does apply to a dormant respawn): an existing tab changes
+  owner only by `moveToWindow`. `ready` carries `detachedWindows: true`.
+- **Lease and grace per window id (D4).** The server keeps `windowSockets: Map<wid, Set<WebSocket>>`;
+  only a CONTROL socket (`/ws?control=1&window=<wid>`) is the lease, a pane's data socket only claims.
+  When an id holds tabs and has no control socket, an `unref()`ed timer starts: 3 s
+  (`WINDOW_CLOSE_GRACE_MS`) if the closing socket had sent `windowClosing`, else 15 s
+  (`WINDOW_GRACE_MS`). It also starts on a `moveToWindow`, a `createTab` or a spawn-claim for an id
+  with no socket yet (a popup still loading), so a window that never loads gives its tab back. A control
+  socket for the id cancels it; when it fires, the id's tabs are released and broadcast once, and
+  `palmux: window <wid> released <n> tabs (grace|closing)` is logged (neither happens when nothing was
+  left). Any message but `ping` or another `windowClosing` after `windowClosing` un-marks the socket (a cancelled unload), so a later real
+  blip gets the full 15 s. Timers are not cleared at shutdown: a socket's close fires after
+  `terminate()` and would arm one anyway. Rejected: releasing on close at once (a reload would bounce
+  every tab through the main window) and a heartbeat message (the socket's ping/pong exists).
+- **Each window reads one filtered list; the full list stays for ids and order (D5).** App keeps
+  `tabs`/`tabsRef` (the full list) and derives `visibleTabs = visibleOf(tabs, optimisticWindow)` with a
+  `visibleTabsRef` written beside every `tabsRef` write, always as `visibleOf(tabsRef.current,
+  optimisticRef.current)`; it is `tabs` itself when nothing is hidden, so a main window with no
+  detached window renders as before. VISIBLE: `useEditorGroups`' `tabs`, every strip's `allTabs` (bulk
+  close never reaches another window), `GroupsView`'s `tabs` (`PaneHost` mounts a hidden pane for every
+  non-terminal tab in the list), the controller's close-navigation and empty-list rule,
+  `selectionFor`, `activeTab`, `leaveReview` and `useTabGroups` (collapse, Close all, Remove from group).
+  FULL: `freshTerminalId`/`nextFreeId` (a window never takes an id another window holds), `tabOrder`,
+  every reorder and drop (`doReorder`, `moveGroup`, the drawer's two, `applyDrop`) and
+  `useTabGroups`' `fullTabsRef`, which only `addToGroup` reads to build `groupUpdate.order`. Orders go
+  out FULL with the hidden tabs in place, because `forgivingOrder` appends any id a request omits at
+  the END: a filtered order would push another window's tabs to the tail on every reorder. A strip
+  reorder already mapped a pane's indices onto the full order, and the window filter is one more subset
+  under that mapping. The `pending` and `seenTermIds` loops in the `sessions` handler still iterate the
+  FULL list: if two windows pick the same lowest-free id, it is listed under the other window, reconcile
+  drops it here, and this window never stays attached to another window's shell.
+- **An optimistic move holds until the server agrees (D7).** A `sessions` frame already in flight when
+  `moveToWindow` goes out names the old owner and would flash the tab back. `optimisticWindow` (id →
+  owner) is React state, so its expiry re-renders, mirrored by `optimisticRef`, with one 2 s timer per
+  entry (`OPTIMISTIC_MOVE_MS`); every writer (`moveTabsToWindow`, the dragend path, the handler's
+  confirmation, the expiry) writes the ref and then the state. The `sessions` handler removes an entry
+  synchronously once a broadcast shows the tab with that owner, and the timer removes it otherwise (the
+  server refused or never answered, so the broadcast wins). Nothing removes one during render.
+- **Opening a window (D7).** `doPopout(id)` refuses first: a terminal this window picked an id for and
+  no broadcast lists yet is "Wait for the terminal to start", and a dirty editor asks
+  `window.confirm('<n> editor tab(s) have unsaved changes. Move and discard them?')`, because it
+  unmounts here and the new window loads the file from disk. Then `openDetached(id)` calls
+  `window.open('/window/<wid>?tab=<id>', 'palmux-<wid>', 'popup,width=1000,height=640')`; a blocked popup
+  toasts and moves nothing; only then does `moveToWindow` go out, with the hold, so the source pane
+  unmounts in the same render and BEFORE the new window attaches ("Opened somewhere else." cannot
+  appear); an unsent move (the control socket is down) closes the window it just opened. A move INTO this window (a reclaim, a drop here) never confirms, and a moved id leaves
+  `dirtyTabs` so Reload stops counting it. A `web` pane loses its in-frame history on a move: accepted.
+- **Opening a review or a file another window holds (D14).** A review `createTab` is idempotent on the
+  server, so asking for a review another window holds would answer an id this window never shows. The
+  client checks the FULL list first and MOVES the review here and shows it (it holds no unsaved state;
+  VS Code would focus it in the other window, and this is the simpler rule, one tab per window). An
+  editor FILE another window holds is NOT moved, because this window cannot see that buffer and D7's
+  confirm would be blind: it toasts "<name> is open in another window" and sends nothing.
+- **One guard against showing a hidden tab (D15).** `showTab`, `setSessionId` (the choke point) and the
+  controller's `selectTab`/`tabCreated` dispatch IGNORE an id that is in `tabsRef` but not in
+  `visibleTabsRef` (`heldElsewhere`). Without it any navigation to another window's tab resolves its
+  kind from the full list, `show` puts it in a pane, a `TerminalPane` attaches and the other window shows
+  "Opened somewhere else." It closes a `tabCreated` that answers an idempotent review create racing
+  D14, `leaveReview` and any later `selectTab`; the dispatch check also keeps a refused navigation from
+  clearing the New-tab page. `moveTabsToWindow` writes the refs BEFORE it navigates, so its own
+  navigation passes.
+- **Boot and reclaim (D13, D6).** `awaitingResolve` starts true and `sessionId` starts `''`, as for a
+  plain `/`. The first `sessions` handler writes `tabsRef` and `visibleTabsRef`, runs the reclaim, then
+  resolves from `visibleTabsRef` (`?tab=` when it resolves, else `readSelection(myWindow)`, else
+  `resolveSelection`, with NO fallback to `palmux-last-tab`, which is what a MAIN window chose) and
+  shows it; a saved layout with no remembered tab keeps the layout's own focus. The persist effect
+  writes `writeSelection(sel, myWindow)` and never `writeLastTab`. **The reclaim** runs on the first
+  `sessions` after EVERY control-socket open (`awaitingReclaimRef`, set in `onOpen`): the ids in the
+  held or saved layout (`heldTabIds()`), plus the boot `?tab=` on the FIRST open only (`firstOpenRef`,
+  so a tab later sent to main is never pulled back by a reconnect), that the list shows with no
+  `window`, go out in one `moveToWindow` for this window and into `reclaiming`. That is React state and
+  not a ref, so clearing it re-runs the self-close check; it works like `pending`, and an id leaves on
+  the next broadcast whether granted or not. An id another window holds is not claimed and drops out
+  through reconcile. It covers a reload slower than the grace, a server restart, and a legacy
+  `/popout/<id>` boot, where nobody else knows the id the window minted for itself.
+- **Chrome (D9, D11).** The root is `app detached`; `mobileActive = !detached && …` (the mobile layer
+  never applies) and `groupsEnabled = !mobileActive`. Not rendered: `DockPanel`, `.wco-titlebar`, the
+  drawer, `TabSheet`, the review bar and the extra-keys bar. Strips, sashes and drop overlays are the
+  main window's, so `--group-strip-h` keeps its value. Layout and selection keys are per window,
+  `layoutKey(wid)` (`palmux-layout:<wid>`) and `palmux-window-tab:<wid>`, and no main key is read or
+  written; with no saved layout it opens one pane holding every tab it holds, `?tab=` active. **`+` opens
+  a kit `Dialog` (`newtab-dialog`) holding `DashboardBody`**: the dock hosts the chooser in the main
+  window and this one has none, and the New-tab PAGE cannot host it because it unmounts every pane the
+  window still shows; `createTab` closes the dialog and the page stays the empty-window fallback.
+  **Shortcuts:** `openDockView` returns at once (no dock view is ever written from here),
+  `actionHandlers` leaves out `settings` and `openSourceControl` and the palette follows, `tips` and
+  `dictationHistory` are modals (the toast's "Open history" included), and Ctrl+W closes the active tab,
+  never the window. The tab menu is the command surface (owner, 2026-10-27): LAYOUT gains **Move to main
+  window** (`menu-move-main`, detached only, before Open in new window, which stays).
+- **Self-close (D10).** An effect on `visibleTabs`, `reclaiming` and `capDetached` reads the contents of `pendingTabs`
+  (the hook's mutable `Set`, in the dependency list only for the lint: its identity never changes), because every pending id leaves on a broadcast that also
+  changes `visibleTabs`. Once the window has held a tab (`seenOwnRef`), the server supports detached
+  windows and the list is empty with nothing pending or reclaiming, it sends `windowClosing` and calls
+  `window.close()`; one tick later, if `window.closed` is still false (the address was opened by hand),
+  it shows the New-tab page. The attempt spends `seenOwnRef`, so the empty lists that follow do not ask
+  the browser again. The controller returns no effect for a `sessionsBroadcast` in a detached window:
+  close-navigation is reconcile's and an empty list is self-close's. `pagehide` sends `windowClosing`; a
+  reload sends it too and comes back inside the 3 s grace, and a slower one is the reclaim's.
+- **Cross-window drag uses the drag data that already exists (D8).** `dragstart` sets `TAB_DND_TYPE`
+  (the bare id) and `effectAllowed = 'move'`; a same-origin window sees `dataTransfer.types` on
+  `dragover` and reads the id on drop. A capture `dragover` listener on `window` that sees the type with
+  no local drag live (`dragTabIdRef` null) sets `externalDrag` and restarts a 1000 ms timer
+  (`EXTERNAL_DRAG_IDLE_MS`, measured: see "Accepted risks and limits"). `GroupsView` mounts overlays when `dragTabId !== null || externalDrag`, with
+  every region live on every pane (the tab is in none, so a drop is never a no-op), and the strip
+  lights `drop-into` with no insertion bar (a foreign tab keeps its server-order place). On drop,
+  `getData` names the id: in `visibleTabsRef` it is the ordinary local drop; in the full list only,
+  `moveTabsToWindow([id], myWindow)` and, only when that returns true, `place({ id, leafId, where })`
+  parks a placement in the hook, applied in the render where the tab first appears in the layout
+  (reconcile adds it, inactive, to the focused pane; then `moveTab` + `activate` for the centre or a
+  strip, `splitPane` for an edge; a gone `leafId` falls back to the focused pane); in neither list it is
+  ignored. A window on the New-tab page renders ONE centre-only overlay over `.content-area`.
+  `externalDrag` clears on drop (one tick later, as `dragTabId`), on a `dragleave` with a null
+  `relatedTarget` and the pointer outside the viewport, and on the timer. **The source** hears
+  `dragend` in the same window-capture listener: `dropEffect === 'move'`, no local drop (`localDropRef`,
+  set by the capture `drop` listener) and not a dirty editor hold the tab as moved to `OTHER_WINDOW`
+  (`'?'`: it cannot name the receiver), so its pane unmounts before the receiver attaches, and the 2 s
+  expiry restores it if the server never moved it. The receiving drop handlers `preventDefault` on a
+  taken drop, or the drag ends as `none` and the source would read a tab handed over as one that never
+  left. **That hold is a head start, not the guarantee, because `dragend` cannot be relied on**
+  (measured 2026-10-28, Chrome 156 on Linux X11, a native XTEST pointer, two real windows, every drop
+  taken with its `drop` default-prevented and its last `dragover` at `move`): the source read `none`
+  in 27 of 49 main → detached drops and in 10 of 12 detached → main drops, and when the move's
+  broadcast is rendered first the pill is already gone, so `dragend` reaches only the detached pill
+  and never `window` (broadcast +6.5 ms, pill gone +14.6 ms, `dragend` +17.7 ms). Without the hold the
+  source pane left only on that broadcast's render while the receiver attached at once, a margin of
+  0–2 ms; delaying the source's `sessions` handling by 150 ms (a control socket slower than the data
+  socket, as two connections through a proxy can be) showed "Opened somewhere else." on 6 of 6 drops.
+  **The guarantee is the server's**: an eviction of a socket whose window (its `&window=`, absent for
+  main) no longer holds the tab (`registry.windowOf`) is `detached { moved: true }`, and the pane
+  stops reconnecting and shows nothing, because the `sessions` frame that moved the tab went out
+  before the receiver could attach and takes the pane away. If the pane is still on that tab after 2 s
+  (`MOVED_TAKEOVER_MS`, the hold's bound: the window missed the broadcast and a reclaim gave the tab
+  back), it offers Take back. A rival in the window that holds the tab gets the plain `detached`, as
+  before. It rests on one ordering, the receiver's own: its `moveToWindow` goes out on its open control
+  socket before its pane opens a NEW data socket (1.5–16 ms later, measured), so the server has the new
+  owner when the attach evicts. After the fix the same 150 ms delay showed nothing in 6 of 6.
+- **A dirty editor is no drop target (D7).** A drag cannot ask the user, and the receiver cannot see the
+  source's buffer. A dirty editor pill's `dragstart` also sets `TAB_DIRTY_DND_TYPE`
+  (`application/x-palmux-dirty`), and a receiver treats a drag carrying it, with no local drag live
+  (`getData` is hidden until the drop, so that is the only test of "foreign"), as no target on EVERY
+  surface: no overlay mounts, the strip's `onDragOver` returns without `preventDefault` (the browser
+  shows no-drop, so no `drop` ever fires), `commitDrop` returns before `onDropFromOtherPane`, and the
+  capture `dragover` listener toasts "Save the file before moving it to another window" once per entry
+  into the window (`dirtyToastRef`, cleared by the same timer). The menu route does ask.
+- **Compatibility (D12): this needs a server restart.** The client hides "Open in new window" until a
+  `ready` carries `detachedWindows`, so a client built ahead of the server opens no window that would
+  show nothing. The restart costs every live terminal (a cold start plus snapshot restore) and needs the
+  owner's OK at the time. A detached window that reconnects to an older server (a rollback) gets no flag:
+  it toasts "This server does not support detached windows", shows the New-tab page, claims nothing and
+  never self-closes. An older client on a new server drops `window` in `parseTabMeta`, shows every tab as
+  before, and its pop-out still works as the old takeover. `tabs.json` is unchanged, so a rollback
+  releases all ownership, harmlessly.
+- **Accepted risks and limits.** A live but idle detached window (a laptop left awake) hides its tabs
+  from the phone, the owner's choice; the only way to pull one back is closing that window, and a "Move
+  to this device" row in the drawer is the follow-up if it bites. A reload slower than 3 s after
+  `pagehide` flashes the tabs into main, which attaches the terminals, and the reclaim moves them back;
+  the main pane unmounts, so last-attach-wins does not fight, at the cost of one extra SIGWINCH and a
+  brief reorder. **The drag timer is MEASURED** (2026-10-28, Chrome 156 on Linux X11, a native XTEST
+  pointer, two real windows): a STILL pointer gets one `dragover` every ~352 ms (351–353, n=8; the HTML
+  spec's nominal repeat is 350 ms). The first build's 300 ms timer fired between two repeats and
+  unmounted the overlay, and the next repeat found nothing to cancel it: releases after a still hold
+  of 0, 100 and 250 ms landed, holds of 330, 350, 400, 700 and 1000 ms were all lost (0/5), and the
+  source's `dragend` read `none`. The timer is 1000 ms now. A drag that leaves the viewport is cleared
+  by its `dragleave` within ~18 ms, so the timer only bounds a drag whose end the browser never reports
+  here, where a long one costs an overlay left up for a second. The same run showed that Chromium fires only
+  `dragenter` on the element a drag has just moved onto, and that answer is the drop operation until the
+  next `dragover`, so the strip root, each pill, each chip and each pane overlay accept on `dragenter` as
+  well. **What would invalidate it:** an engine or OS whose still-pointer repeat is slower than the
+  timer; macOS, Windows and Firefox are unmeasured. A group spanning windows draws only its members in
+  each, and contiguity stays a server rule. A group CHIP
+  dragged from another window onto a strip still only reorders the block in the full order (no window
+  move): known, harmless. A foreign drag entering directly over a web pane's iframe is not seen until
+  the pointer crosses a non-iframe region (`dragover` fires in the iframe's document): accepted. A
+  duplicated detached window shares its wid: a popup has no tab strip, so the browser's Duplicate is not
+  offered, but opening `/window/<wid>` by hand in a second window shows the same tabs twice (two
+  attachments, last attach wins); not guarded. Two windows that pick the same lowest-free terminal id
+  before either hears the other's broadcast collide: the loser's spawning attach evicts the owner as a
+  plain rival (not `moved`), the loser's pane leaves on the broadcast, and the owner is left offering
+  Take back for a tab nobody else holds; not guarded (pre-existing, needs both picks inside one round
+  trip). Non-goals: dragging past the browser window's edge to
+  spawn a window (never built), detached windows on a phone, a dock in a detached window, remembering
+  detached windows across a browser restart, and a Close other tabs that reaches other windows.
 
 **Scrolling inside tmux: measured, 2026-09-08.** `scripts/measure-tmux-scroll.mjs`
 drives a real PTY with SGR wheel reports and counts what comes back. For the SAME
@@ -372,25 +768,28 @@ Source Control, Dictation and the new-tab chooser are all views of it. It is LAY
 the drawer the mobile one, `SettingsFields` is still the single field list, and the `settings`
 keybinding routes to whichever host is live. Its tests were never about the modal — they moved
 verbatim to `SettingsFields.test.tsx`.
-**A terminal pane is keyed by SLOT and by nothing else.** Its socket effect takes
-`sessionId` as a dependency precisely so a tab switch swaps the session IN PLACE
+**A terminal pane is keyed by PANE and by nothing else.** The key is the pane's id (`leaf.id`),
+minted once and stable across every layout operation except removing that pane. Its socket effect
+takes `sessionId` as a dependency precisely so a tab switch swaps the session IN PLACE
 — same xterm, same `clientKeyRef`. Adding anything tab-specific to a React key
 above it (the error boundary's key did this for a day) REMOUNTS the pane on every
 switch: a new xterm, and a fresh `clientKeyRef` uuid, which the server reads as a
 RIVAL client — so the pane evicts itself and shows "Opened somewhere else." It
 surfaces on a slow link, where the old socket is still attached when the new one
-arrives, which is why it was reported from a phone. `SplitView.test.tsx` asserts
-one mount across three sessionId changes; nothing else catches it, because it is
+arrives, which is why it was reported from a phone. `GroupsView.test.tsx` asserts
+one mount across three sessionId changes, and across a split, a merge and a move of another
+tab; nothing else catches it, because it is
 not a render error, not a type error, and the pane looks right in a screenshot.
 
 **Boundaries now cover the PANES and the STRIP too**, not just the dock's views. A
 render throw unmounts the whole React root, and outside the dock that costs every
-attached terminal and every unsaved buffer. Each terminal slot gets its own
-boundary keyed `slot:tabId` (so switching tabs also clears a stuck one), `PaneHost`
-gets one, and `SessionTabs` gets one. The boundary's `style` prop applies to the
+attached terminal and every unsaved buffer. Each terminal pane gets its own boundary
+keyed by the pane's id ALONE (a key that carried the tab id remounted the pane on every
+switch; a stuck boundary is cleared by its own "Try again"), `PaneHost` gets one, and each
+pane's `SessionTabs` gets one. The boundary's `style` prop applies to the
 FALLBACK only — a pane is placed by absolute rect, so an unpositioned fallback
 would land at 0,0 over the surviving pane, and putting a wrapper around the happy
-path would be the reparenting the split layout exists to avoid (an iframe or a
+path would be the reparenting the pane layout exists to avoid (an iframe or a
 Monaco editor reloads when its DOM parent changes).
 
 **Every swappable view is wrapped in `ui/ErrorBoundary`** (the dock body, the drawer's hosted view,
@@ -462,14 +861,13 @@ entries — they date from when the rail could be hidden and that left two ACTIO
 route at all, which the old "reopen panels with the keybinding" warning did not disclose
 because it only thought about views. The desktop topbar used to carry ⬆ Upload,
 ⬇ Download, ? Tips, ⚙ Settings and the ⬍ split-orientation toggle while the rail carried four views
-— two action bars, one above the terminal and one beside it. The topbar is now the tabs + `[+]` and,
-at its end, the app menu button, and nothing else. Upload and download became rail ACTIONS
+— two action bars, one above the terminal and one beside it. The topbar is gone (each pane draws
+its own strip and the app menu is the rail's first control, below). Upload and download became rail ACTIONS
 (`RailAction` in `DockPanel`, rendered behind a `.dock-rail-sep` below the views, no `aria-pressed` because they open
 nothing) rather than panel rows: both are one-click and a panel would make them three, and this is
 also where the mobile drawer's footer already has them. Tips became a Settings row — of the three it
-is the one nobody reaches for mid-session — and is also an app-menu item (below). The ⬍ toggle moved
-onto the SPLIT DIVIDER, which is contextual to a split the way the control is; it is `opacity: 0`
-until the divider is hovered, because it floats over the terminal.
+is the one nobody reaches for mid-session — and is also an app-menu item (below). The ⬍ toggle is
+deleted with the orientation it flipped: a pane is placed by where a tab is dropped, not rotated.
 **The rail is ordered by frequency of use**: New tab, Explorer, Source Control, Dictation, the
 separator, Upload, Download, and Settings PINNED to the bottom edge — what you open mid-session sits
 at the top, and preferences are the thing you reach for least. Source Control sits directly under
@@ -481,23 +879,28 @@ expected order from `DOCK_VIEWS` minus New tab and Settings, so the two cannot d
 Settings leaves the flow through `.dock-rail-pinned { margin-top: auto }` on its OWN button, not
 `justify-content: space-between` on the rail, which would also spread the views and the actions
 apart whenever the rail has spare height. The testids (`dock-rail-<id>`) did not move.
-**The topbar ENDS with an APP MENU, not a `palmux` wordmark.** A 28px `IconButton`
-(`aria-label="palmux menu"`, `app-menu-button`) is the topbar's LAST control: after the strip and
-`[+]`, outside the scrolling strip so it stays reachable however many pills overflow, and centred
-over the dock rail column. `.topbar .topbar-menu` takes the centre line of the rail's own 28px
-buttons; `--rail-w` (38px, on `.topbar`) is the second copy of `.dock-rail`'s flex-basis literal, the
-margin cancels the bar's right padding (the rail has none), and `App.test.tsx` fails if the two
-drift. **One explicit exception: window-controls-overlay.** An installed PWA in that display mode
-lays the topbar into the title-bar area (the `@media (display-mode: window-controls-overlay)` block
-in `index.css` sets its width to `titlebar-area-x + titlebar-area-width`), which ends where the
-native window controls begin, while the rail still runs to the viewport edge. There the menu sits
-at the END of the title-bar area, beside the native controls, and not over the rail. No WCO
-geometry is built to line it up: the owner's macOS PWA uses a normal title bar, not WCO, so the
-alignment holds where it is used. It opens `ui/DropdownMenu` — the kit's wrapper over `@radix-ui/react-dropdown-menu`, a menu
+**The app menu is the FIRST control of the dock rail, and there is no topbar.** Each pane draws
+its own tab strip (see "Editor groups") and `+` lives in each strip, so the bar that held the
+strip, `[+]` and the menu is gone. A 28px `IconButton` (`aria-label="palmux menu"`,
+`data-testid="app-menu-button"`) is the first child of `nav.dock-rail`, above `dock-rail-newtab`,
+in every display mode. The rail is already a column of 28px buttons at the window's right edge, so
+the menu needs no alignment literal: `--rail-w` and `.topbar-menu` went with the bar, and so did
+the `App.test.tsx` case that held them in step (`DockPanel.test.tsx` holds the menu as the rail's
+first control instead). `DockPanel` takes it as `menu?: { items }` and App passes its
+`appMenuItems`. **One explicit exception, window-controls-overlay.** An installed PWA in that
+display mode has the native window controls lying over the top of the window, and the topbar that
+used to be laid into the title-bar area is not there to keep them off the panes. `.wco-titlebar`, an
+empty drag region (`-webkit-app-region: drag`, `height: env(titlebar-area-height)`, full width),
+sits above `.content-row` and is `display: none` everywhere else, so the controls cover neither a
+strip nor the rail's menu. It is built from the spec's geometry and not measured in an installed
+WCO window: the owner's macOS PWA uses a normal title bar, so what holds it is the CSS test
+(`groups-css.test.ts`, with `tab-strip-css.test.ts` failing any `.topbar` rule that returns). The
+menu opens `ui/DropdownMenu` — the kit's wrapper over `@radix-ui/react-dropdown-menu`, a menu
 opened by a BUTTON the way `ContextMenu` is one opened by a right-click or a long press — and the
-dropdown is END-aligned (`align="end"`): at the window's right edge a start-aligned menu runs off the
-screen. It reuses `ContextMenuItemSpec` and the `.ui-menu`/`.ui-menu-item` classes so the two menus
-cannot drift. It adds the transform origin, which comes from
+dropdown is `align="end"` `side="left"`: the rail is at the window's right edge, so the menu
+opens leftwards into the window instead of running off its edge (the kit's `DropdownMenuProps`
+takes `side` and forwards it to Radix). It reuses `ContextMenuItemSpec` and the
+`.ui-menu`/`.ui-menu-item` classes so the two menus cannot drift. It adds the transform origin, which comes from
 `--radix-dropdown-menu-content-transform-origin` so it grows out of its trigger, and CHOICES: an item
 with `checked` is a `menuitemcheckbox`, or with a `radioGroup` one option of a `menuitemradio` set
 (adjacent items naming the group are one Radix `RadioGroup`), so a screen reader hears `aria-checked`
@@ -510,33 +913,15 @@ button would be unreachable), the group is named by the label and the value is a
 is built from the item classes the other rows use and has no sheet of its own, which is also why its two
 buttons are 30px square on a phone, beside 32px rows. The review bar's View options menu (layout, wrap,
 algorithm, code size, in a pane too narrow for the controls) is the caller that needed both. Items: Settings,
-Tips, Reload app. The wordmark was the name of the app you are already inside; the button takes its
-place (it moved from the start of the bar to the end, over the rail). The rail is always drawn on
-desktop, so the menu is a SECOND pointer route into Settings — the rail's pinned Settings button is
-the first — and not a way back from a hidden rail; Tips and Reload app are reachable here as well as
-from their own Settings rows. Settings runs ONE `openSettings` shared with the `settings`
-keybinding — the dock view on desktop, the drawer view on mobile — so the two routes cannot open
-different things. The pop-out bar is a different element and keeps its `palmux` brand text: it has no tabs and no menu.
-**Split gestures live on the divider.** The rotate handle is `opacity: 0` until
-hover or focus, and `pointer-events: none` with it: it is 20px over a 10px divider,
-so it overhangs the drag strip by 5px on each side and was measured swallowing
-clicks on the TERMINAL while invisible. It has no transition either — it floats
-over the WebGL canvas, and the motion contract is absolute about that. A stationary
-tap no longer calls `onSettle()`, which would persist the split and refit every
-attached pane for a gesture that moved nothing. Double-click (two taps within 500ms, `swapSlots`) trades the
-two panes' sides; the hover handle rotates row ↔ column. The double-tap is built from the pointer
-stream, NOT from `dblclick`: the divider is a drag handle, and `dblclick` fires after two mouseups
-whatever happened between them, so two resizes would have spent as a swap — a gesture that moved more
-than 4px is not half a double tap and also clears any pending first tap. `swapSlots` has to move
-three things together: the refs, the `focused` SLOT (it names a slot, not a tab, so leaving it would
-silently move focus and the URL to the other tab), and nothing else — the ratio stays, so the divider
-holds still and the contents cross it. It also RENAMES the pairing key, which is `a.tabId`.
-**Dragging the active tab onto its own pane is refused** (`dropSplit` returns no effects and App
-hides the edge zones for that tab): a pane cannot mirror itself, so the gesture used to spawn a
-fresh terminal, which is not what dropping a tab means anywhere else. `menuSplit` keeps the spawn —
-"Split with… (this tab)" is an explicit request for a second terminal, not a misfired drag.
+Tips, Reload app. The rail is always drawn on desktop, so the menu is a SECOND pointer route into
+Settings — the rail's pinned Settings button is the first — and not a way back from a hidden rail;
+Tips and Reload app are reachable here as well as from their own Settings rows. Settings runs ONE
+`openSettings` shared with the `settings` keybinding — the dock view on desktop, the drawer view on
+mobile — so the two routes cannot open different things. A detached window draws no rail and so has no app
+menu: its commands are the tab menu's.
 **Bulk close is Chrome's two items** — "Close other tabs" / "Close tabs to the
-right" — computed from the FULL tab order, never the visible entries: whether a
+right" — computed from the FULL order of the tabs THIS window shows (another window's are never touched),
+never the visible entries: whether a
 group happens to be collapsed on this device must not change which tabs "to the
 right" means. Both go through `closeMany`, which shares ONE kind-aware confirm with
 the group's Close all (`session/close-many.ts`): a bulk close is the only action
@@ -547,14 +932,15 @@ about to close. An item that would close nothing is not rendered.
 
 **The tab context menu is three groups with a hairline between them** (`SessionTabs.tsx`,
 `.tab-menu`): EDIT (Rename), LAYOUT (Split right, Split down, New group from this tab / Add to
-<group>, Remove from group, the colour swatches, Open in new window) and CLOSE (Close, Close other
+<group>, Remove from group, the colour swatches, Move to main window (a detached window only), Open in new
+window) and CLOSE (Close, Close other
 tabs, Close tabs to the right), and CLOSE is always last so the one destructive item is never in
 the middle of the others. Every group is non-empty — Rename, the swatches and Close always render
 — so both `tab-menu-sep` separators always have an item on each side, which a test pins even with
 every optional item absent. Every action leads with a 16px kit icon: `pencil`, `split`, the same
 `split` turned a quarter for Split down (a vertical rule between two panes becomes a horizontal
 one between two stacked panes; a transform on a static glyph, not motion), `plus`, `eject` for
-Remove from group, `external`, and `close` for all three close items. An item is `--ctl-h` (28px;
+Remove from group, `external` for both window items, and `close` for all three close items. An item is `--ctl-h` (28px;
 the task named 30px, which is off the 4px grid), `--fs-3`, `--r-2`, and items are flush — groups
 are told apart by the hairline, not by air — with the inner radius concentric inside the outer
 `--r-3` less the padding. The item rules are scoped under `.tab-menu` because the mobile
@@ -565,7 +951,7 @@ rendering above and the micro-tier entrance from the pointer corner did not chan
 still hand-positioned and `contextmenu`-only, which is why the Explorer's menu is the Radix
 `ContextMenu` instead.
 
-**Middle-click closes a tab**, plain or one half of a fused pairing; the action is on `auxclick` but
+**Middle-click closes a tab**; the action is on `auxclick` but
 the `pointerdown` guard is load-bearing, because Chrome starts its autoscroll on middle-mousedown and
 preventing it at auxclick time is already too late.
 
@@ -581,13 +967,13 @@ pill is at its minimum. The look is defined ONCE, as `--pill-*` custom propertie
 **Active is a fill and a ring, never a colour.** The active pill takes
 `color-mix(surface, text 10.5%)` (fill step 1.5 × 7%), a 1.5px ring at 60% text, full-strength text
 and weight 600. Inactive text is 85% toward mantle with no fill at rest, and hover fills only a pill
-that is NOT active (a fused pill is excluded — its segments are the hover targets). The fill clears
+that is NOT active. The fill clears
 one surface step off the strip in every built-in theme; `tab-strip-css.test.ts` checks the numbers,
 because the CSS only names a mix, and mixing the surface TOWARD the text moves it away from the
 mantle on a light theme as well as a dark one. A tab's colour is a 7px dot (`.ctab-dot`) before the
 title and nothing else — `--tab-accent` is read by the dot rule alone. Colour used to carry state (a
-fill, a tint, a top border) and a saturated member colour out-shouted the focused half of a fused
-pairing, which is how a pairing came to need four cues. The kind icon renders for non-terminal kinds
+fill, a tint, a top border) and, in the old fused split pill, a saturated member colour
+out-shouted its focused half. The kind icon renders for non-terminal kinds
 only (`kindIcon`). The active pill differs from the rest in fill, ring and text ONLY — no height,
 padding, margin or border change — or the taller active tab comes back and, on a centred strip, the
 pill shifts a pixel on every switch.
@@ -601,9 +987,9 @@ the group colour exists for would read as a plain bar.
 `min-height: calc(var(--ctl-h) + 2 * (var(--cluster-pad) + 1px))`, so creating a group does not
 nudge the terminal by the frame and its padding. It also leaves the ring room: `overflow-x: auto`
 makes overflow-y compute to `auto`, so the strip clips whatever a pill draws outside its own box.
-The topbar ends in a **1px `border-bottom` in `--t-surface`**. The old "no bottom border" rule
-existed only so the active Chrome tab could merge into the content below it, and a pill merges with
-nothing. `session/tab-strip-css.test.ts` pins the shape — happy-dom has no layout, so a grep on the
+Each pane's strip box (`.group-strip`) ends in a **1px `border-bottom` in `--t-surface`**, and the
+focused pane's turns `--t-accent`. The old Chrome-tab strip had no bottom border, only so the
+active tab could merge into the content below it, and a pill merges with nothing. `session/tab-strip-css.test.ts` pins the shape — happy-dom has no layout, so a grep on the
 stylesheet is the only cheap place to catch it — including that every strip child (pill, chip, `+`)
 carries an explicit `--ctl-h` height: the group chip once collapsed to a 12px sliver that read as a
 stray coloured line when the strip stopped stretching its children.
@@ -619,22 +1005,12 @@ inherits them, so the chip's own CSS declares no default (a default on the chip 
 inherited value and recolour every chip; the CSS test pins it). The wrapper is PRESENTATIONAL: drop
 indices, `entryIndexByPos` and `entryBefore` are still computed over the flat `strip`, chips are
 still separators rather than entries, and the chip keeps its own DnD.
-**A fused pairing is ONE pill with a glyph and a seam.** It leads with `<Icon name="split">`
-(`fused-glyph-<a>-<b>`) and holds two segments divided by a 1px seam. The glyph and the seam draw
-whether or not the pairing is active, so a pairing never reads as two ordinary tabs. Active: the
-PILL takes the ring over a transparent fill (`.ctab.fused.active`), and the FOCUSED segment
-(`.fused-seg.on`) takes the raised fill, full text and weight 600, while the other segment stays
-unfilled with inactive text. Focus is fill and weight, never a member's colour — the old 3px accent
-tip, accent icon and neutral recess went with the colour fill. Each segment shows its own dot, its
-kind icon when it is not a terminal, and its title, and keeps a 90px minimum. The pill is
-`flex: 0 0 auto` with `overflow: hidden`, so the pair shares one outer radius and the segments
-square off against the seam; hover fills only a segment that is not the focused one.
 **Empty strip space is a drop target, and the gaps are new space.** The 8px gaps and the cluster
 padding did not exist when the strip was flush, and the strip's `onDragOver` treated any target that
 was not `.ctab`/`.group-chip` as the TRAILING area: a tab dropped in a gap appended at the end, and
 a grouped one LEFT its group (`groupUpdate{removeIds}`, which `server.ts` persists).
-`gapBoundary(clientX)` now compares the pointer's x with the rects of the rendered units (`.ctab`,
-plain or fused, and `.group-chip`, in strip order): the boundary is before the first unit whose
+`gapBoundary(clientX)` now compares the pointer's x with the rects of the rendered units (`.ctab`
+and `.group-chip`, in strip order): the boundary is before the first unit whose
 CENTRE is right of the pointer, and trailing only when no unit is. A gap always clears
 `centerJoinRef` and `joinArmedIndex` — joining stays the middle third of a GROUPED pill and never
 happens by landing in space.
@@ -1039,7 +1415,7 @@ pinned on top. Picking one spawns the terminal straight inside it. Three things 
    spawns; an already-live PTY ignores it, so a reconnect cannot re-run the attach into a shell in
    use. An explicit target also BEATS (and discards) a restore snapshot: the user just said what
    this terminal is for. App holds the pending target in a map read-and-cleared by the pane as it
-   opens the socket — the pane is keyed by SLOT, so consuming at mount would bind it to the wrong
+   opens the socket — the pane is keyed by PANE, so consuming at mount would bind it to the wrong
    tab, and leaving it would let a recycled id inherit it.
 2. **Picking an attached session STEALS it** — `tmux new-session -A -D -s <name>` (`-A` =
    attach-or-create, so a session that died since the listing still opens something; `-D` = detach
@@ -1083,9 +1459,12 @@ re-tile / boot / close-nav / reconcile all `setSessionId` directly and bypass it
 KIND-AWARE confirm (names the terminal kill count, warns on dirty editor members). The mobile drawer
 (`SessionDrawer.tsx`) renders groups as tappable headers sharing the same collapse set. The drawer
 lives on the RIGHT edge and covers the full HEIGHT (still bounded by `--app-top`/`--app-height`) and
-all but a 44px scrim strip on the left (`width: calc(100% - var(--drawer-strip))`). 44px is the
-touch-target floor, and the strip hit-tests as the scrim with the keyboard up or down, so a thumb can
-always reach the terminal side to close it. The scrim is token-coloured (`--t-base` at 72%, the kit
+three quarters of the WIDTH, at most 340px (`width: min(75vw, 340px)`; owner, 2026-10-26: "too large", with a
+horizontal arrow across it, which the first pass of that day misread as height and answered with row
+heights, so the drawer did not change): 292.5px on a 390px phone, where it was 346px. The uncovered rest is
+the scrim strip, 97.5px at 390px, and `max-width: calc(100% - var(--drawer-strip))` keeps it at least
+`--drawer-strip` (44px, the touch-target floor) on any viewport. The strip hit-tests as the scrim with the
+keyboard up or down, so a thumb can always reach the terminal side to close it. The scrim is token-coloured (`--t-base` at 72%, the kit
 Dialog overlay's mix) and is inert while closed; scrim and slide run on `--mo-surface` in and the
 shorter `--mo-micro` out, and reduced motion drops both transitions. The drawer is the mobile
 container for the SAME five surfaces the desktop dock rail hosts (sessions · settings · files ·
@@ -1108,14 +1487,15 @@ exists only at the drawer's ROOT: Settings and the new-tab chooser are sub-surfa
 header is the top control there, a row above it would push the way back down the screen, and the
 switcher goes with the row — Explorer, Source Control or Dictation is one back press from Settings,
 the depth the chooser already has. **Four segments fit a 390px row with room to spare**: the row is
-329px (390 less the 44px scrim strip, the drawer's 1px border and 2 × 8px of padding), the switcher
-285px once the gear and its gap are out (241px while Close took a second button and gap), and each
-segment 68.3px (57.3px before), measured in Chromium and recomputed from the stylesheets by
-`SessionDrawer.test.tsx` because happy-dom has no layout. That is over the 44px touch floor the strip is
-held to. The drawer's `padding: 0` on a segment is room, not need: at the kit's `--sp-3` (12px a side) a
-segment needs 39px around its 15px icon, still under its 68.3px share, and the test asserts exactly
-that. The zero is headroom for a narrower phone, where the share shrinks (by the same arithmetic it
-reaches 39px at a 273px viewport); a segment's tap target is its whole box either way. The icon is the whole label: each segment's name is
+275.5px (the drawer's 292.5px less its 1px border and 2 × 8px of padding), the switcher 231.5px once the
+gear and its gap are out, and each segment 54.9px (68.3px before the drawer was narrowed, 57.3px while Close
+took a second button), measured in Chromium and recomputed from the stylesheets by
+`SessionDrawer.test.tsx` because happy-dom has no layout. That is still over the 44px touch floor. The
+drawer's `padding: 0` on a segment is room, not need: at the kit's `--sp-3` (12px a side) a segment needs
+39px around its 15px icon, still under its 54.9px share, and the test asserts exactly that. The zero is
+headroom for a narrower phone, where the share shrinks (a 320px phone's drawer is 240px and a segment 41.75px,
+under the 44px floor but over the 23px an icon needs, which the test also holds); a segment's tap target is
+its whole box either way. The icon is the whole label: each segment's name is
 clipped to a 1px box that stays in the accessibility tree, so nothing in the row can be truncated,
 and the test fails any rule in the row that clips or ellipsises. In the row the unselected icons wear `--pill-text` (the strip's inactive text),
 not the kit's `--t-subtext`, which read as disabled on the drawer's mantle; the selected segment
@@ -1150,19 +1530,20 @@ alone, inside `.drawer`, in `FilePane`'s header; 28px and 36px; `ui.css` loaded 
 pins no `--mbtn-h`.
 **Drawer lists are compact on a phone, and the lists are the only thing that is** (owner, 2026-10-26: the
 session rows were too big, in height and in text, beside the footer and the extra-keys bar, whose density he
-called right). A session row, a group header and `+ New tab` take `--drawer-row-h`, declared once on
-`.drawer` as `calc(var(--ctl-h) - var(--sp-1))` (32px on a phone, the extra-keys bar's 33px key; the drawer
-only exists in the mobile layer), instead of `--ctl-h`; a row's title is `--fs-2` (12px, the footer's size)
-where it was `--fs-3` (13px). The two halves of the 4px row gap are still inside the leaf's clip, so the pitch
-is 36px where it was 40px: seven sessions take 252px, not 280px, and the list holds 18 rows above the footer
-where it held 16 (measured in Chromium at 390x844, the top row, the footer and `+ New tab` kept). The
-group header's type is the section-title one (`--fs-1`) and was not touched. What stays `--ctl-h` is the
-rest of the drawer: the top row (the kit's Segmented and IconButton), the footer cells, the `‹` back headers
-and every kit control a hosted view draws, because the kit's heights live in `ui.css` and `scale.test.ts`
-fails a rule outside it that sizes one (so a Source Control group header, which is a kit Collapsible trigger,
-stays 36px: see "The changed-files list is compact on a phone"). `--drawer-row-h` is a custom property
-written from the two tokens, not a literal, so it is on the scale by construction and follows the device
-class; `--ctl-h` itself is declared in exactly two places and a third fails `scale.test.ts`.
+called right; and, when 32px rows looked the same to him, again). A session row, a group header and
+`+ New tab` take `--drawer-row-h`, declared once on `.drawer` as `calc(var(--ctl-h) - var(--sp-2))` (28px on a
+phone, under the extra-keys bar's 33px key; the drawer only exists in the mobile layer), instead of `--ctl-h`;
+a row's title is `--fs-2` (12px, the footer's size) where it was `--fs-3` (13px) two passes ago. The two halves
+of the 4px row gap are still inside the leaf's clip, so the pitch is 32.3px where it was 36.3px (and 40px
+before that), measured in Chromium at 390x844 with the owner's seven-row list, the top row, the footer and
+`+ New tab` kept. The group header's type is the section-title one (`--fs-1`) and was not touched. What stays
+`--ctl-h` is the rest of the drawer: the top row (the kit's Segmented and IconButton), the footer cells, the
+`‹` back headers and every kit control a hosted view draws, because the kit's heights live in `ui.css` and
+`scale.test.ts` fails a rule outside it that sizes one (a Source Control group header, a kit Collapsible
+trigger, is compact through the kit's own extra-small step instead: see "The changed-files list is compact on
+a phone"). `--drawer-row-h` is a custom property written from the two tokens, not a literal, so it is on the
+scale by construction and follows the device class; `--ctl-h` itself is declared in exactly two places and a
+third fails `scale.test.ts`.
 Two things about the switcher. **Availability is DECLARED (`hostedViews`), never inferred from
 `viewContent`**: files, Source Control and dictation have no body of their own, the host supplies
 one, and a host can only supply it for the view that is ALREADY selected — so inferring left all
@@ -1257,7 +1638,7 @@ always-visible ✕ cell are GONE; closing is the swipe-left action below.
 `.session-tabs, .drawer-sessions` (they lived on `.session-tabs` alone), unchanged in value, so the list
 cannot drift from the strip; `tab-strip-css.test.ts` and `SessionDrawer.test.tsx` read that one rule and
 the drawer's row rules restate no colour mix. `.drawer-session` takes the 1px `--pill-border`, `--r-2`,
-`--pill-text` at weight 500 and is `--drawer-row-h` tall (32px on a phone, see "Drawer lists are compact on
+`--pill-text` at weight 500 and is `--drawer-row-h` tall (28px on a phone, see "Drawer lists are compact on
 a phone"); at rest its background is the drawer's own
 `--t-mantle`, which reads as "no fill" and keeps it OPAQUE over the Close waiting behind it. The ACTIVE row
 is `--pill-fill`, the `--pill-ring`, `--t-text` and weight 600, and is never filled with the tab colour,
@@ -1376,10 +1757,9 @@ and collapsing the space with the fade lets them glide up. They are transitions,
 an interrupted change (a tab closed as its group folds) retargets. A list's FIRST fill is
 `data-enter='stagger'` (`--mo-enter` plus a capped `--mo-stagger` step per row); rows inserted later
 are `micro`, and a removal undone in time never replays the stagger. "First fill" is the first time
-the list holds anything, not the first render: on a plain `/` or `?new=1` boot the selection waits
-for the tab list, so the drawer mounts empty and fills on the first broadcast; a legacy `/<id>`
-boot names its tab first, so the drawer's first fill is the one row it draws for that `current`
-and the broadcast's other rows arrive on `micro`. The drawer is closed at boot either way, so no
+the list holds anything, not the first render: on a plain `/`, a `?new=1` or a legacy `/<id>` boot the
+selection waits for the tab list (a legacy id names its tab, but another window may hold it), so the
+drawer mounts empty and fills on the first broadcast. The drawer is closed at boot, so no
 stagger is ever seen there. The Explorer's rows use the same hook (`panes/FileTree.tsx`, where a
 delete is the common exit), and there a listing already on screen STAYS on screen while it re-reads
 — otherwise a delete's re-read of the parent would turn every sibling into a leave and a re-enter.
@@ -1394,7 +1774,7 @@ answer. The drawer NEVER blurs `#mobile-kbd` itself (blurring and re-focusing ar
 you type, open the drawer to upload a screenshot, and keep typing). While held, viewport events
 change nothing — no `--app-height` write, no refit, no resize reaching any PTY — but the hold never
 blocks the FIRST pin, because mobile mode can come back on while the drawer is still open.
-`closeDrawer()` is the ONE way out and every close path uses it (scrim, the root Close, choosing or
+`closeDrawer()` is the ONE way out and every close path uses it (scrim, Escape from inside the drawer, choosing or
 creating a tab, opening a file from the Explorer, dictation's Insert, every footer action): a path
 that skipped it would strand the terminal at the keyboard-up height. It runs the selection's release
 path — if `kbdWasUp`, re-raise FIRST (`kbdRaiseRef`), keep the keyboard-up height, and leave the
@@ -1667,10 +2047,9 @@ file never creates a second review**: `App.openReview` selects the live tab whos
 for `PENDING_REVIEW_MS`; either way the file to scroll to is parked in a ref map keyed by the url
 (read and cleared by the pane, the way the tmux target is) and `reviewOpenTick` is bumped, because a
 mounted pane has no other way to hear that its tab was chosen again for another file. The controller's
-`tabCreated` dissolve, which treats an id that collides with a split-pairing member as a stale ghost,
-is guarded to ids that are not a live tab of the expected kind and url, so the server's idempotent
-answer can never dissolve a split that holds the review (`workspaceController.test.ts` pins that a live
-review keeps the split that holds it).
+`tabCreated` only clears the New-tab page and navigates to the answered id; with editor groups the
+hook's `show` activates a tab a pane already holds where it is, so the idempotent answer never
+duplicates or moves a live review (`workspaceController.test.ts` pins the two effects).
 
 **Each group is a folder TREE by default, and the tree lists files in the review's order**
 (`scm/scm-tree.ts`; the same `SourceControlView` draws it in the dock and in the drawer). `scmTree`
@@ -1708,20 +2087,31 @@ the user's focus; `.scm-vlist` is `min(60vh, --scm-rows × --scm-row-h)`, so a m
 tall empty box (verified: 5 rows are 140px on a desktop).
 
 **The changed-files list is compact on a phone** (owner, 2026-10-26: the drawer's tree was too large, 36px
-rows and a 12px indent a level). `scm.css` states a row's metrics once, on `.scm-view`: `--scm-row-h`
-(`--ctl-h`), `--scm-indent` (`--sp-3`) and `--scm-gap` (`--sp-2`), and `:root[data-mobile='true'] .scm-view`
-restates the three for a phone as `calc(var(--ctl-h) - var(--sp-1))` (32px), `--sp-2` (8px a level) and
-`--sp-1` (4px between a row's chevron, glyph and name). The rows, the folder rows and the virtual list's
-height cap all read them, so they cannot disagree, and the desktop is exactly what it was (28px, 12px, 8px).
-The text was already the body size, `--fs-2` (12px): the contract's "13px" is `--fs-3`, so a row's text is
-unchanged and the saving is the height and the indent. A file four folders deep starts its name 16px further
-left, and the drawer's 329px row leaves room for ~30 characters after it. Measured in Chromium at
-390x844 with the owner's tree (30 staged files, every folder open): rows 32px (were 36px), 18 rows fully on
-screen above the footer (were 16). **One thing is not compact, on purpose: the three group headers** (Merge
-Changes, Staged Changes, Changes) are the kit's Collapsible trigger, `--ctl-h` (36px on a phone), and a
-consumer cannot size it: `scale.test.ts` fails any stylesheet but `ui.css` that sizes a kit control, and
-`--ctl-h` may not be redeclared in a subtree. Compacting them is a kit change (a dense Collapsible), so it
-is left as a follow-up rather than done by a rule the guard exists to refuse.
+rows and a 12px indent a level; and, when 32px rows looked the same to him, "needs to be compact" again).
+`scm.css` states a row's metrics once, on `.scm-view`: `--scm-row-h` (`--ctl-h`), `--scm-indent` (`--sp-3`)
+and `--scm-gap` (`--sp-2`), and `:root[data-mobile='true'] .scm-view` restates the three for a phone as
+`calc(var(--ctl-h) - var(--sp-3))` (24px), `--sp-2` (8px a level) and `--sp-1` (4px between a row's chevron,
+glyph and name). The rows, the folder rows and the virtual list's height cap all read them, so they cannot
+disagree, and the desktop is exactly what it was (28px, 12px, 8px). **There is no gap between rows**: a row
+and a folder row declare no margin, the plain list is an unstyled box and the virtual one only caps its
+height, so the pitch is the row's height (a test holds that). The text was already the body size, `--fs-2`
+(12px), so a row's text is unchanged and the saving is the height and the indent. A file four folders deep
+starts its name 16px further left than at 12px a level, and the drawer's 275.5px row (390px, three quarters
+of it, less the border and padding) leaves room for ~27 characters after it. Measured in Chromium at 390x844
+with a 102-row tree (89 changed files, every folder open): rows 24px (were 32px, and 36px before that), 25
+rows fully on screen above the footer (were 18). **The three group headers** (Merge Changes, Staged Changes,
+Changes) are the kit's Collapsible trigger, which a consumer cannot size: `scale.test.ts` fails any
+stylesheet but `ui.css` that sizes a kit control, and `--ctl-h` may not be redeclared in a subtree. So the KIT
+has the step: `Collapsible` takes `size="xs"` (`.ui-collapsible-trigger-xs`, `calc(var(--ctl-h) - var(--sp-3))`,
+one step below the small one Button and IconButton have), and `GroupSection` asks for it only in the mobile
+layer, through `useMobileLayer` (`review/review-density.ts`, the `data-mobile` flag the review's compact rows
+read). On a phone a header is 24px, the rows' own height; on a desktop it stays `--ctl-h` (28px), which is the
+rows' height there. The view has to KNOW, unlike the rows, because a kit control's height is a class the kit
+owns, never a property a consumer sets. **The guard learned the step**: `scale.test.ts`'s `boxOf` is the table
+of kit steps (`-sm` is `--ctl-h` less 4px, `.ui-seg-item` less 6px), and `-xs` is `--ctl-h` less 12px (24px on
+a phone, 16px on a desktop where nothing opts in). That one line is the only edit to the guard; without it a
+new kit step cannot exist, and the alternative was sizing a kit control from `scm.css`, which is what the guard
+is there to stop. An earlier build opted into `size="sm"` (32px, the small step), which is gone.
 
 **The review pane is a flat array of rows on one `VirtualList`** (`review/ReviewPane.tsx`; what it
 keeps that is not React state is `review-model.ts`, and React sees a version number and the rows).
@@ -1755,11 +2145,12 @@ taller than it was sized overlaps the next, and no type error says so. They are 
 28px on a desktop and 36px on a phone, because this geometry is a number JavaScript must know. Nothing
 in the pane animates: it is the busiest surface in the app, and a transition on a row is work per frame.
 
-**On a phone the structural rows are shorter, as a second exact table** (owner, 2026-10-26: "too much lost
-space", with the gap rows marked). `COMPACT_ROW_METRICS` is `ROW_METRICS` with a file header of 36px (40), a
-gap of 28px (32) and a hunk header of 20px, one code line (24); a code line, a notice and an error row are
-what they were, so the code keeps its size and the rows between code lines are what gave way. It is chosen by
-`HeightContext.compact`, which the pane takes from `useCompactReview()` (`review-density.ts`): the same
+**On a phone the structural rows are shorter, as a second exact table, and a hunk has ONE divider row**
+(owner, 2026-10-26: "too much lost space" with the gap rows marked, and "more compact" again when 28px + 20px
+rows looked the same to him). `COMPACT_ROW_METRICS` is `ROW_METRICS` with a file header of 28px (40), a gap of
+20px (32) and a hunk header of 20px (24), one code line each; a code line, a notice and an error row are what
+they were, so the code keeps its size and the rows between code lines are what gave way. It is chosen by
+`HeightContext.compact`, which the pane takes from `useMobileLayer()` (`review-density.ts`): the same
 `data-mobile` flag on `:root` that raises `--ctl-h`, read through `useSyncExternalStore` over one
 `MutationObserver` on that attribute, so a change of the mobile mode while a review is open takes effect at
 once. It keys on the device class and NOT on the pane's width (as `review-layout.ts` does for the layout),
@@ -1768,17 +2159,35 @@ because a phone held sideways has a wide pane and still has little height. The p
 `--rv-hunk-h` and `--rv-chip-h` from the scale; `review-css.test.ts` resolves that block and holds it equal to
 `COMPACT_ROW_METRICS` the way it holds the first block to `ROW_METRICS`, and `review-metrics.test.ts` and
 `ReviewPane.test.tsx` hold the sums (each row starts where the one above ends; landing and stepping put a
-file's header exactly at the top with the shorter rows). Measured values are not keyed by it: it changes only
-fixed heights. **A gap's controls are plain `.rv-chip` buttons on a phone**, 24px tall inside the 28px row,
-because the kit's small button is `--ctl-h` less a step, 32px, which does not fit it, and the kit's sizes may
-not be restated outside `ui.css`; on a desktop they are the kit's Buttons still. The chip reads as the ghost
-variant (hairline, secondary text, a press that fills) with an inset focus ring, and keeps its test ids and
-accessible names. The file header stays one row, 36px around the kit's 32px small buttons, and the state word
-beside the counts ("Modified") is hidden by CSS there (the letter keeps it as its `title`, and
-`.rv-current` above the list names the file): it was what truncated the path to eleven characters. On a
-390x844 phone with the owner's `keybindings.ts` review: gap rows 28px (32), hunk headers 20px (24), the file
-header 36px (40), the review bar 37px (45), so the list is 734px tall (726) and shows 26 code lines in full
-(25), and the room gained also pulls one wrapped line (two rows tall) into view.
+file's header exactly at the top with the shorter rows). Measured heights are not keyed by it: it changes
+fixed heights and which rows exist, never a wrapped row's measure.
+**The divider is merged in the MODEL, not hidden in CSS.** A hunk used to be two rows, a gap ("27 hidden lines
+↑20 Show all", 28px) and a hunk header ("@@ -28,6 +28,7 @@ context", 20px), 48px a hunk. `RowsOptions.merged`
+(`rows.ts`) makes the gap row with hidden lines carry the heading of the hunk below it (`GapRow.hunk`, a
+`HunkLabel`: the hunk's number, git's heading and the range) and does not build the header row it replaces.
+So a divider is one row, 20px, in the order count, controls, heading, and the heading is the part that gives
+way (`flex: 1 1 0; min-width: 0` and an ellipsis); the count and the controls stay whole. A hunk with nothing
+hidden above it (the file's first line, or its gap fully revealed) has no gap row to ride on and keeps its own
+20px header row; the trailing gap has no hunk below it and is the count and controls alone. The row keeps the
+gap's key, `gapIndex` and counts, so expanding, anchoring and landing read it as before, and the revealed
+lines keep their order (above the row, between the heading and the hunk's own lines). `ReviewModel.getRows(layout,
+merged)` takes the merge as an argument like the layout (a state change would notify subscribers mid-render),
+keeps the last answer for a caller that names none, and keys each file's cached rows by it; the pane asks with
+`compact`. The desktop keeps two rows, the kit's buttons and 40px headers. **A control of a structural row is a
+plain `.rv-chip` button on a phone** (`RowButton` in `ReviewRow.tsx`; the gap's three controls, and the file
+header's Reviewed/Unstage and Open file), `--rv-chip-h` tall, which is the divider's own 20px, because the
+kit's small button is `--ctl-h` less a step, 32px, and fits neither the 20px divider nor the 28px header, and
+the kit's sizes may not be restated outside `ui.css`; on a desktop they are the kit's Buttons still. The chip
+reads as the ghost variant (hairline, secondary text, a press that fills; the primary one wears the accent
+under its ink like the kit's primary button) with an inset focus ring, and keeps its test ids, accessible names
+(Open file is icon-only and carries `aria-label`), `disabled` and `title`; on the divider it pads 4px a side and
+the row's parts sit 4px apart, so the heading keeps the room. The state word beside the counts ("Modified") is
+hidden by CSS on a phone (the letter keeps it as its `title`, and `.rv-current` above the list names the
+file): it was what truncated the path to eleven characters. Measured in Chromium at 390x844 with a seven-hunk
+`keybindings.ts` review (the same list height, 734px): each divider 20px (was 48px, a 28px gap and a 20px hunk
+header), the file header 28px (36px), the review bar 37px, lines fully on screen 23 (21). The heading is what
+the owner pays for: with all three controls on the row about twenty characters of it fit at 390px, which is
+the hunk's range and the first word of its context.
 
 **The code size is the DEVICE'S, apart from the terminal's, and a code line is the only height that moves**
 (`codeFontSize: number | null` in `settings.ts`). The terminal font is a pinch away on a phone, and a diff
@@ -1968,8 +2377,8 @@ a review of a project removed from `scmRepos` is a notice ("Project removed") an
 the project is added back. Focusing a review makes its project active, in an App effect keyed on the
 focused tab and its repo and NOTHING else, so choosing another project in the dock while the review stays
 focused is not undone by the next tab broadcast (the review is then paused until it is focused again); a
-removed project is never made active, and in a split only the focused slot drives it because `sessionId`
-follows focus. Reviewed, Unstage and comments are gated on the review being the written one, because the
+removed project is never made active, and with several panes only the focused pane drives it, because
+`sessionId` is the focused pane's active tab. Reviewed, Unstage and comments are gated on the review being the written one, because the
 comments store holds the active project's comments only: a comment saved from a paused review would land
 in the other project.
 
@@ -2737,7 +3146,7 @@ null once the process is gone, so nothing after the exit could find it.
   ALWAYS reloads. The row shows the server build the client last saw.
   **Both routes to it go through `guardedReload`** (App.tsx): the row in BOTH Settings hosts (dock
   and drawer), via the `onReloadApp` prop (a host that passes nothing falls back to the bare
-  `reloadApp`), and the topbar app menu's Reload app. `reloadApp` reloads unconditionally, and an
+  `reloadApp`), and the rail's app menu's Reload app. `reloadApp` reloads unconditionally, and an
   editor whose save was refused keeps its text only in the buffer; `dirtyRef` is the one place that
   knows, so a bare reload destroyed it without a word. It counts dirty tabs of `kind === 'editor'`
   and asks `window.confirm('<n> editor tabs have unsaved changes. Reload and discard them?')`

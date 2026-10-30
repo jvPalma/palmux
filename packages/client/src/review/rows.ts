@@ -97,6 +97,9 @@ export interface HunkHeaderRow extends RowBase {
   range: string;
 }
 
+/** What a hunk header says: its number, git's heading and the range built from the hunk's own numbers. */
+export type HunkLabel = Pick<HunkHeaderRow, 'hunkIndex' | 'header' | 'range'>;
+
 export interface GapRow extends RowBase {
   type: 'gap';
   gapIndex: number;
@@ -109,6 +112,12 @@ export interface GapRow extends RowBase {
   canUp: boolean;
   /** Lines can be revealed below the hunk above the gap. */
   canDown: boolean;
+  /**
+   * The heading of the hunk this gap sits directly above, on a divider that carries both
+   * (`RowsOptions.merged`): the row that would have been the hunk header is not built.
+   * Absent on the trailing gap, which has no hunk below it, and on every gap otherwise.
+   */
+  hunk?: HunkLabel;
 }
 
 /** One side's cell of a line. `no` is the line number on `side`. */
@@ -206,6 +215,12 @@ export interface FileModel {
 
 export interface RowsOptions {
   layout: RowsLayout;
+  /**
+   * One divider row per hunk instead of two: a gap with hidden lines takes the heading of
+   * the hunk below it (`GapRow.hunk`), and only a hunk with nothing hidden above it keeps
+   * a header row of its own. A phone's rows, where height is what there is least of.
+   */
+  merged?: boolean;
   collapsed?: boolean;
   reveals?: GapReveals;
   lineHeight?: number;
@@ -560,19 +575,23 @@ function hunkBodyRows(snapshot: ScmFileSnapshot, path: string, options: RowsOpti
   const rows: Row[] = [];
   hunks.forEach((hunk, hunkIndex) => {
     const plan = planGap(hunks, hunkIndex, newLines.length, options.reveals);
-    if (plan) {
-      rows.push(...revealedRows(path, plan, 0, plan.prev, options.layout, sides));
-      const gap = gapRow(path, plan);
-      if (gap) rows.push(gap);
-    }
-    rows.push({
-      type: 'hunkHeader',
-      key: `${path}|hunk:${hunkIndex}`,
-      path,
+    const label: HunkLabel = {
       hunkIndex,
       header: hunk.header,
       range: `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`,
-    });
+    };
+    let labelled = false;
+    if (plan) {
+      rows.push(...revealedRows(path, plan, 0, plan.prev, options.layout, sides));
+      const gap = gapRow(path, plan);
+      if (gap) {
+        labelled = options.merged === true;
+        rows.push(labelled ? { ...gap, hunk: label } : gap);
+      }
+    }
+    if (!labelled) {
+      rows.push({ type: 'hunkHeader', key: `${path}|hunk:${hunkIndex}`, path, ...label });
+    }
     if (plan) {
       rows.push(
         ...revealedRows(path, plan, plan.size - plan.next, plan.next, options.layout, sides),

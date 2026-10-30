@@ -258,12 +258,18 @@ describe('the compact rows are the same numbers in the CSS and in review-metrics
     for (const [name, value] of dense) expect(value, name).not.toMatch(/\d\s*px\b/);
   });
 
-  it('holds a gap and a hunk header to 28px, and the chips a step inside the gap row', () => {
-    expect(dim('--rv-gap-h')).toBeLessThanOrEqual(28);
-    expect(dim('--rv-hunk-h')).toBeLessThanOrEqual(28);
+  it('holds a divider (a gap and a hunk header) to 20px, one code line, and a file header to 28px', () => {
+    expect(dim('--rv-gap-h')).toBeLessThanOrEqual(20);
+    expect(dim('--rv-hunk-h')).toBeLessThanOrEqual(20);
     expect(dim('--rv-hunk-h')).toBe(dim('--rv-line-h'));
-    expect(dim('--rv-chip-h')).toBe(dim('--rv-gap-h') - scale.get('--sp-1')!);
-    expect(dim('--rv-chip-h')).toBeLessThan(dim('--rv-gap-h'));
+    expect(dim('--rv-gap-h')).toBe(dim('--rv-line-h'));
+    expect(dim('--rv-head-h')).toBeLessThanOrEqual(28);
+  });
+
+  it('draws a chip as tall as the divider row it sits in, which fits the file header too', () => {
+    expect(dim('--rv-chip-h')).toBe(dim('--rv-gap-h'));
+    // The header's own box is the row less its two 1px borders, and a chip fits inside it.
+    expect(dim('--rv-chip-h')).toBeLessThanOrEqual(dim('--rv-head-h') - 2);
   });
 
   it('draws a gap control from the chip height, which is not a kit control', () => {
@@ -277,16 +283,43 @@ describe('the compact rows are the same numbers in the CSS and in review-metrics
     expect(block('.rv-chip:focus-visible').get('outline-offset')).toBe('-2px');
   });
 
-  it('leaves the file header’s controls (the kit’s 32px small buttons) room in 36px', () => {
-    expect(COMPACT_ROW_METRICS.header).toBeGreaterThanOrEqual(32 + 2);
+  it('draws the file header’s controls as chips too: the kit’s 32px small buttons do not fit 28px', () => {
+    // Which is why the header takes `.rv-chip` on a phone (ReviewRow), as the gap does.
+    expect(COMPACT_ROW_METRICS.header).toBeLessThan(32);
+    expect(COMPACT_ROW_METRICS.header).toBeGreaterThanOrEqual(COMPACT_ROW_METRICS.gap + 2 + 2);
   });
 
-  it('hides the state word beside the counts on a phone, and nothing else in the header', () => {
+  it('paints the primary chip as the kit’s primary button, from tokens', () => {
+    const primary = block('.rv-chip-primary');
+    expect(primary.get('background')).toBe('var(--t-accent)');
+    expect(primary.get('color')).toBe('var(--t-accent-ink)');
+    expect(primary.get('border-color')).toBe('var(--t-accent)');
+    expect(block('.rv-chip:disabled').get('opacity')).toBe('0.5');
+  });
+
+  it('hides the state word beside the counts on a phone, and tightens the divider, nothing else', () => {
     expect(block(`${DENSE} .rv-state`).get('display')).toBe('none');
-    const hidden = [...root.nodes].filter(
-      (node) => node.type === 'rule' && node.selector.startsWith(DENSE) && node.selector !== DENSE,
-    );
-    expect(hidden).toHaveLength(1);
+    const others = [...root.nodes]
+      .filter(
+        (node) =>
+          node.type === 'rule' && node.selector.startsWith(DENSE) && node.selector !== DENSE,
+      )
+      .map((node) => (node.type === 'rule' ? node.selector.replace(/\s+/g, ' ') : ''))
+      .toSorted();
+    expect(others).toEqual([`${DENSE} .rv-gap .rv-sticky`, `${DENSE} .rv-state`]);
+    // The divider's parts sit one step apart and the controls pad one step: the heading gets the rest.
+    expect(block(`${DENSE} .rv-gap .rv-sticky`).get('gap')).toBe('var(--sp-1)');
+    expect(block('.rv-gap .rv-chip').get('padding')).toBe('0 var(--sp-1)');
+  });
+
+  it('lets the heading on a divider take what its count and controls leave, and end in an ellipsis', () => {
+    const text = block('.rv-gap .rv-hunk-text');
+    expect(text.get('flex')).toBe('1 1 0');
+    expect(text.get('min-width')).toBe('0');
+    const own = block('.rv-hunk-text');
+    expect(own.get('overflow')).toBe('hidden');
+    expect(own.get('text-overflow')).toBe('ellipsis');
+    expect(own.get('white-space')).toBe('nowrap');
   });
 });
 

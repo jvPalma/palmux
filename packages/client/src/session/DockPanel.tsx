@@ -15,13 +15,18 @@
 //     and App pauses the PTY resize across the toggle (see `resizeBusy`).
 //   * render on mobile — there the drawer is the container, and there is no rail.
 //
+// The app menu is the rail's FIRST control, in every display mode: the topbar that used to end
+// in it is gone (each pane draws its own tab strip), and the rail is the one column of chrome
+// every desktop window has. The rail is at the window's right edge, so the menu opens to the
+// left of its button.
+//
 // The rail is ALWAYS drawn on desktop. It used to be a per-device preference
 // (`sidebarRail`), which left a hidden rail with no pointer route to Explorer,
 // Dictation, Upload and Download; the option is gone and the stored value, which
 // old settings files still carry, is ignored.
 
 import type { ReactNode } from 'react';
-import { ErrorBoundary } from '../ui';
+import { DropdownMenu, ErrorBoundary, IconButton, type DropdownMenuItemSpec } from '../ui';
 import { Icon } from '../ui/icons';
 import './dock.css';
 
@@ -119,6 +124,8 @@ export interface DockPanelProps {
   onView: (view: DockView | null) => void;
   /** Rail buttons that run an action rather than opening a view. */
   actions?: RailAction[] | undefined;
+  /** The app menu, drawn as the rail's first control. Omitted: no button. */
+  menu?: { items: DropdownMenuItemSpec[] } | undefined;
   /** Extra control rendered in the header, before the close button. */
   headerExtra?: ReactNode;
   children?: ReactNode;
@@ -126,7 +133,7 @@ export interface DockPanelProps {
 
 const titleOf = (view: DockView): string => DOCK_VIEWS.find((v) => v.id === view)?.label ?? 'Panel';
 
-export function DockPanel({ view, onView, actions, headerExtra, children }: DockPanelProps) {
+export function DockPanel({ view, onView, actions, menu, headerExtra, children }: DockPanelProps) {
   const railButton = (v: { id: DockView; label: string }) => (
     <button
       key={v.id}
@@ -171,6 +178,13 @@ export function DockPanel({ view, onView, actions, headerExtra, children }: Dock
         </aside>
       )}
       <nav className="dock-rail" data-testid="dock-rail" aria-label="Panels">
+        {menu && (
+          <DropdownMenu items={menu.items} testidPrefix="app-menu" align="end" side="left">
+            <IconButton label="palmux menu" data-testid="app-menu-button">
+              <Icon name="menu" size={16} />
+            </IconButton>
+          </DropdownMenu>
+        )}
         {FLOW_VIEWS.map(railButton)}
         {actions && actions.length > 0 && (
           <>

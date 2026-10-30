@@ -3,7 +3,7 @@
    so opening it narrows the terminal instead of covering it. That is the whole
    reason it exists — a modal hides the text you are reading while you change the
    setting. The cost is that every visible terminal resizes, which is handled in
-   App/SplitView by pausing the PTY resize for the duration of the transition.
+   App/GroupsView by pausing the PTY resize for the duration of the transition.
 
    Its own stylesheet rather than a block in index.css: index.css is 2000 lines
    that every feature has to edit, and that shared file is what makes parallel

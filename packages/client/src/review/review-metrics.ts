@@ -40,16 +40,18 @@ export const ROW_METRICS = {
 export type RowMetrics = Record<keyof typeof ROW_METRICS, number>;
 
 /**
- * The same rows on a phone, where height is the scarce thing: a gap (its text and three
- * small controls) is 28px and a hunk header one code line, 20px, where they were 32px and
- * 24px, and a file header is 36px, the kit's small button (32px under the mobile class)
- * and a pixel either side. A line is what it always was, so the code keeps its size and
- * the rows between code lines are what gives way. Everything not listed is unchanged.
+ * The same rows on a phone, where height is the scarce thing (owner, 2026-10-26, twice): a
+ * divider is ONE row of 20px, one code line, that carries a hunk's hidden-lines count, its
+ * small expand controls and its heading (`RowsOptions.merged`), where a gap and a hunk header
+ * were two rows of 32px and 24px; a hunk with nothing hidden above it has just the header,
+ * 20px as well. A file header is 28px (a chip and a pixel either side), where it was 40px. A
+ * line is what it always was, so the code keeps its size and the rows between code lines are
+ * what gives way. Everything not listed is unchanged.
  */
 export const COMPACT_ROW_METRICS: RowMetrics = {
   ...ROW_METRICS,
-  header: 36,
-  gap: 28,
+  header: 28,
+  gap: 20,
   hunk: 20,
 };
 

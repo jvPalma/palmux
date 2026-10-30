@@ -121,6 +121,26 @@ describe('DropdownMenu choices', () => {
   });
 });
 
+describe('DropdownMenu side', () => {
+  // The app menu's trigger is the first control of the dock rail, at the window's right edge, so
+  // its menu has to open to the LEFT of it; a menu opened below would run off the screen.
+  it('opens on the side it is given and below the trigger when none is', async () => {
+    const select = vi.fn();
+    const { unmount } = render(
+      <DropdownMenu items={items(select)} testidPrefix="m" side="left" align="end">
+        <IconButton label="Menu" data-testid="trigger" />
+      </DropdownMenu>,
+    );
+    await userEvent.click(screen.getByTestId('trigger'));
+    expect(screen.getByRole('menu')).toHaveAttribute('data-side', 'left');
+    unmount();
+
+    mount();
+    await userEvent.click(screen.getByTestId('trigger'));
+    expect(screen.getByRole('menu')).toHaveAttribute('data-side', 'bottom');
+  });
+});
+
 describe('DropdownMenu stepper', () => {
   const stepper = (
     steps: { value: number; min?: number; max?: number },

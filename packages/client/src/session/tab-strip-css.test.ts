@@ -9,8 +9,8 @@
 // The contract (ui-rework, tabs as pills): every tab is a bordered pill, the
 // active one is raised and ringed from the eight tokens, inactive text is dimmed
 // a step, colour is a dot and nothing else, a group is a framed cluster whose
-// chip never reacts to the active tab, and a split pairing is one pill that
-// shows its glyph and seam even when inactive.
+// chip never reacts to the active tab, and each pane's strip box ends in a 1px
+// edge that the focused pane takes in the accent.
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -44,10 +44,9 @@ const stripBlocks = [...stripCss.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, sel,
 describe('tab strip shape', () => {
   // Replaces the flex-end alignment that let Chrome's active tab stand taller:
   // pills share one centre line and only their fill and ring say which is active.
-  it('centres the strip and the topbar on one line', () => {
+  it('centres the pills on one line', () => {
     expect(bodyOf('.session-tabs')).toMatch(/align-items:\s*center/);
     expect(bodyOf('.session-tabs')).not.toMatch(/align-items:\s*flex-end/);
-    expect(bodyOf('.topbar')).toMatch(/align-items:\s*center/);
   });
 
   // Regression: a strip child with no intrinsic height collapses to its text box
@@ -66,9 +65,6 @@ describe('tab strip shape', () => {
     );
     expect(bodyOf('.ctab')).toMatch(/border:\s*1px solid var\(--pill-border\)/);
     expect(bodyOf('.ctab')).toMatch(/border-radius:\s*var\(--r-2\)/);
-    // The fused pill is a .ctab: it must inherit the border and radius, not
-    // restate (or drop) them, or a split would stop looking like a tab.
-    expect(bodyOf('.ctab.fused')).not.toMatch(/border|radius/);
   });
 
   it('separates entries by the scale gap and sizes a pill between a min and a max', () => {
@@ -100,12 +96,12 @@ describe('tab strip shape', () => {
   // Spec: the active fill differs from the strip background by AT LEAST the
   // theme's surface step. The CSS only names a mix, so the floor is checked on
   // the numbers, for every built-in theme: the fill is `--pill-fill` over the
-  // strip (the topbar's mantle), measured against how far `--t-surface` itself
+  // strip (the pane strip box's mantle), measured against how far `--t-surface` itself
   // sits from that mantle. Mixing the surface toward the text moves it AWAY from
   // the mantle in both a dark and a light theme, which is what this guards.
   it('raises the active fill at least one surface step off the strip, in every theme', () => {
-    expect(bodyOf('.topbar')).toMatch(/background:\s*var\(--t-mantle\)/);
-    expect(bodyOf('.session-tabs')).not.toMatch(/background/); // the strip IS the topbar
+    expect(bodyOf('.group-strip')).toMatch(/background:\s*var\(--t-mantle\)/);
+    expect(bodyOf('.session-tabs')).not.toMatch(/background/); // the strip box paints it
     // Read the mix off the stylesheet so the numbers follow it: a change of the
     // token it mixes toward or the amount is checked here, not just re-pinned.
     const m = /^color-mix\(in srgb, var\(--t-(\w+)\), var\(--t-(\w+)\) ([\d.]+)%\)$/.exec(
@@ -143,16 +139,6 @@ describe('tab strip shape', () => {
     for (const b of forPills) expect(b.sel, b.sel).toContain(':not(.active)');
   });
 
-  // Inside a pairing the segments are the hover targets, and the same rule holds:
-  // the focused one is already raised, and a hover fill must not replace that.
-  it('fills on hover only a fused segment that is not the focused one', () => {
-    const segments = stripBlocks.filter(
-      (b) => b.sel.includes('.fused-seg') && /:hover/.test(b.sel) && /background/.test(b.body),
-    );
-    expect(segments.length).toBeGreaterThan(0);
-    for (const b of segments) expect(b.sel, b.sel).toContain(':not(.on)');
-  });
-
   // Replaces the 8% tint, the coloured top border and the colour fill. A tab's
   // colour is its dot: --tab-accent may be read by the dot rule and by nothing else.
   it('uses a tab colour for its 7px dot only — never a fill, tint or border', () => {
@@ -170,9 +156,9 @@ describe('tab strip shape', () => {
   it('takes every colour from the tokens', () => {
     expect(stripCss).not.toMatch(/#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(/);
     expect(stripCss).not.toContain('--t-crust');
-    // The topbar sits above the strip's slice, and a literal there would stop
+    // The strip box sits above the strip's slice, and a literal there would stop
     // following a theme change just the same.
-    expect(bodyOf('.topbar')).not.toMatch(/#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(|--t-crust/);
+    expect(bodyOf('.group-strip')).not.toMatch(/#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(|--t-crust/);
   });
 
   // Active is a fill and a ring on the SAME box. A height, padding, margin or
@@ -210,9 +196,19 @@ describe('tab strip shape', () => {
 
   // Replaces "draws no bottom border on the topbar". That rule existed only so
   // the Chrome active tab could merge into the content below it; a pill merges
-  // with nothing, so the topbar ends in a 1px separator instead.
-  it('ends the topbar in a 1px separator', () => {
-    expect(bodyOf('.topbar')).toMatch(/border-bottom:\s*1px solid var\(--t-surface\)/);
+  // with nothing, so each pane's strip box ends in a 1px separator instead.
+  it('ends each pane strip in a 1px separator', () => {
+    expect(bodyOf('.group-strip')).toMatch(/border-bottom:\s*1px solid var\(--t-surface\)/);
+  });
+
+  // The focus mark is that separator turning accent. The edge is declared on `.group-strip`, so the
+  // override has to name the box too: a rule on `.group-strip-focused` alone ties it on specificity
+  // and wins or loses by source order.
+  it('turns the focused pane’s separator accent from a selector that names the strip box', () => {
+    const focused = blocks.find((b) => b.sel.includes('group-strip-focused'));
+    expect(focused?.sel).toContain('.group-strip');
+    expect(focused?.sel).toMatch(/\.group-strip\.group-strip-focused/);
+    expect(focused?.body).toMatch(/border-bottom-color:\s*var\(--t-accent\)/);
   });
 
   // Replaces "treats a group as one block with a single outer radius", the
@@ -223,7 +219,13 @@ describe('tab strip shape', () => {
     expect(cluster).toMatch(/border-radius:\s*var\(--r-3\)/);
     expect(cluster).toMatch(/gap:\s*var\(--sp-2\)/);
     expect(cluster).toMatch(/padding:\s*var\(--cluster-pad\)/);
-    expect(prop(PILL_TOKENS, '--cluster-pad')).toMatch(/^[234]px$/); // 2–4px
+    // Declared on the strip's pill tokens and on `:root` (the content area builds the strip height
+    // from it and is not inside a strip): each is 2–4px, and the two copies are the same.
+    const onStrip = prop(PILL_TOKENS, '--cluster-pad');
+    const onRoot = prop(':root', '--cluster-pad');
+    expect(onStrip).toMatch(/^[234]px$/);
+    expect(onRoot).toMatch(/^[234]px$/);
+    expect(onRoot).toBe(onStrip);
     expect(stripCss).not.toContain(':has(');
     expect(stripCss).not.toMatch(/background-size:\s*100% 3px/);
     expect(rule('.ctab.grouped')).toBeUndefined();
@@ -261,42 +263,6 @@ describe('tab strip shape', () => {
     expect(bodyOf('.group-chip')).not.toMatch(/--group-(accent|ink):/);
   });
 
-  // Replaces the accent-tip and neutral-recess cues. A pairing now reads from a
-  // glyph, a seam and one raised segment — and the first two must not need the
-  // pairing to be active, or an inactive split looks like two ordinary tabs.
-  it('draws the split glyph and the seam whether or not the pairing is active', () => {
-    const shown = stripBlocks.filter(
-      (b) => b.sel.includes('.fused-glyph') || b.sel === '.fused-seg + .fused-seg',
-    );
-    expect(shown.map((b) => b.sel).toSorted()).toEqual(['.fused-glyph', '.fused-seg + .fused-seg']);
-    for (const b of shown) {
-      expect(b.sel, b.sel).not.toContain('.active');
-      expect(b.body, b.sel).not.toMatch(/display:\s*none|visibility:\s*hidden|opacity:\s*0/);
-    }
-    expect(bodyOf('.fused-seg + .fused-seg')).toMatch(
-      /border-left:\s*1px solid var\(--pill-border\)/,
-    );
-  });
-
-  it('rings an active pairing and raises only its focused segment', () => {
-    // The pill takes the active ring (from `.ctab.active`) but no fill of its own…
-    expect(bodyOf('.ctab.fused.active')).toMatch(/background-color:\s*transparent/);
-    // …the focused segment takes the raised fill, full text, weight 600…
-    const on = bodyOf('.ctab.fused.active .fused-seg.on');
-    expect(on).toMatch(/background-color:\s*var\(--pill-fill\)/);
-    expect(on).toMatch(/color:\s*var\(--t-text\)/);
-    expect(on).toMatch(/font-weight:\s*600/);
-    // …and the other segment stays unraised, with inactive text.
-    const seg = bodyOf('.fused-seg');
-    expect(seg).not.toMatch(/background/);
-    expect(seg).toMatch(/color:\s*var\(--pill-text\)/);
-    expect(seg).toMatch(/font-weight:\s*500/);
-  });
-
-  it('keeps a minimum width on each fused segment', () => {
-    expect(bodyOf('.fused-seg')).toMatch(/min-width:\s*\d+px/);
-  });
-
   // The insertion bar and the will-join ring must stay visible on the new shape,
   // including over the active ring, which is why they compose through --mark.
   it('composes the drop marker and the join ring with the active ring', () => {
@@ -321,78 +287,26 @@ describe('tab strip shape', () => {
   });
 });
 
-// ── The split divider's rotate handle ─────────────────────────────────────────
-//
-// It is 20px over a 10px divider, so it overhangs the drag strip by 5px on each
-// side — measured swallowing clicks on the TERMINAL while at opacity 0. Invisible
-// has to mean intangible; there is nothing on screen to explain a dead zone.
-describe('split divider rotate handle', () => {
-  it('takes no pointer events while hidden, and both come back together', () => {
-    const hidden = rule('.split-divider-rotate')?.body ?? '';
-    expect(hidden).toMatch(/opacity:\s*0/);
-    expect(hidden).toMatch(/pointer-events:\s*none/);
-
-    const shown =
-      blocks.find((b) => b.sel.includes('.split-divider:hover .split-divider-rotate'))?.body ?? '';
-    expect(shown).toMatch(/opacity:\s*1/);
-    expect(shown).toMatch(/pointer-events:\s*auto/);
-  });
-
-  // Keyboard users never hover, so focus has to reveal it too — and it shares the
-  // rule above, which is what keeps the two states from drifting apart.
-  it('reveals on focus as well as hover', () => {
-    const sel =
-      blocks.find(
-        (b) =>
-          b.sel.includes('.split-divider-rotate:focus-visible') &&
-          b.sel.includes('.split-divider:hover'),
-      )?.sel ?? '';
-    expect(sel).toContain('.split-divider:hover .split-divider-rotate');
-  });
-
-  // A control that is invisible until hovered is the last place a keyboard user
-  // can afford an invisible focus state, and this is a bare button rather than a
-  // `.ui-btn`, so it does not inherit the kit's ring.
-  it('draws its own focus ring', () => {
-    const focus = rule('.split-divider-rotate:focus-visible')?.body ?? '';
-    expect(focus).toMatch(/outline:\s*2px solid var\(--t-accent\)/);
-  });
-
-  // The motion contract is absolute about the terminal grid, and this element
-  // floats over the WebGL canvas.
-  it('never animates, because it sits over the canvas', () => {
-    const body = rule('.split-divider-rotate')?.body ?? '';
-    expect(body).not.toMatch(/transition|animation/);
-  });
-});
-
-// The Window Controls Overlay block: palmux declares WCO in the manifest, so an
-// installed desktop PWA lays the topbar into the OS title-bar strip. Both of
-// these were wrong for a long time and neither has a runtime symptom a render
-// test can see — the strip only exists in an installed window.
+// The window-controls-overlay title bar: palmux declares WCO in the manifest, so an installed
+// desktop PWA has the native window controls lying over the top of the window. The topbar that used
+// to be laid into that strip is gone (each pane draws its own strip), and an empty drag region
+// stands in its place so the controls never cover a pane or the dock rail. It has no runtime symptom
+// a render test can see — the strip only exists in an installed window.
 describe('window-controls-overlay', () => {
   const wco = css.slice(css.indexOf('@media (display-mode: window-controls-overlay)'));
-  const topbar = wco.slice(wco.indexOf('.topbar {'), wco.indexOf('}', wco.indexOf('.topbar {')));
+  const titlebar = wco.slice(
+    wco.indexOf('.wco-titlebar {'),
+    wco.indexOf('}', wco.indexOf('.wco-titlebar {')),
+  );
 
-  it('never pins a fixed height — the strip is shorter than the strip content', () => {
-    // ~33px of title bar against a topbar of 4px padding + a 34px strip + a 1px
-    // separator. A hard `height` clipped the strip — the active ring and a
-    // cluster's frame live at its edges — so the topbar may overflow the title
-    // bar instead.
-    expect(topbar).not.toMatch(/[^-]height:\s*env\(titlebar-area-height/);
-    expect(topbar).toMatch(/min-height:\s*env\(titlebar-area-height/);
+  it('is an empty drag region the height of the native controls', () => {
+    expect(titlebar).toMatch(/height:\s*env\(titlebar-area-height\)/);
+    expect(titlebar).toMatch(/-webkit-app-region:\s*drag/);
   });
 
-  it('spans the whole strip, left inset included', () => {
-    // `box-sizing: border-box` is global, so a bare `width: …-width` stops short
-    // by the left inset: zero on Windows, ~75px on macOS's traffic lights.
-    expect(topbar).toMatch(
-      /width:\s*calc\(env\(titlebar-area-x[^)]*\)\s*\+\s*env\(titlebar-area-width/,
-    );
-  });
-
-  it('keeps the bar draggable and its controls clickable', () => {
-    expect(topbar).toMatch(/-webkit-app-region:\s*drag/);
-    expect(wco).toMatch(/-webkit-app-region:\s*no-drag/);
+  // `.topbar-brand` (the label of the retired pop-out bar) is not a topbar rule, and the lookahead
+  // lets it through; groups-css.test.ts is what keeps it out of the sheet.
+  it('leaves no `.topbar` rule behind', () => {
+    expect(css).not.toMatch(/\.topbar(?![\w-])/);
   });
 });

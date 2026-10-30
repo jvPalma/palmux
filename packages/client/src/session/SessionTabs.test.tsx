@@ -1,5 +1,5 @@
 // Tab strip behavior: kind icons (non-terminal only) + colour dots + title precedence,
-// switch vs close semantics (active click is a no-op, the close button closes),
+// switch vs close semantics (an active click is reported, the close button closes),
 // inline rename commit/cancel, context-menu recolor, the dirty dot, and where a drag
 // lands (pills, chips, the gaps between them).
 
@@ -9,7 +9,13 @@ import { cleanup, createEvent, fireEvent, render, screen } from '@testing-librar
 import { parse, type Declaration, type Rule } from 'postcss';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { TabGroup, TabMeta } from '@palmux/shared';
-import { GROUP_DND_TYPE, SessionTabs, TAB_DND_TYPE, type TabGrouping } from './SessionTabs';
+import {
+  GROUP_DND_TYPE,
+  SessionTabs,
+  TAB_DIRTY_DND_TYPE,
+  TAB_DND_TYPE,
+  type TabGrouping,
+} from './SessionTabs';
 import { Icon } from '../ui/icons';
 import { TabSheet } from './TabSheet';
 
@@ -35,7 +41,10 @@ const iconPaths = (name: string): string | undefined => {
 
 const renderTabs = (over: Partial<Parameters<typeof SessionTabs>[0]> = {}) => {
   const props = {
+    paneId: 'p0',
     tabs: TABS,
+    // One pane: the window's tabs are this strip's, unless a test says otherwise.
+    allTabs: over.tabs ?? TABS,
     current: '0',
     dirty: {} as { [id: string]: boolean },
     onSwitch: vi.fn(),
@@ -136,6 +145,7 @@ describe('rendering', () => {
     try {
       const props = {
         tabs: TABS,
+        allTabs: TABS,
         dirty: {} as { [id: string]: boolean },
         onSwitch: vi.fn(),
         onNewTab: vi.fn(),
@@ -143,9 +153,9 @@ describe('rendering', () => {
         onRename: vi.fn(),
         onRecolor: vi.fn(),
       };
-      const { rerender } = render(<SessionTabs {...props} current="0" />);
+      const { rerender } = render(<SessionTabs {...props} paneId="p0" current="0" />);
       expect(scrolled.map((c) => c.id)).toEqual(['session-tab-0']);
-      rerender(<SessionTabs {...props} current="2" />);
+      rerender(<SessionTabs {...props} paneId="p0" current="2" />);
       expect(scrolled.map((c) => c.id)).toEqual(['session-tab-0', 'session-tab-2']);
       const nearest = { inline: 'nearest', block: 'nearest' };
       expect(scrolled.map((c) => c.arg)).toEqual([nearest, nearest]);
@@ -156,7 +166,7 @@ describe('rendering', () => {
 });
 
 describe('switch / close', () => {
-  it('switches on click of an inactive tab; active tab click is a no-op', () => {
+  it('switches on click of an inactive tab, never on pointerdown', () => {
     const p = renderTabs();
     // Switch fires on click (NOT pointerdown) so a drag-to-split/reorder never
     // yanks the source tab active first.
@@ -164,9 +174,17 @@ describe('switch / close', () => {
     expect(p.onSwitch).not.toHaveBeenCalled();
     fireEvent.click(screen.getByTestId('session-tab-1'), { button: 0 });
     expect(p.onSwitch).toHaveBeenCalledWith('1');
-    p.onSwitch.mockClear();
-    fireEvent.click(screen.getByTestId('session-tab-0'), { button: 0 });
-    expect(p.onSwitch).not.toHaveBeenCalled();
+    expect(p.onClose).not.toHaveBeenCalled();
+  });
+
+  // In a pane that is not focused, a click on its active pill is how a key, assistive tech or
+  // `element.click()` (no pointerdown reaches the pane) focuses that pane, so it is reported too.
+  // Showing a tab already on show changes nothing, which is App's half.
+  it('reports a click on the active tab as well, with no pointerdown before it', () => {
+    const p = renderTabs({ current: '0' });
+    fireEvent.click(screen.getByTestId('session-tab-0'), { button: 0, detail: 0 });
+    expect(p.onSwitch).toHaveBeenCalledTimes(1);
+    expect(p.onSwitch).toHaveBeenCalledWith('0');
     expect(p.onClose).not.toHaveBeenCalled();
   });
 
@@ -203,105 +221,13 @@ describe('switch / close', () => {
   });
 });
 
-describe('fused split pairing', () => {
-  // Tabs 0 and 1 are visibly adjacent → the pairing fuses into one button.
-  const paired = [{ a: '0', b: '1', focusedId: '0' }];
-
-  it('renders adjacent members as one fused button with two segments', () => {
-    renderTabs({ pairings: paired });
-    expect(screen.getByTestId('fused-tab-0-1')).toBeTruthy();
-    expect(screen.getByTestId('fused-seg-0')).toHaveTextContent('vim');
-    expect(screen.getByTestId('fused-seg-1')).toHaveTextContent('sb.example.com');
-    // The fused members are not also rendered as plain tabs.
-    expect(screen.queryByTestId('session-tab-0')).toBeNull();
-    expect(screen.queryByTestId('session-tab-1')).toBeNull();
-    // Tab 2 still renders plainly.
-    expect(screen.getByTestId('session-tab-2')).toBeTruthy();
-  });
-
-  // The fused segments draw their kind through the same icon as a plain tab: a
-  // second render site that a plain-tab assertion would never reach.
-  it('draws a non-terminal segment with its kind icon and a terminal with none', () => {
-    renderTabs({ pairings: paired });
-    const mark = (id: string) =>
-      screen.getByTestId(`fused-seg-${id}`).querySelector('.ctab-icon svg')?.innerHTML;
-    expect(screen.getByTestId('fused-seg-0').querySelector('.ctab-icon')).toBeNull();
-    expect(mark('1')).toBe(iconPaths('globe'));
-    expect(screen.getByTestId('fused-seg-1').querySelector('.ctab-icon')?.textContent).toBe('');
-  });
-
-  // The split glyph is what says "two tabs in one pill", so it must not depend on
-  // the pairing being active — an inactive pairing used to read as two tabs.
-  it('leads the pill with a split glyph whether or not the pairing is active', () => {
-    for (const current of ['0', '2']) {
-      renderTabs({ pairings: paired, current });
-      const pill = screen.getByTestId('fused-tab-0-1');
-      const glyph = screen.getByTestId('fused-glyph-0-1');
-      expect(glyph.querySelector('svg')?.innerHTML).toBe(iconPaths('split'));
-      // Before both segments, in the same pill: the seam sits between the two.
-      expect(pill.firstElementChild).toBe(glyph);
-      expect([...pill.children].map((c) => c.className.split(' ')[0])).toEqual([
-        'fused-glyph',
-        'fused-seg',
-        'fused-seg',
-      ]);
-      cleanup();
-    }
-  });
-
-  it('shows each segment its own colour dot, never a colour fill', () => {
-    renderTabs({ tabs: [{ ...TABS[0]!, color: 'ansi1' }, TABS[1]!, TABS[2]!], pairings: paired });
-    expect(screen.getByTestId('fused-seg-0').querySelector('.ctab-dot')).not.toBeNull();
-    expect(screen.getByTestId('fused-seg-1').querySelector('.ctab-dot')).not.toBeNull();
-    expect(screen.getByTestId('fused-seg-0').style.getPropertyValue('--tab-accent')).toBe(
-      'var(--tab-c-ansi1)',
-    );
-  });
-
-  it('lights only the focused segment while a member is current', () => {
-    renderTabs({ pairings: paired, current: '0' });
-    expect(screen.getByTestId('fused-tab-0-1').className).toContain('active');
-    expect(screen.getByTestId('fused-seg-0').className).toContain('on');
-    expect(screen.getByTestId('fused-seg-1').className).not.toContain('on');
-  });
-
-  it('moves the lit segment with the focused member', () => {
-    renderTabs({ pairings: [{ a: '0', b: '1', focusedId: '1' }], current: '1' });
-    expect(screen.getByTestId('fused-seg-0').className).not.toContain('on');
-    expect(screen.getByTestId('fused-seg-1').className).toContain('on');
-  });
-
-  it('an inactive pairing (neither member current) lights no segment', () => {
-    renderTabs({ pairings: paired, current: '2' });
-    expect(screen.getByTestId('fused-tab-0-1').className).not.toContain('active');
-    expect(screen.getByTestId('fused-seg-0').className).not.toContain('on');
-    expect(screen.getByTestId('fused-seg-1').className).not.toContain('on');
-  });
-
-  it('a segment click switches to that member (no-op on the current one)', () => {
-    const p = renderTabs({ pairings: paired, current: '0' });
-    fireEvent.click(screen.getByTestId('fused-seg-1'), { button: 0 });
-    expect(p.onSwitch).toHaveBeenCalledWith('1');
-    p.onSwitch.mockClear();
-    fireEvent.click(screen.getByTestId('fused-seg-0'), { button: 0 });
-    expect(p.onSwitch).not.toHaveBeenCalled();
-  });
-
-  it('does not fuse a pairing whose members are not visibly adjacent', () => {
-    renderTabs({ pairings: [{ a: '0', b: '2', focusedId: '0' }] });
-    expect(screen.queryByTestId('fused-tab-0-2')).toBeNull();
-    expect(screen.getByTestId('session-tab-0')).toBeTruthy();
-    expect(screen.getByTestId('session-tab-2')).toBeTruthy();
-  });
-
-  it('emits no split badges', () => {
-    renderTabs({ pairings: paired });
-    expect(screen.queryByTestId('tab-split-badge-0')).toBeNull();
-    expect(screen.queryByTestId('tab-split-badge-1')).toBeNull();
-  });
-
-  const dragDt = () => {
-    let data = '';
+// ── A tab dropped from another pane ───────────────────────────────────────────
+//
+// A strip lists only its own pane's tabs. A drag of a tab it does not hold is a membership move
+// (App's `moveTab`), never a reorder: the tab keeps its server-order place.
+describe('a drop from another pane', () => {
+  const dragDt = (payload: string) => {
+    let data = payload;
     return {
       types: [TAB_DND_TYPE],
       setData: (_t: string, v: string) => {
@@ -313,40 +239,282 @@ describe('fused split pairing', () => {
     };
   };
 
-  it('the fused container drags with the pairing slot-A id as payload', () => {
+  it('a tab this strip does not hold goes to onDropFromOtherPane and never to onReorder', () => {
     const onReorder = vi.fn();
-    renderTabs({ pairings: paired, onReorder });
-    const t = dragDt();
-    fireEvent.dragStart(screen.getByTestId('fused-tab-0-1'), { dataTransfer: t });
-    expect(t.getData()).toBe('0'); // slot A id, not slot B
+    const onDropFromOtherPane = vi.fn();
+    renderTabs({ tabs: [TABS[0]!, TABS[2]!], onReorder, onDropFromOtherPane });
+    const strip = screen.getByTestId('session-tabs');
+    const t = dragDt('1');
+    fireEvent.dragOver(screen.getByTestId('session-tab-2'), { dataTransfer: t, clientX: 10 });
+    fireEvent.drop(strip, { dataTransfer: t });
+    expect(onDropFromOtherPane).toHaveBeenCalledTimes(1);
+    expect(onDropFromOtherPane).toHaveBeenCalledWith('1');
+    expect(onReorder).not.toHaveBeenCalled();
   });
 
-  it('reorders in ENTRY-index space (a fused pair is one entry)', () => {
-    const onReorder = vi.fn();
-    renderTabs({ pairings: paired, onReorder });
+  it('a drop anywhere on the strip counts, the empty space past the last pill included', () => {
+    const onDropFromOtherPane = vi.fn();
+    renderTabs({ tabs: [TABS[0]!], onDropFromOtherPane });
     const strip = screen.getByTestId('session-tabs');
-    const t = dragDt();
-    // Entries: [fused(0,1) = 0, tab2 = 1]. Drag tab 2 over the fused button;
-    // zero-width rect → rel after → insertion index = fused entry + 1 = 1.
-    fireEvent.dragStart(screen.getByTestId('session-tab-2'), { dataTransfer: t });
-    t.setData(TAB_DND_TYPE, '2');
-    fireEvent.dragOver(screen.getByTestId('fused-tab-0-1'), { dataTransfer: t, clientX: 10 });
-    expect(screen.getByTestId('session-tab-2').className).toContain('drop-before'); // entry 1
+    const t = dragDt('2');
+    fireEvent.dragOver(strip, { dataTransfer: t });
     fireEvent.drop(strip, { dataTransfer: t });
-    expect(onReorder).toHaveBeenCalledWith('2', 1, undefined, undefined, true); // a half: a boundary
+    expect(onDropFromOtherPane).toHaveBeenCalledWith('2');
   });
 
-  it('a trailing drop appends past the fused entry (index = entry count)', () => {
+  // The drop keeps the tab's server-order place, so no insertion bar may promise a position: the
+  // strip as a whole is the target, lit by a class on its root, over a pill, a chip or a gap.
+  describe('while it hovers', () => {
+    const GROUPED: TabMeta[] = [
+      { id: '0', kind: 'terminal', groupId: 'gaa111' },
+      { id: '2', kind: 'terminal', groupId: 'gaa111' },
+      { id: '4', kind: 'terminal' },
+    ];
+    const grouped = () => ({
+      tabs: GROUPED,
+      grouping: { groups: [{ id: 'gaa111', color: 'blue' }] as TabGroup[], onMoveGroup: vi.fn() },
+    });
+    const bars = () => document.querySelectorAll('.drop-before, .drop-after, .join-armed').length;
+    const lit = () => screen.getByTestId('session-tabs').classList.contains('drop-into');
+
+    it('lights the whole strip and draws no insertion bar, wherever it is', () => {
+      const onReorder = vi.fn();
+      const onDropFromOtherPane = vi.fn();
+      renderTabs({ ...grouped(), dragTabId: '1', onReorder, onDropFromOtherPane });
+      const t = dragDt('1');
+      for (const target of [
+        screen.getByTestId('session-tab-0'), // a grouped pill (its centre would arm a join)
+        screen.getByTestId('session-tab-4'),
+        screen.getByTestId('group-chip-gaa111'),
+        screen.getByTestId('session-tabs'), // the empty space
+      ]) {
+        fireEvent.dragOver(target, { dataTransfer: t, clientX: 10 });
+        expect(lit()).toBe(true);
+        expect(bars()).toBe(0);
+      }
+      fireEvent.drop(screen.getByTestId('session-tabs'), { dataTransfer: t });
+      expect(onDropFromOtherPane).toHaveBeenCalledTimes(1);
+      expect(onDropFromOtherPane).toHaveBeenCalledWith('1');
+      expect(onReorder).not.toHaveBeenCalled();
+      expect(lit()).toBe(false);
+    });
+
+    it('goes out when the drag leaves the strip', () => {
+      renderTabs({ ...grouped(), dragTabId: '1', onDropFromOtherPane: vi.fn() });
+      const strip = screen.getByTestId('session-tabs');
+      fireEvent.dragOver(strip, { dataTransfer: dragDt('1') });
+      expect(lit()).toBe(true);
+      fireEvent.dragLeave(strip, { relatedTarget: document.body });
+      expect(lit()).toBe(false);
+    });
+
+    it('is a bar again for a tab this strip holds', () => {
+      renderTabs({
+        ...grouped(),
+        dragTabId: '4',
+        onReorder: vi.fn(),
+        onDropFromOtherPane: vi.fn(),
+      });
+      fireEvent.dragOver(screen.getByTestId('session-tab-0'), {
+        dataTransfer: dragDt('4'),
+        clientX: 0,
+      });
+      expect(lit()).toBe(false);
+      expect(bars()).toBe(1);
+    });
+  });
+
+  it('a tab this strip holds is still a reorder', () => {
     const onReorder = vi.fn();
-    renderTabs({ pairings: paired, onReorder });
+    const onDropFromOtherPane = vi.fn();
+    renderTabs({ onReorder, onDropFromOtherPane });
     const strip = screen.getByTestId('session-tabs');
-    const t = dragDt();
-    fireEvent.dragStart(screen.getByTestId('fused-tab-0-1'), { dataTransfer: t });
-    t.setData(TAB_DND_TYPE, '0');
-    fireEvent.dragOver(strip, { dataTransfer: t }); // trailing area
-    expect(screen.getByTestId('session-tab-2').className).toContain('drop-after'); // last entry
+    const t = dragDt('2');
+    fireEvent.dragOver(strip, { dataTransfer: t });
     fireEvent.drop(strip, { dataTransfer: t });
-    expect(onReorder).toHaveBeenCalledWith('0', 2, undefined, undefined, true); // 2 entries; a gap drop
+    expect(onReorder).toHaveBeenCalledTimes(1);
+    expect(onDropFromOtherPane).not.toHaveBeenCalled();
+  });
+
+  // A tab dragged in from another WINDOW: App has no local drag (`dragTabId` is null) and reports
+  // `externalDrag` instead. It reads as a foreign drag exactly like another pane's tab: the whole
+  // strip lights, no insertion bar, and the drop is a membership move.
+  describe('from another window', () => {
+    const GROUPED: TabMeta[] = [
+      { id: '0', kind: 'terminal', groupId: 'gaa111' },
+      { id: '2', kind: 'terminal', groupId: 'gaa111' },
+      { id: '4', kind: 'terminal' },
+    ];
+    const grouped = () => ({
+      tabs: GROUPED,
+      grouping: { groups: [{ id: 'gaa111', color: 'blue' }] as TabGroup[], onMoveGroup: vi.fn() },
+    });
+    const bars = () => document.querySelectorAll('.drop-before, .drop-after, .join-armed').length;
+    const lit = () => screen.getByTestId('session-tabs').classList.contains('drop-into');
+
+    it('lights the whole strip and draws no insertion bar, over a pill, a chip or a gap', () => {
+      const onReorder = vi.fn();
+      const onDropFromOtherPane = vi.fn();
+      renderTabs({ ...grouped(), externalDrag: true, onReorder, onDropFromOtherPane });
+      const t = dragDt('9');
+      for (const target of [
+        screen.getByTestId('session-tab-0'), // a grouped pill (its centre would arm a join)
+        screen.getByTestId('session-tab-4'),
+        screen.getByTestId('group-chip-gaa111'),
+        screen.getByTestId('session-tabs'),
+      ]) {
+        fireEvent.dragOver(target, { dataTransfer: t, clientX: 10 });
+        expect(lit()).toBe(true);
+        expect(bars()).toBe(0);
+      }
+      fireEvent.drop(screen.getByTestId('session-tabs'), { dataTransfer: t });
+      expect(onDropFromOtherPane).toHaveBeenCalledTimes(1);
+      expect(onDropFromOtherPane).toHaveBeenCalledWith('9');
+      expect(onReorder).not.toHaveBeenCalled();
+      expect(lit()).toBe(false);
+    });
+
+    // Accepting the drop is what reports `move` to the SOURCE window: a drop nothing cancels ends the
+    // drag as `none`, and the source keeps drawing a tab this window is about to attach.
+    it('accepts the drop, so the source window hears `move`', () => {
+      const onDropFromOtherPane = vi.fn();
+      renderTabs({ ...grouped(), externalDrag: true, onDropFromOtherPane });
+      const strip = screen.getByTestId('session-tabs');
+      const t = dragDt('9');
+      fireEvent.dragOver(strip, { dataTransfer: t });
+      expect(fireEvent.drop(strip, { dataTransfer: t })).toBe(false);
+      expect(onDropFromOtherPane).toHaveBeenCalledWith('9');
+    });
+
+    // Chromium fires only `dragenter` on the element a drag has just moved onto, and its answer is
+    // the drop operation until the next `dragover`, which a still pointer gets ~352 ms later. A
+    // target that cancels only `dragover` loses a release made right after crossing into it.
+    it.each(['session-tab-0', 'session-tab-4', 'group-chip-gaa111', 'session-tabs'])(
+      'accepts a dragenter on %s with no dragover after it, and the drop then commits',
+      (testId) => {
+        const onDropFromOtherPane = vi.fn();
+        renderTabs({ ...grouped(), externalDrag: true, onDropFromOtherPane });
+        const t = dragDt('9');
+        const target = screen.getByTestId(testId);
+        // `fireEvent` copies the transfer onto the event, so the event is the one to read back.
+        const enter = createEvent.dragEnter(target, { dataTransfer: t, clientX: 10 }) as DragEvent;
+        expect(fireEvent(target, enter)).toBe(false);
+        expect(enter.dataTransfer?.dropEffect).toBe('move');
+        expect(lit()).toBe(true);
+        expect(bars()).toBe(0);
+        expect(fireEvent.drop(target, { dataTransfer: t })).toBe(false);
+        expect(onDropFromOtherPane).toHaveBeenCalledTimes(1);
+        expect(onDropFromOtherPane).toHaveBeenCalledWith('9');
+      },
+    );
+
+    it('is a bar again once the external drag is over', () => {
+      renderTabs({ ...grouped(), onReorder: vi.fn(), onDropFromOtherPane: vi.fn() });
+      // No `externalDrag` and no local drag: a tab this strip holds is an ordinary reorder.
+      fireEvent.dragOver(screen.getByTestId('session-tab-0'), {
+        dataTransfer: dragDt('4'),
+        clientX: 0,
+      });
+      expect(lit()).toBe(false);
+      expect(bars()).toBe(1);
+    });
+  });
+
+  // A dirty editor's pill adds TAB_DIRTY_DND_TYPE. The receiving window cannot see its buffer, so
+  // with no local drag live (`dragTabId` null: the drag is foreign) the strip is no target at all:
+  // nothing cancels the dragover, so the browser shows no-drop and no `drop` ever fires.
+  describe('a dirty tab dragged in from another window', () => {
+    const dirtyDt = (payload: string) => ({
+      ...dragDt(payload),
+      types: [TAB_DND_TYPE, TAB_DIRTY_DND_TYPE],
+    });
+    const GROUPED: TabMeta[] = [
+      { id: '0', kind: 'terminal', groupId: 'gaa111' },
+      { id: '2', kind: 'terminal', groupId: 'gaa111' },
+      { id: '4', kind: 'terminal' },
+    ];
+    const grouping = () => ({
+      groups: [{ id: 'gaa111', color: 'blue' }] as TabGroup[],
+      onMoveGroup: vi.fn(),
+    });
+    const lit = () => screen.getByTestId('session-tabs').classList.contains('drop-into');
+    const bars = () => document.querySelectorAll('.drop-before, .drop-after, .join-armed').length;
+
+    it('resolves no boundary and cancels nothing on the strip, a pill or a chip', () => {
+      renderTabs({
+        tabs: GROUPED,
+        grouping: grouping(),
+        onReorder: vi.fn(),
+        onDropFromOtherPane: vi.fn(),
+      });
+      const t = dirtyDt('9');
+      for (const target of [
+        screen.getByTestId('session-tabs'),
+        screen.getByTestId('session-tab-4'),
+        screen.getByTestId('session-tab-0'),
+        screen.getByTestId('group-chip-gaa111'),
+      ]) {
+        // `fireEvent` answers true when no handler called `preventDefault`.
+        expect(fireEvent.dragOver(target, { dataTransfer: t, clientX: 10 })).toBe(true);
+        expect(lit()).toBe(false);
+        expect(bars()).toBe(0);
+      }
+    });
+
+    // `dragenter` decides the drop operation as much as `dragover` does, so it is refused the same way.
+    it('cancels no dragenter either, on the strip, a pill or a chip', () => {
+      renderTabs({
+        tabs: GROUPED,
+        grouping: grouping(),
+        onReorder: vi.fn(),
+        onDropFromOtherPane: vi.fn(),
+      });
+      const t = dirtyDt('9');
+      for (const target of [
+        screen.getByTestId('session-tabs'),
+        screen.getByTestId('session-tab-4'),
+        screen.getByTestId('session-tab-0'),
+        screen.getByTestId('group-chip-gaa111'),
+      ]) {
+        expect(fireEvent.dragEnter(target, { dataTransfer: t, clientX: 10 })).toBe(true);
+        expect(lit()).toBe(false);
+        expect(bars()).toBe(0);
+      }
+    });
+
+    it('calls no handler even if a drop reaches it', () => {
+      const onReorder = vi.fn();
+      const onMoveGroup = vi.fn();
+      const onDropFromOtherPane = vi.fn();
+      renderTabs({
+        tabs: GROUPED,
+        grouping: { ...grouping(), onMoveGroup },
+        onReorder,
+        onDropFromOtherPane,
+      });
+      // Left uncancelled, so the source window reads `none` and keeps the tab.
+      expect(fireEvent.drop(screen.getByTestId('session-tabs'), { dataTransfer: dirtyDt('9') })).toBe(true);
+      expect(onDropFromOtherPane).not.toHaveBeenCalled();
+      expect(onReorder).not.toHaveBeenCalled();
+      expect(onMoveGroup).not.toHaveBeenCalled();
+    });
+
+    it('is still a target for a LOCAL drag of a dirty tab another pane holds', () => {
+      const onDropFromOtherPane = vi.fn();
+      renderTabs({ tabs: GROUPED, dragTabId: '9', onReorder: vi.fn(), onDropFromOtherPane });
+      const t = dirtyDt('9');
+      expect(fireEvent.dragOver(screen.getByTestId('session-tabs'), { dataTransfer: t })).toBe(
+        false,
+      );
+      expect(lit()).toBe(true);
+      fireEvent.drop(screen.getByTestId('session-tabs'), { dataTransfer: t });
+      expect(onDropFromOtherPane).toHaveBeenCalledWith('9');
+    });
+  });
+
+  it('names its pane, so two strips can be told apart', () => {
+    renderTabs({ paneId: 'p3' });
+    expect(screen.getByTestId('session-tabs')).toHaveAttribute('data-strip-pane', 'p3');
   });
 });
 
@@ -503,7 +671,7 @@ describe('context menu structure', () => {
     expect(order.join(',')).not.toContain('tab-menu-sep,tab-menu-sep');
   });
 
-  // A host that supplies no split / pop-out / group handlers still gets three
+  // A host that supplies no split / new-window / group handlers still gets three
   // groups — rename, the swatches and Close are unconditional — so the menu never
   // collapses to one flat list or grows a separator with nothing beside it.
   it('keeps both separators when every optional item is absent', () => {
@@ -594,6 +762,32 @@ describe('context menu structure', () => {
     expect(p.onPopout).toHaveBeenCalledWith('2');
     expect(screen.queryByTestId('tab-menu')).toBeNull();
     expect(p.onSplit).toHaveBeenCalledTimes(2);
+  });
+
+  // A detached window can hand a tab back. The item sits in the LAYOUT group, right before
+  // "Open in new window", which a detached window keeps (it moves the tab into ANOTHER new window).
+  it('offers "Move to main window" before "Open in new window", only when the host passes it', () => {
+    renderTabs(fullProps());
+    open('1');
+    expect(screen.queryByTestId('menu-move-main')).toBeNull();
+    cleanup();
+
+    const p = fullProps({ onMoveToMain: vi.fn() });
+    renderTabs(p);
+    open('1');
+    const order = layout();
+    expect(order.indexOf('menu-move-main')).toBe(order.indexOf('menu-popout') - 1);
+    expect(order.indexOf('menu-move-main')).toBeGreaterThan(order.indexOf('tab-menu-colors'));
+    expect(order.indexOf('menu-move-main')).toBeLessThan(order.indexOf('menu-close'));
+    expect(screen.getByTestId('menu-move-main').textContent).toBe('Move to main window');
+    expect(screen.getByTestId('menu-move-main').querySelector('svg')?.innerHTML).toBe(
+      iconPaths('external'),
+    );
+    expect(screen.getAllByRole('separator')).toHaveLength(2);
+
+    fireEvent.click(screen.getByTestId('menu-move-main'));
+    expect(p.onMoveToMain).toHaveBeenCalledWith('1');
+    expect(screen.queryByTestId('tab-menu')).toBeNull();
   });
 
   it('acts on the tab that was right-clicked, not the active one', () => {
@@ -911,6 +1105,22 @@ describe('strip order + drag-to-reorder', () => {
     expect(onReorder).toHaveBeenCalledWith('2', 2, undefined, undefined, true); // a half: a boundary
   });
 
+  // A drag that has just crossed onto a pill gets a `dragenter` there and no `dragover` until the
+  // next pointer move or repeat, so a release at that moment is decided by the dragenter alone.
+  it('a dragenter alone marks the insertion point and accepts, so a drop right after it reorders', () => {
+    const onReorder = vi.fn();
+    renderTabs({ onReorder });
+    const strip = screen.getByTestId('session-tabs');
+    const tab1 = screen.getByTestId('session-tab-1');
+    const t = dragDt();
+    fireEvent.dragStart(screen.getByTestId('session-tab-2'), { dataTransfer: t });
+    t.setData(TAB_DND_TYPE, '2');
+    expect(fireEvent.dragEnter(tab1, { dataTransfer: t, clientX: 10 })).toBe(false);
+    expect(screen.getByTestId('session-tab-2').className).toContain('drop-before');
+    fireEvent.drop(strip, { dataTransfer: t });
+    expect(onReorder).toHaveBeenCalledWith('2', 2, undefined, undefined, true);
+  });
+
   it('dragover the trailing strip area appends (index = length)', () => {
     const onReorder = vi.fn();
     renderTabs({ onReorder });
@@ -963,6 +1173,7 @@ describe('tab groups', () => {
     };
     const props = {
       tabs: GROUP_TABS,
+      allTabs: GROUP_TABS,
       current: '2',
       dirty: {} as { [id: string]: boolean },
       onSwitch: vi.fn(),
@@ -972,7 +1183,7 @@ describe('tab groups', () => {
       onRecolor: vi.fn(),
       onReorder: vi.fn(),
     };
-    render(<SessionTabs {...props} grouping={grouping} />);
+    render(<SessionTabs {...props} paneId="p0" grouping={grouping} />);
     return { ...props, ...grouping };
   };
 
@@ -1029,6 +1240,7 @@ describe('tab groups', () => {
     const grouping = { groups: GROUPS, collapsed: new Set<string>(), onToggleGroup: vi.fn() };
     const props = {
       tabs: GROUP_TABS,
+      allTabs: GROUP_TABS,
       dirty: {} as { [id: string]: boolean },
       onSwitch: vi.fn(),
       onNewTab: vi.fn(),
@@ -1037,12 +1249,12 @@ describe('tab groups', () => {
       onRecolor: vi.fn(),
       grouping,
     };
-    const { rerender } = render(<SessionTabs {...props} current="2" />); // outside the group
+    const { rerender } = render(<SessionTabs {...props} paneId="p0" current="2" />); // outside the group
     const chip = screen.getByTestId('group-chip-gaa111');
     const before = { className: chip.className, style: chip.getAttribute('style') };
     const clusterBefore = screen.getByTestId('group-cluster-gaa111').className;
 
-    rerender(<SessionTabs {...props} current="0" />); // a member
+    rerender(<SessionTabs {...props} paneId="p0" current="0" />); // a member
     expect(screen.getByTestId('session-tab-0').className).toContain('active');
     expect(chip.className).toBe(before.className);
     expect(chip.getAttribute('style')).toBe(before.style);
@@ -1179,49 +1391,6 @@ describe('tab groups', () => {
   });
 });
 
-describe('not-yet-broadcast pairing member (newborn self-split)', () => {
-  it('inserts the ghost current next to its partner so the pair fuses immediately', () => {
-    // current '9' is not in TABS but pairs with '0' (slot a='0', b='9') — the
-    // ghost must slot in right after '0', rendering ONE fused entry, not a
-    // trailing plain tab.
-    renderTabs({
-      current: '9',
-      pairings: [{ a: '0', b: '9', focusedId: '9' }],
-    });
-    expect(screen.getByTestId('fused-tab-0-9')).toBeInTheDocument();
-    expect(screen.queryByTestId('session-tab-9')).toBeNull();
-    expect(screen.getByTestId('fused-seg-9').className).toContain('on');
-  });
-});
-
-describe('fused segment rename', () => {
-  const fusedProps = { pairings: [{ a: '0', b: '1', focusedId: '0' }] };
-
-  it('double-click on a segment opens the inline rename and Enter commits', () => {
-    const p = renderTabs(fusedProps);
-    fireEvent.doubleClick(screen.getByTestId('fused-seg-1'));
-    const input = screen.getByTestId('tab-rename-input');
-    fireEvent.change(input, { target: { value: ' logs ' } });
-    fireEvent.keyDown(input, { key: 'Enter' });
-    expect(p.onRename).toHaveBeenCalledWith('1', 'logs');
-  });
-
-  it('menu Rename on a segment shows the input inside that segment', () => {
-    renderTabs(fusedProps);
-    fireEvent.contextMenu(screen.getByTestId('fused-seg-0'));
-    fireEvent.click(screen.getByTestId('menu-rename'));
-    const input = screen.getByTestId('tab-rename-input');
-    expect(screen.getByTestId('fused-seg-0')).toContainElement(input);
-  });
-
-  it('clicking the rename input never switches tabs', () => {
-    const p = renderTabs({ ...fusedProps, current: '0' });
-    fireEvent.doubleClick(screen.getByTestId('fused-seg-1'));
-    fireEvent.click(screen.getByTestId('tab-rename-input'));
-    expect(p.onSwitch).not.toHaveBeenCalled();
-  });
-});
-
 // ── Middle-click closes, like every browser ───────────────────────────────────
 //
 // Reported as "scrollwheel-middle-click on a tab does absolutely nothing". The
@@ -1245,13 +1414,6 @@ describe('middle-click', () => {
     aux(screen.getByTestId('session-tab-0'), 1);
     expect(p.onClose).toHaveBeenCalledWith('0');
     expect(p.onSwitch).not.toHaveBeenCalled();
-  });
-
-  it('closes ONE member of a fused pairing, not the pair', () => {
-    const p = renderTabs({ pairings: [{ a: '0', b: '1', focusedId: '0' }], current: '0' });
-    aux(screen.getByTestId('fused-seg-1'), 1);
-    expect(p.onClose).toHaveBeenCalledTimes(1);
-    expect(p.onClose).toHaveBeenCalledWith('1');
   });
 
   it('ignores the right button — that is the context menu', () => {
@@ -1322,6 +1484,26 @@ describe('close others / close to the right', () => {
     expect(screen.getByTestId('menu-close')).toBeTruthy();
   });
 
+  // A strip lists one pane's tabs, but a bulk close is a window-wide act: "to the right" is
+  // read off the server's whole order, so it does not depend on how the panes divide the tabs.
+  it('reads the server order across every pane, not just this strip', () => {
+    const onCloseMany = vi.fn();
+    const everything: TabMeta[] = [...TABS, { id: '3', kind: 'terminal' }];
+    // This pane holds 0 and 2; tab 1 and tab 3 live in another pane.
+    renderTabs({
+      onCloseMany,
+      tabs: [TABS[0]!, TABS[2]!],
+      allTabs: everything,
+      current: '0',
+    });
+    open('0');
+    fireEvent.click(screen.getByTestId('menu-close-right'));
+    expect(onCloseMany).toHaveBeenLastCalledWith(['1', '2', '3']);
+    open('2');
+    fireEvent.click(screen.getByTestId('menu-close-others'));
+    expect(onCloseMany).toHaveBeenLastCalledWith(['0', '1', '3']);
+  });
+
   // Collapsing a group is per-device view state. Which tabs are "to the right"
   // must not depend on it, or the same menu closes different tabs on a phone.
   it('counts hidden members of a collapsed group', () => {
@@ -1348,8 +1530,8 @@ describe('close others / close to the right', () => {
 
 // ── Where a drag lands ────────────────────────────────────────────────────────
 //
-// happy-dom has no layout, so these hand each rendered unit (plain pill, fused
-// pill, group chip — the things the strip measures, in strip order) a rect, and
+// happy-dom has no layout, so these hand each rendered unit (plain pill and
+// group chip — the things the strip measures, in strip order) a rect, and
 // drive the strip with real pointer x. A pointer over a pill/chip is that
 // element's own handler; a pointer over a gap, a cluster's padding or the `+` is
 // the strip's, which resolves the nearest boundary from x.
@@ -1417,7 +1599,7 @@ describe('where a drag lands', () => {
       onRecolor: vi.fn(),
       onReorder: vi.fn(),
     };
-    render(<SessionTabs tabs={[]} {...props} {...over} />);
+    render(<SessionTabs paneId="p0" tabs={[]} allTabs={over.tabs ?? []} {...props} {...over} />);
     return props;
   };
   const grouping = (over: Partial<TabGrouping> = {}): TabGrouping => ({
@@ -1493,28 +1675,6 @@ describe('where a drag lands', () => {
       expect(marked()).toEqual(['session-tab-2:after']);
       fireEvent.drop(strip, { dataTransfer: t });
       expect(p.onReorder).toHaveBeenCalledWith('0', 3, undefined, undefined, true);
-    });
-
-    it('a gap next to a fused pill counts the pair as ONE entry', () => {
-      // strip: fused(0,1) [0,200]   2 [208,308]   3 [316,416]
-      layout([
-        [0, 200],
-        [208, 308],
-        [316, 416],
-      ]);
-      const p = mount({
-        tabs: [term('0'), term('1'), term('2'), term('3')],
-        current: '3',
-        pairings: [{ a: '0', b: '1', focusedId: '0' }],
-      });
-      const strip = screen.getByTestId('session-tabs');
-      const t = dragData(TAB_DND_TYPE);
-      fireEvent.dragStart(screen.getByTestId('session-tab-3'), { dataTransfer: t });
-      t.setData(TAB_DND_TYPE, '3');
-      overAt(strip, t, 204);
-      expect(marked()).toEqual(['session-tab-2:before']); // entry 1, after the fused entry 0
-      fireEvent.drop(strip, { dataTransfer: t });
-      expect(p.onReorder).toHaveBeenCalledWith('3', 1, undefined, undefined, true);
     });
 
     // Inside an expanded cluster the gap is between its members. It must NOT be
@@ -1920,20 +2080,20 @@ describe('where a drag lands', () => {
     });
 
     // Joining is the centre-of-a-member gesture and nothing else. Moving off a
-    // member's centre onto a chip or a fused pill disarms it, so the drop is the
+    // member's centre onto a chip or a plain pill disarms it, so the drop is the
     // boundary it previews — an anchored or plain reorder, never a join.
-    it('a boundary on a chip or a fused pill never joins, even after arming a join', () => {
-      // chip [10,50]  0 [58,158]  1 [166,266]  fused(2,3) [280,480]
+    it('a boundary on a chip or a plain pill never joins, even after arming a join', () => {
+      // chip [10,50]  0 [58,158]  1 [166,266]  2 [280,380]  3 [388,488]
       layout([
         [10, 50],
         [58, 158],
         [166, 266],
-        [280, 480],
+        [280, 380],
+        [388, 488],
       ]);
       const p = mount({
         tabs: [term('0', 'gaa111'), term('1', 'gaa111'), term('2'), term('3'), term('4')],
         current: '4',
-        pairings: [{ a: '2', b: '3', focusedId: '2' }],
         grouping: grouping(),
       });
       const strip = screen.getByTestId('session-tabs');
@@ -1948,7 +2108,7 @@ describe('where a drag lands', () => {
 
       overAt(screen.getByTestId('session-tab-1'), t, 216);
       expect(screen.getByTestId('session-tab-1').className).toContain('join-armed');
-      overAt(screen.getByTestId('fused-tab-2-3'), t, 290); // left half of the fused pill
+      overAt(screen.getByTestId('session-tab-2'), t, 290); // left half of the plain pill
       expect(screen.getByTestId('session-tab-1').className).not.toContain('join-armed');
       fireEvent.drop(strip, { dataTransfer: t });
       expect(p.onReorder).toHaveBeenLastCalledWith('4', 2, undefined, undefined, true);
@@ -1994,5 +2154,42 @@ describe('where a drag lands', () => {
       fireEvent.drop(strip, { dataTransfer: t });
       expect(onMoveGroup).toHaveBeenLastCalledWith('gbb222', 1);
     });
+  });
+});
+
+// A tab dragged to another window carries its id and nothing else, so the receiving window cannot see
+// whether the editor behind it has unsaved text. A dirty pill says so in its own drag type, and the
+// receiver treats such a drag as no target.
+describe('what a tab drag carries', () => {
+  const start = (dirty: { [id: string]: boolean }) => {
+    renderTabs({ dirty, onDrag: vi.fn() });
+    const setData = vi.fn();
+    fireEvent.dragStart(screen.getByTestId('session-tab-2'), {
+      dataTransfer: { setData, effectAllowed: '' },
+    });
+    return setData;
+  };
+
+  it('names the dirty drag type apart from the tab type', () => {
+    expect(TAB_DIRTY_DND_TYPE).toBe('application/x-palmux-dirty');
+    expect(TAB_DIRTY_DND_TYPE).not.toBe(TAB_DND_TYPE);
+  });
+
+  it('carries only its id when the tab is clean', () => {
+    const setData = start({});
+    expect(setData.mock.calls).toEqual([[TAB_DND_TYPE, '2']]);
+  });
+
+  it('adds the dirty type when the tab holds unsaved text', () => {
+    const setData = start({ '2': true });
+    expect(setData.mock.calls).toEqual([
+      [TAB_DND_TYPE, '2'],
+      [TAB_DIRTY_DND_TYPE, '2'],
+    ]);
+  });
+
+  it('is decided by the tab dragged, not by another tab’s unsaved text', () => {
+    const setData = start({ '0': true });
+    expect(setData.mock.calls).toEqual([[TAB_DND_TYPE, '2']]);
   });
 });

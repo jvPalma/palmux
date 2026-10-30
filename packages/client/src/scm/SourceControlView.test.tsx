@@ -789,7 +789,8 @@ describe('The scrollbar covers no row', () => {
 });
 
 // The owner (2026-10-26) found the changed-files list too large on a phone: 36px rows, a
-// 12px indent per level. happy-dom has no layout, so the metrics are read where they are
+// 12px indent per level, and found it still too large at 32px: a row is 24px now, with no
+// gap between rows. happy-dom has no layout, so the metrics are read where they are
 // written, and resolved the way a browser would.
 describe('The changed-files list is compact on a phone', () => {
   const sheet = readFileSync(join(__dirname, 'scm.css'), 'utf8');
@@ -836,11 +837,26 @@ describe('The changed-files list is compact on a phone', () => {
     expect(scale('--sp-3')).toBe(12);
   });
 
-  it('draws a row at most 32px on a phone, the extra-keys bar’s own key', () => {
+  it('draws a row 24px tall on a phone, well under the extra-keys bar’s own key', () => {
     const phone = decls(MOBILE);
-    expect(phone.get('--scm-row-h')).toBe('calc(var(--ctl-h) - var(--sp-1))');
-    expect(PHONE_CTL - scale('--sp-1')).toBe(32);
-    expect(PHONE_CTL - scale('--sp-1')).toBeLessThanOrEqual(32);
+    expect(phone.get('--scm-row-h')).toBe('calc(var(--ctl-h) - var(--sp-3))');
+    expect(PHONE_CTL - scale('--sp-3')).toBe(24);
+    // The contract is at most 32px; the owner asked for 24.
+    expect(PHONE_CTL - scale('--sp-3')).toBeLessThanOrEqual(32);
+  });
+
+  it('follows one row with the next: no margin on a row, no gap or padding between rows', () => {
+    for (const selector of ['.scm-row', '.scm-folder']) {
+      const row = decls(selector);
+      for (const prop of ['margin', 'margin-block', 'margin-top', 'margin-bottom']) {
+        expect(row.get(prop), `${selector} ${prop}`).toBeUndefined();
+      }
+    }
+    // The rows' containers add nothing: the plain list is unstyled, and the virtual one only caps its height.
+    expect(decls('.scm-rows').size).toBe(0);
+    expect([...decls('.scm-vlist').keys()]).toEqual(['height']);
+    // So the pitch is the row's height: 24px a row on a phone, where it was 32px.
+    expect(decls('.scm-row').get('height')).toBe('var(--scm-row-h)');
   });
 
   it('indents a level by 8px on a phone, where it was 12px, and sits the parts 4px apart', () => {
@@ -855,10 +871,11 @@ describe('The changed-files list is compact on a phone', () => {
     const before = scale('--sp-2') + 4 * scale('--sp-3');
     const after = scale('--sp-2') + 4 * level;
     expect(before - after).toBe(16);
-    // The drawer’s 329px row, less the indent, a 16px chevron, a 16px glyph, the 16px
-    // status letter, the parts’ gaps and the row’s right padding: room for ~28 characters.
-    const room = 329 - after - 16 - 16 - 16 - 4 * scale('--sp-1') - scale('--sp-2');
-    expect(room).toBeGreaterThanOrEqual(28 * 6);
+    // The drawer’s 275.5px row (390px, three quarters of it, less the border and padding),
+    // less the indent, a 16px chevron, a 16px glyph, the 16px status letter, the parts’ gaps
+    // and the row’s right padding: room for ~24 characters at the 4-level depth.
+    const room = 275.5 - after - 16 - 16 - 16 - 4 * scale('--sp-1') - scale('--sp-2');
+    expect(room).toBeGreaterThanOrEqual(24 * 6);
   });
 
   it('sets a row’s text at the body size, 12px, and the group header at the section-title size', () => {
@@ -877,6 +894,66 @@ describe('The changed-files list is compact on a phone', () => {
     expect(inMedia).toBe(0);
     expect(decls(MOBILE).has('--ctl-h')).toBe(false);
     expect(sheet).not.toMatch(/--ctl-h:/);
+  });
+
+  // A group header is the kit's Collapsible trigger, and no consumer sheet may size a kit
+  // control (scale.test.ts), so on a phone the view puts it on the kit's own extra-small step.
+  describe('the group headers', () => {
+    const kit = readFileSync(join(__dirname, '../ui/ui.css'), 'utf8');
+    /** `min-height` for an element with these classes: the last top-level rule naming one wins. */
+    const minHeight = (classes: string[]): string | undefined => {
+      let won: string | undefined;
+      parse(kit).walkRules((rule) => {
+        if (rule.parent?.type !== 'root') return;
+        if (!rule.selectors.some((s) => classes.some((c) => s.trim() === `.${c}`))) return;
+        rule.walkDecls('min-height', (d) => void (won = d.value.replace(/\s+/g, ' ').trim()));
+      });
+      return won;
+    };
+    const header = () => screen.findByTestId('scm-group-changes-trigger');
+    const withChanges = () =>
+      stubServer({ status: () => ({ body: status({ changes: [entry('a/b.ts')] }) }) });
+
+    /** The view follows the attribute through a MutationObserver, so its re-render lands
+     *  in `act` only once the observer's callback has run. */
+    const mobileLayer = (on: boolean) =>
+      act(async () => {
+        if (on) document.documentElement.dataset.mobile = 'true';
+        else document.documentElement.removeAttribute('data-mobile');
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+    afterEach(() => mobileLayer(false));
+
+    it('are no taller than the rows on a phone: the kit’s extra-small step, 24px', async () => {
+      document.documentElement.dataset.mobile = 'true';
+      withChanges();
+      mount({ repos: [APP] });
+      const trigger = await header();
+      expect(trigger).toHaveClass('ui-collapsible-trigger', 'ui-collapsible-trigger-xs');
+      const height = minHeight([...trigger.classList]);
+      expect(height).toBe('calc(var(--ctl-h) - var(--sp-3))');
+      expect(height).toBe(decls(MOBILE).get('--scm-row-h'));
+      expect(PHONE_CTL - scale('--sp-3')).toBe(24);
+    });
+
+    it('keep the control height on a desktop, which is the rows’ height there', async () => {
+      withChanges();
+      mount({ repos: [APP] });
+      const trigger = await header();
+      expect(trigger).not.toHaveClass('ui-collapsible-trigger-xs');
+      expect(minHeight([...trigger.classList])).toBe(decls('.scm-view').get('--scm-row-h'));
+    });
+
+    it('follow the mobile layer as it turns on and off', async () => {
+      withChanges();
+      mount({ repos: [APP] });
+      const trigger = await header();
+      await mobileLayer(true);
+      expect(trigger).toHaveClass('ui-collapsible-trigger-xs');
+      await mobileLayer(false);
+      expect(trigger).not.toHaveClass('ui-collapsible-trigger-xs');
+    });
   });
 
   it('still draws a tree row at its depth, one inline custom property per level', async () => {

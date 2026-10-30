@@ -83,7 +83,7 @@ import {
   type LineSelection,
 } from './line-selection';
 import { fetchScmFile } from './review-api';
-import { useCompactReview } from './review-density';
+import { useMobileLayer } from './review-density';
 import { useReviewHost, type ReviewScrollTarget } from './review-host';
 import {
   observeReviewWidth,
@@ -323,10 +323,11 @@ const ReviewView = ({ tabId, url, repo, group, tab, visible, focused }: ReviewVi
   }
   const measured = measuredStore.current.map;
   const [heightRevision, setHeightRevision] = useState(0);
-  // A phone draws the structural rows shorter (review-metrics.ts), and the sheet is told
-  // the same thing through `data-dense`. A change of it only changes those rows' heights,
-  // which are fixed numbers, so what was measured stays valid and is not keyed by it.
-  const compact = useCompactReview();
+  // A phone draws the structural rows shorter (review-metrics.ts) and one divider per
+  // hunk instead of two (the model is asked for merged rows), and the sheet is told the
+  // same thing through `data-dense`. A change of it changes those rows and their fixed
+  // heights alone, so what was measured of the wrapped rows stays valid and is not keyed by it.
+  const compact = useMobileLayer();
   const heightContext = useRef<HeightContext>({
     wrap,
     layout,
@@ -404,7 +405,7 @@ const ReviewView = ({ tabId, url, repo, group, tab, visible, focused }: ReviewVi
     if (visible) recolorIfStale();
   }, [visible, recolorIfStale]);
 
-  const assembled = model.getRows(layout);
+  const assembled = model.getRows(layout, compact);
   const geometry = useMemo(
     () => computeGeometry(assembled.rows, heightContext.current),
     // `heightRevision` is the browser's report that a wrapped row measured differently.
@@ -490,7 +491,7 @@ const ReviewView = ({ tabId, url, repo, group, tab, visible, focused }: ReviewVi
     setScrollRequest((count) => count + 1);
   }, []);
   const navView = useCallback((): NavView => {
-    const built = model.getRows(layout);
+    const built = model.getRows(layout, compact);
     const { offsets } = computeGeometry(built.rows, heightContext.current);
     return {
       rows: built.rows,
@@ -499,7 +500,7 @@ const ReviewView = ({ tabId, url, repo, group, tab, visible, focused }: ReviewVi
       scrollTop: listElement()?.scrollTop ?? 0,
       landed: landedRef.current,
     };
-  }, [model, layout, listElement]);
+  }, [model, layout, compact, listElement]);
 
   // ── Comments ──────────────────────────────────────────────────────────────
   // The store holds the ACTIVE project's comments only. A paused review keeps what it

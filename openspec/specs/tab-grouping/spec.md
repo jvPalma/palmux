@@ -56,7 +56,7 @@ Clients SHALL create a group from a tab, rename/recolor it, move tabs in/out (wi
 
 ### Requirement: The strip renders groups as chips + clusters
 
-On desktop, each group SHALL render as a FRAMED CLUSTER: a 1px frame in the group color enclosing a
+On desktop, each group SHALL render as a FRAMED CLUSTER in every pane strip that holds one of its members (a group may span panes; each pane draws its own cluster around the members it holds): a 1px frame in the group color enclosing a
 leading GROUP CHIP and every member pill. The chip shows the group's name (or a compact dot when
 unnamed) on a group-color fill with luminance-flipped ink. The chip's fill SHALL NOT change when a
 member becomes active — the member pill carries the active treatment, never the chip. A member tab
@@ -95,9 +95,14 @@ and "Add to <group>" for each live group).
 - **THEN** the confirmation warns about the unsaved editor (never bulk-kills it silently); on
   accept, every member is closed
 
+#### Scenario: A group spanning two panes
+
+- **WHEN** group "work" holds tabs 1 and 2, tab 1 is in pane A and tab 2 is in pane B
+- **THEN** A's strip and B's strip each show a "work" chip and frame around their own member
+
 ### Requirement: Collapse is per-device view state with safe activation
 
-Clicking a chip (desktop) or tapping a group header (mobile drawer) SHALL toggle the group collapsed (members hidden, chip/header remains) or expanded, using a shared per-device `localStorage` set — not synced. Collapsing a group that contains the active tab SHALL activate the nearest tab OUTSIDE the group first (the tab immediately before the group's first member, else immediately after its last, matching close-navigation); collapse SHALL be refused (with a toast) when no tab exists outside the group. Any activation of a hidden member — via URL/popstate, `tabCreated`, split re-tiling, close-navigation, reconcile, or boot — SHALL auto-expand its group.
+Clicking a chip (desktop) or tapping a group header (mobile drawer) SHALL toggle the group collapsed (members hidden, chip/header remains) or expanded, using a shared per-device `localStorage` set — not synced. Collapsing a group SHALL first, in every pane whose active tab is a member, activate that pane's nearest tab OUTSIDE the group (the one immediately before the group's members in that pane's strip, else immediately after); collapse SHALL be refused (with a toast) when any such pane has no tab outside the group. Any activation of a hidden member — via URL/popstate, `tabCreated`, a pane drop, close-navigation, reconcile, or boot — SHALL auto-expand its group.
 
 #### Scenario: Collapse hides members on this device only
 
@@ -121,20 +126,20 @@ Clicking a chip (desktop) or tapping a group header (mobile drawer) SHALL toggle
 
 #### Scenario: Hidden member activation expands (any path)
 
-- **WHEN** a collapsed group's member becomes active via back/forward, a split re-tile, or close-navigation onto it
+- **WHEN** a collapsed group's member becomes active via a pane drop or close-navigation onto it
 - **THEN** the group auto-expands and the tab is visible/active (never active-but-hidden)
 
-### Requirement: Drag gestures compose grouping with reorder
+#### Scenario: Collapse protects every pane
 
-Dragging a tab into a group's span (between two members, or onto a member tab's center) SHALL join
-it to that group at the drop position via a single `groupUpdate` carrying membership AND the new
-strip order; dragging a member past the group's boundary SHALL remove it from the group and place
-it there; dragging the GROUP BUTTON SHALL move the entire group as one unit (a plain `reorderTabs`
-block move). All existing gestures (reorder outside groups, drag-to-split, drag-onto-slot) SHALL
-keep working. A split pairing's members SHALL always share the same group membership: fusing
-across memberships makes the dragged tab ADOPT the anchor's membership (see `split-fusion`), and a
-later membership change that separates a pairing's members SHALL dissolve that pairing. The
-content-area split/slot drop zones SHALL ignore the group-button drag payload.
+- **WHEN** panes A and B both show a member of group "work" and A also holds a tab outside it, but B does not
+- **THEN** collapsing "work" is refused with a toast and nothing changes
+
+### Requirement: Drag gestures compose grouping with reorder and panes
+
+Dropping a tab into a group's span (between two members, or on a member's centre) SHALL join it there via one
+`groupUpdate` carrying membership AND order; dragging a member past the span's boundary SHALL remove it from the
+group; dragging the GROUP chip SHALL move the whole group as one `reorderTabs` block. Moving a tab between panes
+SHALL NOT change its membership, and pane drop regions SHALL ignore the chip's drag payload.
 
 #### Scenario: Drop into the span joins at the drop position
 
@@ -154,12 +159,5 @@ content-area split/slot drop zones SHALL ignore the group-button drag payload.
 #### Scenario: Group-button drag moves the unit
 
 - **WHEN** the group button is dragged to another strip position
-- **THEN** all members move together (order inside the group preserved), and no split/slot drop
-  zone activates
-
-#### Scenario: Membership change that splits a pairing dissolves it
-
-- **WHEN** one member of a fused pairing is moved into a different group (e.g. dragged out of the
-  shared group from another client)
-- **THEN** the pairing dissolves on the next reconcile (both tabs remain as plain strip tabs) and
-  no ghost fused button remains
+- **THEN** all members move together (order inside the group preserved), and no pane drop
+  region activates

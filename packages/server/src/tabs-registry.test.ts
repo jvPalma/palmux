@@ -617,3 +617,145 @@ describe('tab registry — review tabs', () => {
     ]);
   });
 });
+
+describe('tab registry — detached window ownership', () => {
+  const W = 'wq3k9x2m1a';
+  const W2 = 'wabcdef1234';
+
+  it('tabs() carries window, and only for tabs that have one', () => {
+    const reg = make();
+    reg.createTab({ kind: 'editor' }); // 0
+    reg.createTab({ kind: 'editor' }); // 1
+    expect(reg.setWindow(['1'], W)).toBe(true);
+    expect(reg.tabs()).toEqual([
+      { id: '0', kind: 'editor' },
+      { id: '1', kind: 'editor', window: W },
+    ]);
+  });
+
+  it('setWindow sets, moves, and clears on null; it reports whether anything changed', () => {
+    const reg = make();
+    reg.createTab({ kind: 'editor' }); // 0
+    reg.createTab({ kind: 'editor' }); // 1
+    expect(reg.setWindow(['0', '1'], W)).toBe(true);
+    expect(reg.setWindow(['0', '1'], W)).toBe(false); // already there
+    expect(reg.setWindow(['0'], W2)).toBe(true);
+    expect(reg.tabs().map((t) => t.window)).toEqual([W2, W]);
+    expect(reg.setWindow(['0', '1'], null)).toBe(true);
+    expect(reg.tabs()).toEqual([
+      { id: '0', kind: 'editor' },
+      { id: '1', kind: 'editor' },
+    ]);
+    expect(reg.setWindow(['0', '1'], null)).toBe(false); // already main
+  });
+
+  it('setWindow ignores unknown ids and does not broadcast by itself', () => {
+    const reg = make();
+    reg.createTab({ kind: 'editor' }); // 0
+    let broadcasts = 0;
+    reg.onListChanged(() => broadcasts++);
+    expect(reg.setWindow(['0', '9'], W)).toBe(true);
+    expect(reg.setWindow(['9'], W)).toBe(false);
+    expect(reg.has('9')).toBe(false);
+    expect(reg.tabs()).toEqual([{ id: '0', kind: 'editor', window: W }]);
+    expect(broadcasts).toBe(0); // the caller broadcasts once, after the whole move
+  });
+
+  it('tabsOfWindow lists the ids of one window, in strip order', () => {
+    const reg = make();
+    for (let i = 0; i < 4; i++) reg.createTab({ kind: 'editor' }); // 0..3
+    reg.setWindow(['3', '1'], W);
+    reg.setWindow(['2'], W2);
+    expect(reg.tabsOfWindow(W)).toEqual(['1', '3']);
+    expect(reg.tabsOfWindow(W2)).toEqual(['2']);
+    expect(reg.tabsOfWindow('wnoneatall')).toEqual([]);
+  });
+
+  it('never writes window to tabs.json, not even when another change persists', () => {
+    const store = memoryTabsStore();
+    const saves: unknown[] = [];
+    const reg = make({
+      load: store.load,
+      save: (tabs) => {
+        saves.push(JSON.parse(JSON.stringify(tabs)));
+        store.save(tabs);
+      },
+    });
+    reg.createTab({ kind: 'editor' }); // 0
+    const before = saves.length;
+    reg.setWindow(['0'], W);
+    expect(saves.length).toBe(before); // setWindow itself persists nothing
+    reg.updateTab('0', { name: 'notes' }); // a persist while the window is set
+    expect(saves.length).toBe(before + 1);
+    expect(store.snapshot()).toEqual([{ id: '0', kind: 'editor', name: 'notes' }]);
+    expect(JSON.stringify(store.snapshot())).not.toContain('window');
+  });
+
+  it('a registry rebuilt from the store has no owners (a restart releases everything)', () => {
+    const store = memoryTabsStore();
+    const first = make(store);
+    first.createTab({ kind: 'editor' });
+    first.setWindow(['0'], W);
+    first.updateTab('0', { name: 'x' });
+    expect(make(store).tabs()).toEqual([{ id: '0', kind: 'editor', name: 'x' }]);
+  });
+
+  it('createTab with a window sets it before the first broadcast that lists the tab', () => {
+    const reg = make();
+    const seen: unknown[] = [];
+    reg.onListChanged(() => seen.push(reg.tabs()));
+    expect(reg.createTab({ kind: 'editor', window: W })).toBe('0');
+    expect(reg.tabs()).toEqual([{ id: '0', kind: 'editor', window: W }]);
+    expect(seen).toEqual([[{ id: '0', kind: 'editor', window: W }]]);
+    // Without one the tab belongs to the main window.
+    reg.createTab({ kind: 'editor' });
+    expect(reg.tabs()[1]).toEqual({ id: '1', kind: 'editor' });
+  });
+
+  it('get with a window on a NEW id sets it before the first broadcast that lists it', () => {
+    const reg = make();
+    const seen: { id: string; window?: string }[][] = [];
+    reg.onListChanged(() => seen.push(reg.tabs()));
+    reg.get('0', { window: W });
+    expect(reg.tabs()[0]).toMatchObject({ id: '0', kind: 'terminal', window: W });
+    // Every broadcast that lists the tab names its window, the first included.
+    const listing = seen.filter((tabs) => tabs.some((t) => t.id === '0'));
+    expect(listing.length).toBeGreaterThan(0);
+    expect(listing.every((tabs) => tabs.find((t) => t.id === '0')?.window === W)).toBe(true);
+  });
+
+  it('get with a command and a window applies both on a new id', () => {
+    const reg = make();
+    reg.get('0', { command: 'true', window: W });
+    expect(reg.tabs()[0]).toMatchObject({ id: '0', window: W });
+  });
+
+  it('get on a LIVE id leaves its window alone', () => {
+    const reg = make();
+    reg.get('0'); // main window's terminal
+    reg.get('0', { window: W }); // a later attach that names a window claims nothing
+    expect(reg.tabs()[0]).not.toHaveProperty('window');
+    // And it does not take a tab away from the window that holds it.
+    reg.setWindow(['0'], W2);
+    reg.get('0', { window: W });
+    expect(reg.tabs()[0]).toMatchObject({ window: W2 });
+    reg.get('0');
+    expect(reg.tabs()[0]).toMatchObject({ window: W2 });
+  });
+
+  it('get on a DORMANT restored record leaves its window alone while it respawns', () => {
+    const reg = make(memoryTabsStore([{ id: '2', kind: 'terminal', name: 'api' }]));
+    expect(reg.tabs()[0]).toEqual({ id: '2', kind: 'terminal', name: 'api' });
+    reg.get('2', { window: W }); // respawns the dormant slot
+    expect(reg.tabs()[0]).toMatchObject({ id: '2', name: 'api' });
+    expect(reg.tabs()[0]).not.toHaveProperty('window');
+  });
+
+  it('ownership dies with the record: a recycled id starts in the main window', () => {
+    const reg = make();
+    reg.createTab({ kind: 'editor', window: W }); // 0
+    reg.kill('0');
+    expect(reg.createTab({ kind: 'editor' })).toBe('0');
+    expect(reg.tabs()[0]).toEqual({ id: '0', kind: 'editor' });
+  });
+});

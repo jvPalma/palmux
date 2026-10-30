@@ -3,6 +3,7 @@ import {
   encodeClientMessage,
   encodeServerMessage,
   isTabKind,
+  isWindowId,
   parseClientMessage,
   parseServerMessage,
   TAB_KINDS,
@@ -11,6 +12,8 @@ import type { ClientMessage, ServerMessage } from '@palmux/shared';
 
 const frame = (fields: Record<string, unknown>) =>
   parseServerMessage(JSON.stringify({ type: 'scmComments', ...fields }));
+const send = (fields: Record<string, unknown>) =>
+  parseClientMessage(JSON.stringify({ type: 'moveToWindow', ...fields }));
 
 describe('parseServerMessage', () => {
   it('round-trips a ready message', () => {
@@ -388,5 +391,128 @@ describe('parseClientMessage — group ops', () => {
   it('caps oversized id lists', () => {
     const ids = Array.from({ length: 1001 }, () => '1');
     expect(parseClientMessage(JSON.stringify({ type: 'groupCreate', ids }))).toBeNull();
+  });
+});
+
+describe('isWindowId', () => {
+  it('accepts w plus 6-16 lowercase base-36 characters', () => {
+    expect(isWindowId('wq3k9x2m1a')).toBe(true);
+    expect(isWindowId('w123456')).toBe(true); // 6 after the w
+    expect(isWindowId(`w${'a'.repeat(16)}`)).toBe(true);
+  });
+
+  it('rejects everything else', () => {
+    expect(isWindowId('w12345')).toBe(false); // 5 after the w
+    expect(isWindowId(`w${'a'.repeat(17)}`)).toBe(false);
+    expect(isWindowId('Wq3k9x2m1a')).toBe(false); // prefix is lowercase
+    expect(isWindowId('q3k9x2m1ab')).toBe(false); // no w prefix
+    expect(isWindowId('wQ3k9x2m1a')).toBe(false); // uppercase body
+    expect(isWindowId('wq3k9-x2m1a')).toBe(false);
+    expect(isWindowId('wq3k9x2m1a\n')).toBe(false); // $ must not allow a trailing newline
+    expect(isWindowId('g3f9k2a1')).toBe(false); // a group id is not a window id
+    expect(isWindowId('3')).toBe(false); // nor is a tab id
+    expect(isWindowId('')).toBe(false);
+    expect(isWindowId(null)).toBe(false);
+    expect(isWindowId(undefined)).toBe(false);
+    expect(isWindowId(7)).toBe(false);
+  });
+});
+
+describe('detached windows — server messages', () => {
+  it('keeps a valid window on a tab and drops an invalid one', () => {
+    const parsed = parseServerMessage(
+      JSON.stringify({
+        type: 'sessions',
+        ids: ['0', '1', '2'],
+        titles: {},
+        tabs: [
+          { id: '0', kind: 'terminal', window: 'wq3k9x2m1a' },
+          { id: '1', kind: 'terminal', window: 'main' },
+          { id: '2', kind: 'terminal', window: 7 },
+        ],
+      }),
+    );
+    expect(parsed).toMatchObject({
+      tabs: [{ id: '0', kind: 'terminal', window: 'wq3k9x2m1a' }, { id: '1' }, { id: '2' }],
+    });
+    if (!parsed || parsed.type !== 'sessions') throw new Error('not a sessions frame');
+    expect(parsed.tabs[1]).not.toHaveProperty('window');
+    expect(parsed.tabs[2]).not.toHaveProperty('window');
+  });
+
+  it('round-trips detached.moved and drops anything but true', () => {
+    const moved: ServerMessage = { type: 'detached', moved: true };
+    expect(parseServerMessage(encodeServerMessage(moved))).toEqual(moved);
+    for (const bad of [false, 'true', 1, null]) {
+      expect(parseServerMessage(JSON.stringify({ type: 'detached', moved: bad }))).toEqual({
+        type: 'detached',
+      });
+    }
+    expect(parseServerMessage(JSON.stringify({ type: 'detached' }))).toEqual({ type: 'detached' });
+  });
+
+  it('round-trips ready.detachedWindows and drops anything but true', () => {
+    const msg: ServerMessage = {
+      type: 'ready',
+      cols: 80,
+      rows: 24,
+      maxUploadBytes: 52428800,
+      webApps: [],
+      version: '',
+      detachedWindows: true,
+    };
+    expect(parseServerMessage(encodeServerMessage(msg))).toEqual(msg);
+    for (const bad of [false, 'true', 1, null]) {
+      const parsed = parseServerMessage(
+        JSON.stringify({ type: 'ready', cols: 80, rows: 24, detachedWindows: bad }),
+      );
+      expect(parsed).not.toBeNull();
+      expect(parsed).not.toHaveProperty('detachedWindows');
+    }
+    // An older server omits the flag entirely.
+    expect(
+      parseServerMessage(JSON.stringify({ type: 'ready', cols: 80, rows: 24 })),
+    ).not.toHaveProperty('detachedWindows');
+  });
+});
+
+describe('detached windows — client messages', () => {
+  it('round-trips moveToWindow to a window and to the main window', () => {
+    const toWindow: ClientMessage = { type: 'moveToWindow', ids: ['3', '5'], window: 'wq3k9x2m1a' };
+    expect(parseClientMessage(encodeClientMessage(toWindow))).toEqual(toWindow);
+    const toMain: ClientMessage = { type: 'moveToWindow', ids: ['3'], window: null };
+    expect(parseClientMessage(encodeClientMessage(toMain))).toEqual(toMain);
+    const none: ClientMessage = { type: 'moveToWindow', ids: [], window: null };
+    expect(parseClientMessage(encodeClientMessage(none))).toEqual(none);
+  });
+
+  it('rejects a moveToWindow with a non-tab id, a bad window or an oversized list', () => {
+    expect(send({ ids: ['01'], window: null })).toBeNull(); // not a canonical tab id
+    expect(send({ ids: ['g3f9k2a1'], window: null })).toBeNull(); // a group id
+    expect(send({ ids: [3], window: null })).toBeNull();
+    expect(send({ ids: 'x', window: null })).toBeNull();
+    expect(send({ window: null })).toBeNull(); // ids missing
+    expect(send({ ids: ['1'], window: 'main' })).toBeNull(); // not a window id
+    expect(send({ ids: ['1'], window: '' })).toBeNull();
+    expect(send({ ids: ['1'] })).toBeNull(); // window must be present: null or an id
+    expect(send({ ids: ['1'], window: 7 })).toBeNull();
+    expect(send({ ids: Array.from({ length: 1001 }, () => '1'), window: null })).toBeNull();
+    expect(send({ ids: Array.from({ length: 1000 }, () => '1'), window: null })).not.toBeNull();
+  });
+
+  it('round-trips windowClosing, which carries no fields', () => {
+    const msg: ClientMessage = { type: 'windowClosing' };
+    expect(parseClientMessage(encodeClientMessage(msg))).toEqual(msg);
+  });
+
+  it('keeps a valid window on createTab and drops a bad one', () => {
+    const full: ClientMessage = { type: 'createTab', kind: 'editor', window: 'wq3k9x2m1a' };
+    expect(parseClientMessage(encodeClientMessage(full))).toEqual(full);
+    for (const bad of ['main', '', 7, null]) {
+      const parsed = parseClientMessage(
+        JSON.stringify({ type: 'createTab', kind: 'editor', window: bad }),
+      );
+      expect(parsed).toEqual({ type: 'createTab', kind: 'editor' });
+    }
   });
 });

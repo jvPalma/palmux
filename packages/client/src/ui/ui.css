@@ -397,6 +397,12 @@
   transition: color var(--mo-micro) ease;
 }
 
+/* The extra-small step, below the small one Button and IconButton have: a section header
+   that heads rows as short as itself (Source Control's groups on a phone, 24px). */
+.ui-collapsible-trigger-xs {
+  min-height: calc(var(--ctl-h) - var(--sp-3));
+}
+
 .ui-collapsible-trigger:hover {
   color: var(--t-accent);
 }
@@ -471,7 +477,8 @@
 }
 
 /* ── Dialog ───────────────────────────────────────────────────────────────────
-   Blocking confirms only (kill a tab, close a group) — not an app surface. */
+   Blocking confirms (kill a tab, close a group) — not an app surface, except the
+   New-tab chooser of a detached window, which has no dock to host it. */
 .ui-dialog-overlay {
   position: fixed;
   inset: 0;
@@ -490,6 +497,10 @@
   left: 50%;
   z-index: 91;
   width: min(420px, calc(100vw - 32px));
+  /* Centred by a transform, so content taller than the window would run off both edges with
+     nothing to scroll (the New-tab chooser in a short detached window). */
+  max-height: calc(100vh - 2 * var(--sp-4));
+  overflow: auto;
   transform: translate(-50%, -50%);
   padding: 16px;
   border: 1px solid var(--t-surface);

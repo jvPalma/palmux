@@ -190,8 +190,8 @@ describe('--t-term-bg', () => {
 });
 
 describe('the host the rule is scoped to', () => {
-  // `.term-host` is the one element every terminal pane (the main window, both
-  // split slots, the pop-out) opens xterm into; the rule is dead without it.
+  // `.term-host` is the one element every terminal pane (each pane of the main window
+  // and of a detached window) opens xterm into; the rule is dead without it.
   it('is what TerminalPane opens xterm into', () => {
     const pane = readFileSync(join(__dirname, 'TerminalPane.tsx'), 'utf8');
     expect(pane).toMatch(/className="term-host"/);

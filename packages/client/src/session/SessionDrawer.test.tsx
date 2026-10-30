@@ -2157,14 +2157,21 @@ describe('the Source Control segment', () => {
       return px(tokens.length === 1 ? tokens[0] : tokens[1]);
     };
 
+    /** The drawer's width on a viewport: `min(<n>vw, <cap>px)`, held back from the scrim strip's 44px. */
+    const drawerWidth = (viewport: number): number => {
+      const nav = declsOf(INDEX_CSS, '.drawer');
+      const [, share, cap] = /^min\((\d+)vw,\s*(\d+)px\)$/.exec(nav.get('width')!) ?? [];
+      const strip = px(drawer.get('--drawer-strip'));
+      return Math.min((viewport * Number(share)) / 100, Number(cap), viewport - strip);
+    };
+
     const row = () => {
       const nav = declsOf(INDEX_CSS, '.drawer');
       const top = declsOf(VIEWS_CSS, '.drawer-top');
       const seg = declsOf(UI_CSS, '.ui-seg');
       const icon = declsOf(UI_CSS, '.ui-icon-btn');
-      const strip = px(drawer.get('--drawer-strip'));
       const border = px(tokensOf(nav.get('border-left')!)[0]); // the drawer's own left hairline
-      const content = PHONE - strip - border - 2 * sidePadding(nav.get('padding')!);
+      const content = drawerWidth(PHONE) - border - 2 * sidePadding(nav.get('padding')!);
       const buttons = px(icon.get('width')); // the gear: there is no Close beside the switcher
       const gaps = px(top.get('gap'));
       const wrapper = content - buttons - gaps;
@@ -2186,12 +2193,22 @@ describe('the Source Control segment', () => {
 
     it('leaves every segment a thumb wide, and room for its 15px icon', () => {
       const { content, wrapper, item } = row();
-      // Measured in Chromium at 390px: the row 329, the switcher 285, each segment 68.3.
-      expect(content).toBe(329); // 390 − the 44px scrim strip − 1px border − 2 × 8px of padding
-      expect(wrapper).toBe(285); // minus the one 36px gear and its 8px gap
-      expect(item).toBeCloseTo(68.25, 5);
+      // Measured in Chromium at 390px: the drawer 292.5, the row 275.5, the switcher 231.5,
+      // each segment 54.9. (Before the drawer was narrowed: 346, 329, 285 and 68.3.)
+      expect(drawerWidth(PHONE)).toBe(292.5); // 75% of 390px, under the 340px cap
+      expect(content).toBe(275.5); // minus the 1px border and 2 × 8px of padding
+      expect(wrapper).toBe(231.5); // minus the one 36px gear and its 8px gap
+      expect(item).toBeCloseTo(54.875, 5);
       expect(item).toBeGreaterThanOrEqual(44); // the touch-target floor the strip is held to
       expect(item).toBeGreaterThan(15 + 2 * 4);
+    });
+
+    it('still fits the row on the narrowest phones the drawer is for (320px)', () => {
+      // 75% of 320px is 240px: the row is 223px, each segment (223 − 36 − 8 − 12) / 4 = 41.75px.
+      // A 44px floor no longer holds there; what must hold is that the segments neither clip
+      // nor go under the icon with its padding, and the gear keeps its own box.
+      const narrow = drawerWidth(320) - 1 - 16 - 36 - 8 - 12;
+      expect(narrow / 4).toBeGreaterThan(15 + 2 * 4);
     });
 
     it('draws no visible word: each name is clipped away, so nothing can be truncated', () => {
@@ -2217,7 +2234,7 @@ describe('the Source Control segment', () => {
 
     it('fits four segments even at the kit’s own padding: the restated 0 is room, not need', () => {
       // A kit item carries `--sp-3` (12px) either side: 24px of padding plus the 15px
-      // icon is 39px, still under the 68.3px share. The drawer's 0 is headroom for a
+      // icon is 39px, still under the 54.9px share. The drawer's 0 is headroom for a
       // narrower phone, not what makes four fit at 390px.
       const kit = px(declsOf(UI_CSS, '.ui-seg-item').get('padding')!.split(' ')[1]);
       expect(2 * kit + 15).toBeLessThan(row().item);
@@ -2855,15 +2872,35 @@ describe('the drawer stylesheet', () => {
     expect(Number.parseInt(drawer.get('--drawer-strip') ?? '', 10)).toBeGreaterThanOrEqual(44);
   });
 
-  it('leaves a 44px scrim strip: the drawer is all but that wide, from the right edge', () => {
+  it('is three quarters of the screen, at most 340px, from the right edge, and never closer than 44px to the left one', () => {
     const drawer = declsOf(INDEX_CSS, '.drawer');
     expect(drawer.get('--drawer-strip')).toBe('44px');
-    expect(drawer.get('width')).toBe('calc(100% - var(--drawer-strip))');
+    // The rest of the screen is the scrim strip that closes it (owner, 2026-10-26: "too large").
+    expect(drawer.get('width')).toBe('min(75vw, 340px)');
+    // The strip is never narrower than the touch-target floor, whatever the viewport.
+    expect(drawer.get('max-width')).toBe('calc(100% - var(--drawer-strip))');
     expect(drawer.get('right')).toBe('0');
     // Still bounded by the visible viewport, so the footer clears the keyboard.
     expect(drawer.get('top')).toBe('var(--app-top, 0)');
     expect(drawer.get('height')).toBe('var(--app-height, 100dvh)');
     expect(INDEX_CSS).not.toContain('min(78vw');
+  });
+
+  it.each([
+    [320, 240],
+    [360, 270],
+    [390, 292.5],
+    [412, 309],
+    [480, 340],
+    [1024, 340],
+  ])('gives a %ipx-wide screen a %fpx drawer, and a strip never under 44px', (viewport, width) => {
+    // `width: min(75vw, 340px)` held back by `max-width: calc(100% - var(--drawer-strip))`.
+    const drawer = declsOf(INDEX_CSS, '.drawer');
+    const [, share, cap] = /^min\((\d+)vw,\s*(\d+)px\)$/.exec(drawer.get('width')!) ?? [];
+    const strip = Number.parseInt(drawer.get('--drawer-strip')!, 10);
+    const covered = Math.min((viewport * Number(share)) / 100, Number(cap), viewport - strip);
+    expect(covered).toBe(width);
+    expect(viewport - covered).toBeGreaterThanOrEqual(strip);
   });
 
   it('dims with the same token mix the kit Dialog overlay uses, and is inert until open', () => {
@@ -3090,7 +3127,8 @@ describe('kit controls hosted in the drawer', () => {
 
 // ── Compact lists on a phone ──────────────────────────────────────────────────
 // The owner (2026-10-26) found the session rows too big, in height and in text, beside
-// the footer and the extra-keys bar, whose density he called right. happy-dom has no
+// the footer and the extra-keys bar, whose density he called right, and, seeing 32px rows,
+// asked again: they are 28px now, in a drawer three quarters as wide. happy-dom has no
 // layout, so the sizes are resolved from the stylesheets the way a browser would.
 describe('the drawer lists are compact on a phone', () => {
   /** The first declaration of `prop` under a selector. */
@@ -3108,12 +3146,13 @@ describe('the drawer lists are compact on a phone', () => {
     /:root\[data-mobile='true'\]\s*{[^}]*--ctl-h:\s*(\d+)px/.exec(INDEX_CSS)?.[1],
   );
 
-  it('declares the list row once, one step below the control height', () => {
-    expect(declared('.drawer', '--drawer-row-h')).toBe('calc(var(--ctl-h) - var(--sp-1))');
-    // On a phone that is 32px: at most the extra-keys bar's own 33px key.
+  it('declares the list row once, two spacing steps below the control height', () => {
+    expect(declared('.drawer', '--drawer-row-h')).toBe('calc(var(--ctl-h) - var(--sp-2))');
+    // On a phone that is 28px (owner, 2026-10-26: 32px was not enough): under the extra-keys
+    // bar's own 33px key.
     expect(MOBILE_CTL).toBe(36);
-    const row = MOBILE_CTL - scale('--sp-1');
-    expect(row).toBe(32);
+    const row = MOBILE_CTL - scale('--sp-2');
+    expect(row).toBe(28);
     const key = Number(/\.ek-key\s*{[^}]*min-height:\s*(\d+)px/.exec(INDEX_CSS)?.[1]);
     expect(row).toBeLessThanOrEqual(key);
   });
@@ -3137,11 +3176,11 @@ describe('the drawer lists are compact on a phone', () => {
   });
 
   it('keeps the list pitch at the row plus the two halves of the row gap', () => {
-    // Each leaf is the row and `margin-block: var(--sp-1) / 2` either side: 36px a row
-    // on a phone (measured in Chromium at 390px: 36.25 with the group's frame), so seven
-    // sessions take 252px where they took 280px.
+    // Each leaf is the row and `margin-block: var(--sp-1) / 2` either side: 32px a row
+    // on a phone (measured in Chromium at 390px: 32.3 with the group's frame), so seven
+    // sessions take 224px where they took 252px, and 280px before that.
     expect(declared('.drawer-row', 'margin-block')).toBe('calc(var(--sp-1) / 2)');
-    expect(MOBILE_CTL - scale('--sp-1') + scale('--sp-1')).toBe(36);
+    expect(MOBILE_CTL - scale('--sp-2') + scale('--sp-1')).toBe(32);
   });
 
   it('leaves the footer’s cells, the one density the owner called right, as they were', () => {

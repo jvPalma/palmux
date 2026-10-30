@@ -1,5 +1,5 @@
 // PaneHost keeps every non-terminal tab mounted and positions it by rect. A review
-// tab gets the review pane, told whether it is shown and whether its slot has
+// tab gets the review pane, told whether it is shown and whether its pane has
 // focus, and no other kind's pane stands in for it. The pane's own behaviour
 // (a hidden review issues no request) is ReviewPane.test.tsx; what only the host
 // can get wrong is handing it the right signals.
@@ -30,6 +30,13 @@ vi.mock('../review/ReviewPane', () => ({
   },
 }));
 
+const rectCssSpy = vi.hoisted(() => vi.fn());
+vi.mock('../session/pane-grid', async (orig) => {
+  const real = await orig<typeof import('../session/pane-grid')>();
+  rectCssSpy.mockImplementation(real.rectCss);
+  return { ...real, rectCss: rectCssSpy };
+});
+
 const noop = () => {};
 const none: never[] = [];
 
@@ -42,6 +49,7 @@ function renderHost(
     <PaneHost
       tabs={tabs}
       rects={rects}
+      bodyOffset={false}
       focusedId={focusedId}
       inSplit={false}
       webApps={none}
@@ -62,6 +70,7 @@ const lastSeen = (id: string) => reviewProps.seen.filter((s) => s.id === id).at(
 
 beforeEach(() => {
   reviewProps.seen.length = 0;
+  rectCssSpy.mockClear();
 });
 
 describe('review tabs', () => {
@@ -77,7 +86,7 @@ describe('review tabs', () => {
     }
   });
 
-  it('passes `shown` as visible: a review in a slot is visible, one in none is not', () => {
+  it('passes `shown` as visible: a review shown in a pane is visible, one shown in none is not', () => {
     const { rerender } = renderHost([review], { '3': full });
     expect(lastSeen('3')?.visible).toBe(true);
 
@@ -85,6 +94,7 @@ describe('review tabs', () => {
       <PaneHost
         tabs={[review]}
         rects={{}}
+        bodyOffset={false}
         focusedId={null}
         inSplit={false}
         webApps={none}
@@ -125,5 +135,40 @@ describe('review tabs', () => {
     expect(screen.getByTestId('mock-review-3')).toBeTruthy();
     expect(screen.getByTestId('mock-review-4')).toBeTruthy();
     expect(screen.getAllByTestId('mock-web')).toHaveLength(1);
+  });
+});
+
+describe('body offset', () => {
+  // With strips, each rect is a pane's and the body starts below that pane's strip. The offset
+  // is a `calc` over a token, which happy-dom's style parser refuses to keep, so what is pinned
+  // is that the host asks `rectCss` for it; the CSS string itself is pane-grid.test.ts.
+  it('starts the body below the pane strip when the rects are panes', () => {
+    const pane = { left: 50, top: 0, width: 50, height: 100 };
+    render(
+      <PaneHost
+        tabs={[review]}
+        rects={{ '3': pane }}
+        bodyOffset
+        focusedId={null}
+        inSplit
+        webApps={none}
+        quickLinks={none}
+        onCreate={noop}
+        onUpdateQuickLinks={noop}
+        onChangeUrl={noop}
+        onDirtyChange={noop}
+        onFocus={noop}
+      />,
+    );
+    expect(rectCssSpy).toHaveBeenCalledWith(pane, true);
+    expect(screen.getByTestId('mock-review-3').parentElement!.style.left).toBe('50%');
+  });
+
+  it('uses the rect as it is without strips (the mobile layer)', () => {
+    renderHost([review], { '3': full });
+    expect(rectCssSpy).toHaveBeenCalledWith(full, false);
+    const pane = screen.getByTestId('mock-review-3').parentElement!;
+    expect(pane.style.top).toBe('0%');
+    expect(pane.style.height).toBe('100%');
   });
 });

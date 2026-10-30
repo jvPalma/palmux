@@ -57,6 +57,10 @@
   --r-3: 10px;
   --r-pill: 999px;
   --ctl-h: 28px;
+  /* The gap between a group cluster's frame and its pills. Declared here as well as on the strip
+     rule below because `--group-strip-h` (on `.content-area`) is built from it, and a custom
+     property resolves where it is USED: the content area is not inside a strip. */
+  --cluster-pad: 2px;
 
   /* Tab-accent palette: the 16 ANSI slots + their ink (readable text over a
      solid fill of the slot). Theme-aware — the WHOLE set is overridden per theme
@@ -156,9 +160,88 @@ body {
 /* Terminal + panes share the content area: the terminal is always mounted at
    the bottom of the stack; non-terminal panes overlay it (opaque) when active. */
 .content-area {
+  /* One pane strip's BOX: a framed cluster (pill + padding + 1px frame each side), which is the
+     strip's own min-height, plus the box's 1px bottom border. Every box is border-box, so a token
+     that left the border out would squeeze the strip 1px and a framed cluster would paint over the
+     border. A token and not a number in JS, so a pane's body can start
+     `calc(<top>% + var(--group-strip-h))` and the rect maths stays percentage-only. */
+  --group-strip-h: calc(var(--ctl-h) + 2 * (var(--cluster-pad) + 1px) + 1px);
   position: relative;
   flex: 1 1 auto;
   min-height: 0;
+}
+/* No strip on the mobile layer (the drawer is its tab list): the New-tab page, a sibling of the
+   panes, must not leave room for one. GroupsView sets the same zero on its own root. A detached
+   window draws strips as the main window does, so it has no rule here. */
+.app.mobile .content-area {
+  --group-strip-h: 0px;
+}
+
+/* ── Editor groups ─────────────────────────────────────────────────────────── */
+/* GroupsView draws every pane's strip, terminal, drop overlay and sash as flat, absolutely
+   positioned children of this one box (never nested: nesting would reparent a pane's DOM node
+   on every split or merge, and an iframe or Monaco reloads when its parent changes). Being the
+   positioned ancestor is the whole job of `inset: 0`; PaneHost's own `inset: 0` resolves here. */
+.groups-view {
+  position: absolute;
+  inset: 0;
+}
+/* A pane's tab strip. Focus is told by this box alone (the 1px bottom edge goes accent), never
+   by a ring on the terminal, and nothing animates. NO z-index: the strip's context menu is
+   `position: fixed` inside it and has to rise into the outer stacking context. The token is the
+   strip's min-height plus this border, so the strip inside fits above the border exactly. */
+.group-strip {
+  position: absolute;
+  display: flex;
+  height: var(--group-strip-h);
+  background: var(--t-mantle);
+  border-bottom: 1px solid var(--t-surface);
+}
+.group-strip.group-strip-focused {
+  border-bottom-color: var(--t-accent);
+}
+/* Above `.pane-host` (20) and `.newtab-page` (25), so a drag over an iframe or an editor still
+   reaches it. Mounted only while a tab is dragged. */
+.group-drop-overlay {
+  z-index: 40;
+}
+/* The region a drop would claim. It floats over the terminal grid: no transition. */
+.group-drop-preview {
+  background: color-mix(in srgb, var(--t-accent) 20%, transparent);
+  box-shadow: inset 0 0 0 2px var(--t-accent);
+}
+/* The sash between two panes: an 8px hit area (sized inline) with a 2px line on its centre that
+   goes accent under the pointer. It floats over the terminal, so no transition. */
+.group-sash {
+  background: transparent;
+  touch-action: none;
+}
+.group-sash::after {
+  content: '';
+  position: absolute;
+  background: var(--t-surface);
+}
+.group-sash.row::after {
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  transform: translateX(-1px);
+}
+.group-sash.column::after {
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 2px;
+  transform: translateY(-1px);
+}
+.group-sash:hover::after {
+  background: var(--t-accent);
+}
+/* While a sash is dragged a framed page would take the pointer from it the moment it crossed an
+   iframe, and the drag would be lost. */
+.content-area[data-sash-drag='true'] iframe {
+  pointer-events: none;
 }
 
 .term-wrap {
@@ -205,212 +288,14 @@ body {
   padding: 0;
 }
 
-/* ── Split slots + divider ────────────────────────────────────────────────── */
-/* A slot (terminal or pane) in a split gets a subtle border; the focused slot
-   an accent ring. Rects are applied inline (position:absolute + %). */
+/* ── Pane bodies beside another pane ──────────────────────────────────────── */
+/* A pane's body (terminal or pane) beside another gets a subtle border. Which pane is focused is
+   told by its strip alone (`.group-strip-focused`), never by a ring here. Rects are applied
+   inline (position:absolute + %). */
 .term-wrap.slot,
 .pane.slot {
   border: 1px solid var(--t-surface);
   overflow: hidden;
-}
-.term-wrap.slot.focused,
-.pane.slot.focused {
-  border-color: var(--t-accent);
-  box-shadow: inset 0 0 0 1px var(--t-accent);
-}
-
-.split-divider {
-  background: transparent;
-  touch-action: none;
-}
-.split-divider .split-divider-line {
-  position: absolute;
-  background: var(--t-surface);
-}
-.split-divider.row .split-divider-line {
-  left: 50%;
-  top: 0;
-  bottom: 0;
-  width: 2px;
-  transform: translateX(-1px);
-}
-.split-divider.column .split-divider-line {
-  top: 50%;
-  left: 0;
-  right: 0;
-  height: 2px;
-  transform: translateY(-1px);
-}
-.split-divider:hover .split-divider-line {
-  background: var(--t-accent);
-}
-
-/* Rotate handle. It lives ON the divider because the control is contextual to a
-   split and the desktop topbar that used to hold it is gone. Quiet until the
-   divider is hovered — this floats over the terminal, and permanent chrome there
-   is the thing the whole layout works to avoid. */
-.split-divider-rotate {
-  position: absolute;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  border: 1px solid var(--t-surface);
-  border-radius: 6px;
-  background: var(--t-mantle);
-  color: var(--t-subtext);
-  font-size: 11px;
-  line-height: 1;
-  cursor: pointer;
-  opacity: 0;
-  /* Invisible must also mean intangible. The handle is 20px over a 10px divider,
-     so it overhangs the drag strip by 5px on each side — measured swallowing
-     clicks on the terminal while at opacity 0, which is a dead zone with nothing
-     on screen to explain it. Keyboard activation is unaffected: a focused button
-     still answers Enter regardless of pointer-events. */
-  pointer-events: none;
-  /* NO transition, deliberately. This element floats over the WebGL canvas, and
-     the motion contract is absolute about that: nothing inside the terminal grid
-     animates, because compositing there costs frames where they read as input
-     latency. The reveal is instant — the 0ms tier, which is also the right one
-     for a state the pointer drives. */
-}
-.split-divider.row .split-divider-rotate {
-  left: 50%;
-  top: 8px;
-  transform: translateX(-50%);
-}
-.split-divider.column .split-divider-rotate {
-  top: 50%;
-  right: 8px;
-  transform: translateY(-50%);
-}
-.split-divider:hover .split-divider-rotate,
-.split-divider-rotate:focus-visible {
-  opacity: 1;
-  pointer-events: auto;
-}
-.split-divider-rotate:hover {
-  color: var(--t-accent);
-  border-color: var(--t-accent);
-}
-/* The kit's ring, by hand: this is a bare button, not a `.ui-btn`, and a control
-   revealed only on hover is the last place a keyboard user can afford an
-   invisible focus state. */
-.split-divider-rotate:focus-visible {
-  outline: 2px solid var(--t-accent);
-  outline-offset: 2px;
-  color: var(--t-accent);
-}
-
-/* Drag-to-split drop zones (shown only during a tab drag). */
-.split-dropzones {
-  position: absolute;
-  inset: 0;
-  z-index: 40;
-  pointer-events: none;
-}
-.split-dropzone {
-  position: absolute;
-  pointer-events: auto;
-  transition: background 0.1s;
-}
-.split-dropzone.left {
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 28%;
-}
-.split-dropzone.right {
-  right: 0;
-  top: 0;
-  bottom: 0;
-  width: 28%;
-}
-.split-dropzone.top {
-  top: 0;
-  left: 28%;
-  right: 28%;
-  height: 40%;
-}
-.split-dropzone.bottom {
-  bottom: 0;
-  left: 28%;
-  right: 28%;
-  height: 40%;
-}
-/* Claimed-half preview: shown while a zone is hovered, replacing the old
-   per-zone :hover tint — covers HALF the content area on the hovered side. */
-.split-drop-preview {
-  position: absolute;
-  pointer-events: none;
-  background: color-mix(in srgb, var(--t-accent) 20%, transparent);
-  box-shadow: inset 0 0 0 2px var(--t-accent);
-}
-.split-drop-preview.left {
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 50%;
-}
-.split-drop-preview.right {
-  right: 0;
-  top: 0;
-  bottom: 0;
-  width: 50%;
-}
-.split-drop-preview.top {
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 50%;
-}
-.split-drop-preview.bottom {
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 50%;
-}
-
-/* Drag-onto-slot drop zones (shown during a tab drag while a split is on
-   screen): each covers one slot; dropping replaces that slot's content. */
-.slot-dropzones {
-  position: absolute;
-  inset: 0;
-  z-index: 40;
-  pointer-events: none;
-}
-.slot-dropzone {
-  position: absolute;
-  pointer-events: auto;
-  /* Invisible hit area — the .split-drop-preview overlay paints the hovered
-     slot (so the non-hovered slot stays untinted). */
-}
-
-/* Per-slot eject (top-right of each slot while a split is on screen): removes
-   that tab from the split — subtle until hovered so it never fights content. */
-.slot-eject {
-  position: absolute;
-  z-index: 26;
-  width: 26px;
-  height: var(--ctl-h);
-  padding: 0;
-  border: 1px solid var(--t-surface);
-  border-radius: 4px;
-  background: var(--t-mantle);
-  color: var(--t-text);
-  font-size: 11px;
-  line-height: 1;
-  cursor: pointer;
-  opacity: 0.45;
-  transition: opacity 0.1s;
-}
-.slot-eject:hover {
-  opacity: 1;
-  border-color: var(--t-accent);
-  color: var(--t-accent);
 }
 
 /* ── Panes (web / dashboard / editor tabs) ────────────────────────────────── */
@@ -435,6 +320,8 @@ body {
 .newtab-page {
   position: absolute;
   inset: 0;
+  /* Below the single pane's strip, which stays so `+` is still there. */
+  top: var(--group-strip-h);
   z-index: 25;
   background: var(--t-base);
 }
@@ -1306,14 +1193,14 @@ body {
    open; the scrim strip, a swipe, any action that leaves it, or Escape from inside
    closes it. There is no close button. Swipe LtR raises the keyboard instead) ────
 
-   It covers the full height and all but a 44px strip on the left: the touch-target
-   floor, and a strip that hit-tests as the scrim with the keyboard up or down.
-   Every control in here takes the --ctl-h step (36px under the mobile class), the
-   same one the kit and Settings use, except the LIST rows (a session, a group
-   header, `+ New tab`): those take --drawer-row-h, one step down (32px), the
-   density of the extra-keys bar's keys and the footer, so more sessions fit above
-   the footer. Motion is the surface tier in and the micro tier out: a leaving
-   surface is shorter than an arriving one. */
+   It covers the full height and three quarters of the width, at most 340px (owner,
+   2026-10-26: "too large"); the rest is the scrim strip, which hit-tests as the scrim
+   with the keyboard up or down and is never narrower than 44px, the touch-target
+   floor. Every control in here takes the --ctl-h step (36px under the mobile class),
+   the same one the kit and Settings use, except the LIST rows (a session, a group
+   header, `+ New tab`): those take --drawer-row-h (--ctl-h less --sp-2: 28px), so more
+   sessions fit above the footer. Motion is the surface tier in and the micro tier
+   out: a leaving surface is shorter than an arriving one. */
 .drawer-scrim {
   position: fixed;
   inset: 0;
@@ -1332,12 +1219,12 @@ body {
 }
 
 .drawer {
-  /* The scrim strip the drawer leaves uncovered. */
+  /* The least scrim strip the drawer leaves uncovered. */
   --drawer-strip: 44px;
-  /* A list row: the kit's small step (--ctl-h less --sp-1), written from the same
-     two tokens so it follows the device class and is on the scale by construction.
+  /* A list row: --ctl-h less --sp-2 (28px on a phone), written from the same two
+     tokens so it follows the device class and is on the scale by construction.
      The row's own margin (below) and the leaf's clip are not part of it. */
-  --drawer-row-h: calc(var(--ctl-h) - var(--sp-1));
+  --drawer-row-h: calc(var(--ctl-h) - var(--sp-2));
   position: fixed;
   /* Track the visible viewport like .app: when the soft keyboard is open the
      drawer shrinks to the space above it, so its footer (⬆ Upload, ⚙) stays
@@ -1346,7 +1233,8 @@ body {
   height: var(--app-height, 100dvh);
   right: 0;
   z-index: 65;
-  width: calc(100% - var(--drawer-strip));
+  width: min(75vw, 340px);
+  max-width: calc(100% - var(--drawer-strip));
   display: flex;
   flex-direction: column;
   background: var(--t-mantle);
@@ -2132,62 +2020,6 @@ body {
   opacity: 0.8;
 }
 
-/* ── Top bar / controls ───────────────────────────────────────────────────── */
-/* The topbar holds the tab pills and [+], then the app menu button over the dock
-   rail, centred on one line. A 1px separator marks its lower edge: the old "no
-   bottom border" rule existed only so the Chrome active tab could merge into the
-   content below it, and a pill does not merge with anything. */
-.topbar {
-  --rail-w: 38px;
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  padding: var(--sp-1) var(--sp-2);
-  background: var(--t-mantle);
-  border-bottom: 1px solid var(--t-surface);
-  font-size: var(--fs-2);
-}
-
-.topbar .spacer {
-  flex: 1;
-}
-
-/* The app menu closes the bar, over the dock rail. The rail is a flex-basis literal
-   in session/dock.css (`.dock-rail`, 38px, 1px left border) with its 28px buttons
-   centred in what the border leaves, so the button takes that same centre line and
-   the two read as one column. The margin cancels the bar's own right padding, which
-   the rail does not have. `--rail-w` (on `.topbar`) is that literal's second copy:
-   App.test.tsx fails if the two drift. `flex: none` keeps it from shrinking while a
-   long strip scrolls, which is the point of it sitting outside the strip. */
-.topbar .topbar-menu {
-  flex: none;
-  margin-right: calc((var(--rail-w) - 1px - var(--ctl-h)) / 2 - var(--sp-2));
-}
-
-/* Popped-out window: a slim bar with just brand + return. */
-.popout-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 8px;
-  background: var(--t-mantle);
-  border-bottom: 1px solid var(--t-surface);
-  font-size: 12px;
-}
-.popout-bar .spacer {
-  flex: 1;
-}
-
-.topbar-brand {
-  font-weight: 600;
-  color: var(--t-accent);
-  align-self: center;
-}
-
-.topbar .icon-btn {
-  align-self: center;
-}
-
 /* ── Session tab strip ────────────────────────────────────────────────────── */
 /* Every tab is a bordered pill on one centre line. The look is defined ONCE here,
    from the eight tokens (the owner's tuned values, snapped to the scale: radius
@@ -2226,6 +2058,17 @@ body {
 .session-tabs::-webkit-scrollbar {
   height: 0;
 }
+/* In a pane's strip box the strip takes the whole width, `+` after the last pill. */
+.group-strip .session-tabs {
+  flex: 1 1 auto;
+}
+/* A tab another pane holds is over this strip: its drop moves it into the pane and keeps its
+   server-order place, so the whole strip is the target, never an insertion bar. The centre-drop
+   preview's tint, and no transition (it sits on the line the panes start under). */
+.session-tabs.drop-into {
+  background: color-mix(in srgb, var(--t-accent) 20%, transparent);
+  box-shadow: inset 0 0 0 2px var(--t-accent);
+}
 
 /* The base pill: grows with its title between a minimum and a maximum so a title
    shows in full while there is room, and the strip scrolls only once every pill
@@ -2256,8 +2099,8 @@ body {
 }
 
 /* Hover fills only a pill that is not active (the active one keeps its own
-   fill). A fused pill is excluded: its segments are the hover targets. */
-.ctab:not(.active):not(.fused):hover {
+   fill). */
+.ctab:not(.active):hover {
   background-color: var(--pill-hover);
   color: var(--t-text);
 }
@@ -2304,59 +2147,6 @@ body {
   background: var(--t-mantle);
   color: var(--t-text);
   font: inherit;
-}
-
-/* Fused split pairing: ONE pill, a split glyph then two segments divided by a
-   1px seam. The glyph and the seam are drawn whether or not the pairing is
-   active, so it never reads as two ordinary tabs. When active the PILL takes the
-   ring and the FOCUSED segment takes the raised fill with full text; the other
-   segment stays unfilled with inactive text. Focus is told by fill and weight,
-   never by a member's colour (that is only its dot). */
-.ctab.fused {
-  padding: 0;
-  gap: 0;
-  min-width: 0;
-  max-width: none;
-  flex: 0 0 auto;
-  align-items: stretch;
-  /* One shared outer radius for the pair, clipped so the segments square off
-     against the seam instead of each rounding themselves. */
-  overflow: hidden;
-}
-.ctab.fused.active {
-  background-color: transparent;
-}
-.fused-glyph {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  padding: 0 var(--sp-1) 0 var(--sp-2);
-}
-.fused-seg {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  min-width: 90px;
-  padding: 0 var(--sp-2);
-  border: 0;
-  border-radius: 0;
-  color: var(--pill-text);
-  font: inherit;
-  font-weight: 500;
-  cursor: pointer;
-  overflow: hidden;
-}
-.fused-seg + .fused-seg {
-  border-left: 1px solid var(--pill-border);
-}
-.fused-seg:not(.on):hover {
-  background-color: var(--pill-hover);
-  color: var(--t-text);
-}
-.ctab.fused.active .fused-seg.on {
-  background-color: var(--pill-fill);
-  color: var(--t-text);
-  font-weight: 600;
 }
 
 /* Reorder insertion bar while a tab drag hovers the strip: the accent edge marks
@@ -2958,29 +2748,20 @@ body {
   margin: var(--sp-2) 0;
 }
 
-/* ── PWA window-controls-overlay: lay the topbar into the titlebar area ──────── */
+/* ── PWA window-controls-overlay: an empty title bar above the content ───────── */
+/* There is no topbar any more (each pane draws its own strip, the app menu is the dock rail's
+   first control). In window-controls-overlay mode the native controls lie over the top of the
+   window, so this empty drag region keeps them off the panes and the rail. It is nothing
+   anywhere else. */
+.wco-titlebar {
+  display: none;
+}
 @media (display-mode: window-controls-overlay) {
-  .topbar {
-    padding-left: env(titlebar-area-x, 0px);
-    /* The strip runs from titlebar-area-x to x + width, and `box-sizing:
-       border-box` is global — so a bare `width: …-width` starts at 0 and stops
-       short by exactly the left inset. Zero on Windows (buttons on the right),
-       ~75px on macOS, where the traffic lights sit on the left. */
-    width: calc(env(titlebar-area-x, 0px) + env(titlebar-area-width, 100%));
-    /* MIN, never a fixed height. The title bar is ~33px and this topbar needs
-       ~43 (4px padding each side + a 34px strip + a 1px separator); forcing the
-       smaller number clips the strip, because `.session-tabs` sets
-       `overflow-x: auto` and that makes overflow-y compute to `auto` too. The
-       active pill's ring and a cluster's frame live at the strip's edges, so
-       they would be the first to go — the topbar may overflow the title bar
-       instead. */
-    min-height: env(titlebar-area-height, auto);
+  .wco-titlebar {
+    display: block;
+    flex: none;
+    height: env(titlebar-area-height);
     -webkit-app-region: drag;
-  }
-  .topbar button,
-  .topbar input,
-  .topbar .session-tabs {
-    -webkit-app-region: no-drag;
   }
 }
 

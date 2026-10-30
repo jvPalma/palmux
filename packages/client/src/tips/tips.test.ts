@@ -47,10 +47,11 @@ describe('tips', () => {
       expect(text).toMatch(/swipe right/i);
     });
 
-    it('puts Settings at the top, beside the close button', () => {
+    it('puts Settings at the right end of the top row, where no close button is', () => {
       const text = tip('Settings at the top of the drawer').description;
       expect(text).toMatch(/top of the drawer/i);
-      expect(text).toMatch(/close button/i);
+      expect(text).toMatch(/right end/i);
+      expect(text).not.toMatch(/close button|✕/i);
     });
 
     it('describes the keyboard hold and the picker hold', () => {
@@ -60,14 +61,28 @@ describe('tips', () => {
       expect(text).toMatch(/until the file picker returns/i);
     });
 
-    it('puts the gear, the four-icon switcher and Close in one row at the top', () => {
+    it('puts the four-icon switcher and the gear at its right end in one row at the top', () => {
       const text = tip('Sessions drawer').description;
       expect(text).toMatch(/at the very top is one row/i);
       expect(text).toMatch(
-        /Settings.*four-icon switcher \(Sessions, Explorer, Source Control, Dictation\)/i,
+        /four-icon switcher \(Sessions, Explorer, Source Control, Dictation\) with the Settings gear at its right end/i,
       );
+      expect(text).not.toMatch(/close button|✕/i);
       expect(text).not.toMatch(/three-icon/i);
       expect(text).not.toMatch(/just above them/i);
+    });
+
+    it('names the ways out of a drawer that has no close button', () => {
+      const text = tip('Sessions drawer').description;
+      expect(text).toMatch(/tap the strip/i);
+      expect(text).toMatch(/every footer action close the drawer/i);
+      expect(text).toMatch(/Escape/);
+    });
+
+    it('says the drawer covers about three quarters of the screen, the rest being the strip', () => {
+      const text = tip('Sessions drawer').description;
+      expect(text).toMatch(/about three quarters of the screen/i);
+      expect(text).not.toMatch(/covers the screen except/i);
     });
 
     it('says a bar with the drawer swipe is always present, the review bar on a review', () => {
@@ -98,6 +113,32 @@ describe('tips', () => {
         const text = tip(title).description;
         expect(text, title).toMatch(/swipe/i);
       }
+    });
+  });
+
+  describe('windows', () => {
+    it('says a new window takes the tab and gives it back when it closes', () => {
+      const text = tip('Open in a new window').description;
+      expect(text).toMatch(/leaves the main window/i);
+      expect(text).toMatch(/come back to the main window, still running/i);
+      expect(text).toMatch(/Move to main window/);
+    });
+
+    it('says a tab drags onto a strip, a pane’s middle or a pane’s edge, and what will not move', () => {
+      const text = tip('Drag tabs between windows').description;
+      expect(text).toMatch(/tab strip/i);
+      expect(text).toMatch(/middle/i);
+      expect(text).toMatch(/edge/i);
+      expect(text).toMatch(/unsaved changes will not move by drag/i);
+    });
+
+    it('keeps no wording from the old pop-out', () => {
+      for (const t of TIPS) {
+        expect(t.description, t.title).not.toMatch(
+          /return-to-main|popped window|takes the session over/i,
+        );
+      }
+      expect(TIPS.some((t) => t.title === 'Pop out to a window')).toBe(false);
     });
   });
 

@@ -20,13 +20,31 @@ const COLLAPSED_KEY = 'palmux-collapsed-groups';
 interface UseTabGroupsOptions {
   /** Reactive — the auto-expand effect keys on these (every path that lands on a tab). */
   tabs: TabMeta[];
-  sessionId: string;
+  /**
+   * Every pane's active tab: the tabs on screen. With editor groups that is one per pane; without
+   * them (the mobile layer) it is `[sessionId]`. Keep the array's identity while the set
+   * is unchanged: the auto-expand effect keys on it.
+   */
+  activeIds: string[];
+  /**
+   * The ids of every tab in the pane that holds `tabId`, in server order (without editor groups,
+   * the whole list). Read at call time: the collapse guard looks for a way out inside that pane.
+   */
+  stripOf: (tabId: string) => string[];
+  /** Show `toId` in the pane that shows `fromId`. */
+  switchTo: (fromId: string, toId: string) => void;
   /** Read at call time inside handlers. */
   tabsRef: MutableRefObject<TabMeta[]>;
-  sessionIdRef: MutableRefObject<string>;
+  /**
+   * The FULL tab list, hidden tabs included, when `tabs` is only the part this window shows
+   * (a detached window, or a main window with one open). Read only by `addToGroup`, whose
+   * `order` must keep every other window's tabs in place: the server appends an id a request
+   * omits at the END. Defaults to `tabsRef`. Collapse, switch, close-all and remove stay on the
+   * visible list, so they never reach a tab another window shows.
+   */
+  fullTabsRef?: MutableRefObject<TabMeta[]>;
   dirtyRef: MutableRefObject<{ [id: string]: boolean }>;
   wsRef: MutableRefObject<WsClient | null>;
-  switchSession: (id: string) => void;
   showToast: (msg: string) => void;
 }
 
@@ -49,12 +67,13 @@ export interface TabGroupsApi {
 
 export function useTabGroups({
   tabs,
-  sessionId,
+  activeIds,
+  stripOf,
+  switchTo,
   tabsRef,
-  sessionIdRef,
+  fullTabsRef = tabsRef,
   dirtyRef,
   wsRef,
-  switchSession,
   showToast,
 }: UseTabGroupsOptions): TabGroupsApi {
   const [groups, setGroups] = useState<TabGroup[]>([]);
@@ -65,30 +84,37 @@ export function useTabGroups({
   );
   const collapsedRef = useRef(collapsed);
   collapsedRef.current = collapsed;
+  // The newest on-screen tabs and pane lookup, for the collapse guard, which runs from a click.
+  const activeIdsRef = useRef(activeIds);
+  activeIdsRef.current = activeIds;
+  const stripOfRef = useRef(stripOf);
+  stripOfRef.current = stripOf;
 
   // Persist the collapsed-group view state per device.
   useEffect(() => {
     localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...collapsed]));
   }, [collapsed]);
 
-  // THE centralized auto-expand: whenever the active tab belongs to
-  // a COLLAPSED group, expand it. Keyed on sessionId + tabs — the only two inputs
+  // THE centralized auto-expand: whenever a tab on screen (any pane's active tab) belongs to
+  // a COLLAPSED group, expand it. Keyed on activeIds + tabs — the only two inputs
   // the body reads (membership lives on tabs, via groupId). This fires for EVERY
-  // path that lands on a tab, including the many that call setSessionId directly
-  // (split re-tile, boot, close-nav, popstate, reconcile) and bypass selectTab.
+  // path that lands on a tab, including the many that change the selection directly
+  // (a drop into a pane, boot, close-nav, reconcile) and bypass selectTab.
   // Reads collapsed via ref so it never loops on its own update (the updater also
   // bails with the same Set reference).
   useEffect(() => {
-    const gid = groupIdOf(tabs, sessionId);
-    if (gid && collapsedRef.current.has(gid)) {
-      setCollapsed((prev) => {
-        if (!prev.has(gid)) return prev;
-        const next = new Set(prev);
-        next.delete(gid);
-        return next;
-      });
+    const open = new Set<string>();
+    for (const id of activeIds) {
+      const gid = groupIdOf(tabs, id);
+      if (gid && collapsedRef.current.has(gid)) open.add(gid);
     }
-  }, [sessionId, tabs]);
+    if (open.size === 0) return;
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      for (const gid of open) next.delete(gid);
+      return next.size === prev.size ? prev : next;
+    });
+  }, [activeIds, tabs]);
 
   const applyBroadcast = useCallback((nextGroups: TabGroup[]) => {
     setGroups(nextGroups);
@@ -105,7 +131,7 @@ export function useTabGroups({
   );
   const addToGroup = useCallback(
     (id: string, gid: string) => {
-      const src = tabsRef.current;
+      const src = fullTabsRef.current;
       const members = src.filter((t) => t.groupId === gid).map((t) => t.id);
       // Pull the tab TO the group (Chrome-style) — land it right after the last
       // member so the group's block stays put, instead of letting normalizeOrder
@@ -119,7 +145,7 @@ export function useTabGroups({
       const order = [...without.slice(0, at), id, ...without.slice(at)];
       wsRef.current?.sendGroupUpdate({ id: gid, addIds: [id], order });
     },
-    [tabsRef, wsRef],
+    [fullTabsRef, wsRef],
   );
   const removeFromGroup = useCallback(
     (id: string) => {
@@ -147,23 +173,30 @@ export function useTabGroups({
     [wsRef],
   );
 
-  // Collapse toggle with the active-tab guard: collapsing a group that owns the
-  // active tab would hide the visible pane — navigate to the nearest OUTSIDE tab
-  // first, and refuse (toast) when the group IS the whole strip.
+  // Collapse toggle with the active-tab guard: collapsing a group that owns a pane's
+  // active tab would hide the visible pane — that pane first navigates to the nearest
+  // OUTSIDE tab of ITS OWN strip, and the whole collapse is refused (toast) when any
+  // pane has none, i.e. the group IS that pane's whole strip. Every pane is checked
+  // before any is switched, so a refusal leaves every pane where it was.
   const toggleGroup = useCallback(
     (gid: string) => {
       // Single-flight per user gesture (one chip click / one drawer-header tap),
       // so the ref snapshot here and the functional updater below always agree on
       // whether we're collapsing — no path invokes this twice within one batch.
       const collapsing = !collapsedRef.current.has(gid);
-      if (collapsing && groupIdOf(tabsRef.current, sessionIdRef.current) === gid) {
-        const ids = tabsRef.current.map((t) => t.id);
-        const outside = nearestOutside(ids, groupIdMap(tabsRef.current), gid);
-        if (outside === null) {
-          showToast("Can't collapse the only group");
-          return;
+      if (collapsing) {
+        const groupOf = groupIdMap(tabsRef.current);
+        const moves: Array<[from: string, to: string]> = [];
+        for (const active of activeIdsRef.current) {
+          if (groupOf(active) !== gid) continue;
+          const outside = nearestOutside(stripOfRef.current(active), groupOf, gid);
+          if (outside === null) {
+            showToast("Can't collapse the only group");
+            return;
+          }
+          moves.push([active, outside]);
         }
-        switchSession(outside);
+        for (const [from, to] of moves) switchTo(from, to);
       }
       setCollapsed((prev) => {
         const nextSet = new Set(prev);
@@ -172,7 +205,7 @@ export function useTabGroups({
         return nextSet;
       });
     },
-    [switchSession, showToast, sessionIdRef, tabsRef],
+    [switchTo, showToast, tabsRef],
   );
 
   // Close every tab in a group behind ONE kind-aware confirmation: it names the

@@ -65,6 +65,15 @@ export function isTabKind(v: unknown): v is TabKind {
   return typeof v === 'string' && (TAB_KINDS as readonly string[]).includes(v);
 }
 
+// A detached window id: 'w' followed by 6–16 lowercase-alnum chars. The opener mints
+// it (`newWindowId`, 'w' + 10 base-36 chars) and the server validates it with this
+// same rule. Shape-distinct from a tab id (a bare number) and a group id ('g…').
+const WINDOW_ID_RE = /^w[0-9a-z]{6,16}$/;
+
+export function isWindowId(s: unknown): s is string {
+  return typeof s === 'string' && WINDOW_ID_RE.test(s);
+}
+
 export interface TabMeta {
   /** Numeric-string workspace id — same id space as the URL path. */
   id: string;
@@ -80,6 +89,8 @@ export interface TabMeta {
   /** Tab-group membership (isGroupId); absent = ungrouped. Independent of the
    *  tab's own name/color — the group has its own (see TabGroup). */
   groupId?: string;
+  /** Detached window holding this tab (isWindowId); absent = the main window. */
+  window?: string;
 }
 
 /**
@@ -116,6 +127,8 @@ export interface ReadyMessage {
   webApps: WebAppLink[];
   /** Server build version (package version + optional short git sha); '' if unknown. */
   version: string;
+  /** Present (`true`) when the server supports detached windows; absent on an older server. */
+  detachedWindows?: true;
 }
 
 /** Current server-persisted settings. Sent on connect and after any change. */
@@ -146,6 +159,13 @@ export interface ExitMessage {
  */
 export interface DetachedMessage {
   type: 'detached';
+  /**
+   * Present (`true`) when the tab has moved to another window: the evicted socket's window no
+   * longer holds it, and the `sessions` broadcast that moved it (sent before this frame, on the
+   * control socket) takes the pane away. Not a rival, so the pane shows nothing. Absent on a
+   * takeover, and from an older server.
+   */
+  moved?: true;
 }
 
 /** Outcome of an `importTheme`, reported back to the client that asked. */
@@ -302,6 +322,8 @@ export interface CreateTabMessage {
   url?: string;
   name?: string;
   color?: string;
+  /** Detached window to create the tab in (isWindowId); absent = the main window. */
+  window?: string;
 }
 
 /** Update tab metadata. Empty-string `name`/`color` clears the field. */
@@ -353,6 +375,23 @@ export interface GroupUpdateMessage {
   order?: string[];
 }
 
+/**
+ * Move tabs into a detached window, or back to the main window (`window: null`).
+ * Unknown ids are ignored. Order and groups are untouched; the next `sessions`
+ * broadcast, whose tabs carry `window`, is the answer.
+ */
+export interface MoveToWindowMessage {
+  type: 'moveToWindow';
+  ids: string[];
+  window: string | null;
+}
+
+/** A detached window is going away (`pagehide`): its control socket's close starts
+ *  the short release grace instead of the long one. */
+export interface WindowClosingMessage {
+  type: 'windowClosing';
+}
+
 /** Liveness probe; the server replies with `pong`. Used to detect a zombie
  *  socket (readyState OPEN but the connection is dead — common on mobile). */
 export interface PingMessage {
@@ -377,6 +416,8 @@ export type ClientMessage =
   | GroupCreateMessage
   | GroupUpdateMessage
   | ImportThemeMessage
+  | MoveToWindowMessage
+  | WindowClosingMessage
   | PingMessage;
 
 // ── Encode / decode helpers ───────────────────────────────────────────────────
@@ -413,6 +454,8 @@ function parseTabMeta(v: unknown): TabMeta | null {
     ...copyStrings(v, ['name', 'color', 'url', 'title']),
     // groupId is validated (else dropped) — an invalid membership never survives.
     ...(isGroupId(v['groupId']) ? { groupId: v['groupId'] } : {}),
+    // Same for window: a malformed owner reads as the main window.
+    ...(isWindowId(v['window']) ? { window: v['window'] } : {}),
   };
 }
 
@@ -487,6 +530,7 @@ export function parseServerMessage(data: string): ServerMessage | null {
               : DEFAULT_MAX_UPLOAD_BYTES,
           webApps: parseWebApps(raw['webApps']),
           version: typeof raw['version'] === 'string' ? raw['version'] : '',
+          ...(raw['detachedWindows'] === true ? { detachedWindows: true as const } : {}),
         };
       }
       return null;
@@ -505,7 +549,7 @@ export function parseServerMessage(data: string): ServerMessage | null {
         signal: typeof raw['signal'] === 'number' ? raw['signal'] : null,
       };
     case 'detached':
-      return { type: 'detached' };
+      return raw['moved'] === true ? { type: 'detached', moved: true } : { type: 'detached' };
     case 'themeImported': {
       const out: ThemeImportedMessage = { type: 'themeImported', ok: raw['ok'] === true };
       if (typeof raw['id'] === 'string') out.id = raw['id'];
@@ -628,6 +672,7 @@ export function parseClientMessage(data: string): ClientMessage | null {
         type: 'createTab',
         kind: raw['kind'],
         ...copyStrings(raw, ['url', 'name', 'color']),
+        ...(isWindowId(raw['window']) ? { window: raw['window'] } : {}),
       };
     case 'updateTab':
       if (typeof raw['id'] !== 'string') return null;
@@ -639,6 +684,15 @@ export function parseClientMessage(data: string): ClientMessage | null {
       if (!Array.isArray(ids) || ids.length > 1000 || !ids.every(isTabId)) return null;
       return { type: 'reorderTabs', ids: ids as string[] };
     }
+    case 'moveToWindow': {
+      const ids = parseTabIdList(raw['ids']);
+      const window = raw['window'];
+      // `window` must be present: null (the main window) or a valid id.
+      if (ids === null || (window !== null && !isWindowId(window))) return null;
+      return { type: 'moveToWindow', ids, window };
+    }
+    case 'windowClosing':
+      return { type: 'windowClosing' };
     case 'groupCreate': {
       const ids = parseTabIdList(raw['ids']); // member ids are tab ids
       if (ids === null) return null;

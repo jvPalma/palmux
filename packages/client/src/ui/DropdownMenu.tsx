@@ -1,7 +1,7 @@
 // ── Kit: DropdownMenu ─────────────────────────────────────────────────────────
 //
 // A menu opened by a BUTTON, as ContextMenu is a menu opened by a right-click or
-// a long press. The app menu in the topbar is the first caller. Radix keeps what
+// a long press. The app menu at the top of the dock rail is the first caller. Radix keeps what
 // a popover of buttons would lose: `role="menu"`, roving focus, type-ahead,
 // Escape, and focus returning to the trigger on close.
 //
@@ -86,6 +86,8 @@ export interface DropdownMenuProps {
   testidPrefix?: string | undefined;
   /** Which edge of the trigger the menu lines up with. */
   align?: 'start' | 'center' | 'end' | undefined;
+  /** Which side of the trigger the menu opens on. A trigger on the window's right edge opens `left`. */
+  side?: 'top' | 'right' | 'bottom' | 'left' | undefined;
 }
 
 /** One item, or the adjacent items of one radio set. */
@@ -198,6 +200,7 @@ export function DropdownMenu({
   children,
   testidPrefix,
   align = 'start',
+  side = 'bottom',
 }: DropdownMenuProps) {
   if (items.length === 0) return <>{children}</>;
   return (
@@ -211,6 +214,7 @@ export function DropdownMenu({
         <Radix.Content
           className="ui-menu ui-dropdown"
           align={align}
+          side={side}
           sideOffset={4}
           collisionPadding={8}
           data-testid={testidPrefix}

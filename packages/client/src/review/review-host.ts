@@ -1,10 +1,10 @@
 // ── What a review pane takes from the app around it ────────────────────────────
 //
-// A review lives inside `PaneHost`, which lives inside `SplitView`, and neither
+// A review lives inside `PaneHost`, which lives inside `GroupsView`, and neither
 // carries settings or the project list. Rather than thread six props through two
 // components that know nothing about Source Control, App provides this once and
 // the pane reads it. PaneHost still passes what only it knows: whether the pane is
-// shown, and whether its slot has focus.
+// shown, and whether its pane has focus.
 
 import { createContext, useContext } from 'react';
 import type { ScmAlgorithm } from '@palmux/shared';

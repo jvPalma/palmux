@@ -304,6 +304,60 @@ describe('gaps', () => {
     expect(lines.slice(0, 3)).toEqual([30, 31, 32]);
     expect(requests).toHaveLength(fetched);
   });
+
+  // A phone is asked for one divider row per hunk. It is an argument of `getRows`, like the
+  // layout, so a render can ask for it, and the rows are cached per answer.
+  describe('merged dividers', () => {
+    const loaded = async () => {
+      const made = setup();
+      made.model.setEntries([entry('a.txt')], 'e0');
+      made.model.setVisibleRows(0, 1);
+      made.requests[0]!.resolve(big());
+      await flush();
+      return made;
+    };
+    const dividers = (model: ReviewModel, merged?: boolean) =>
+      (merged === undefined ? model.getRows('unified') : model.getRows('unified', merged)).rows
+        .filter((r) => r.type === 'gap' || r.type === 'hunkHeader')
+        .map((r) => r.type);
+
+    it('is two rows a hunk by default and one when asked for merged', async () => {
+      const { model } = await loaded();
+      expect(dividers(model)).toEqual(['gap', 'hunkHeader', 'gap']);
+      expect(dividers(model, true)).toEqual(['gap', 'gap']);
+      const gap = model.getRows('unified', true).rows.find((r) => r.type === 'gap');
+      expect(gap).toMatchObject({ type: 'gap', gapIndex: 0, hunk: { hunkIndex: 0 } });
+    });
+
+    it('goes back to two rows when asked again, and caches each answer', async () => {
+      const { model } = await loaded();
+      const merged = model.getRows('unified', true);
+      expect(model.getRows('unified', true)).toBe(merged);
+      const plain = model.getRows('unified', false);
+      expect(plain).not.toBe(merged);
+      expect(model.getRows('unified', true).rows).not.toBe(plain.rows);
+      expect(dividers(model, false)).toEqual(['gap', 'hunkHeader', 'gap']);
+    });
+
+    it('keeps the last answer for a caller that names none, as it does the layout', async () => {
+      const { model } = await loaded();
+      model.getRows('unified', true);
+      expect(dividers(model)).toEqual(['gap', 'gap']);
+      model.getRows('unified', false);
+      expect(dividers(model)).toEqual(['gap', 'hunkHeader', 'gap']);
+    });
+
+    it('keeps expansion across the switch: a revealed step shows in both shapes', async () => {
+      const { model } = await loaded();
+      const start = model.getRows('unified', true).rows.find((r) => r.type === 'gap');
+      if (start?.type !== 'gap') throw new Error('no gap');
+      model.expand('a.txt', start, 'up');
+      for (const merged of [true, false]) {
+        const gap = model.getRows('unified', merged).rows.find((r) => r.type === 'gap');
+        expect(gap).toMatchObject({ type: 'gap', hidden: 29 });
+      }
+    });
+  });
 });
 
 describe('versions, algorithms and stale answers', () => {

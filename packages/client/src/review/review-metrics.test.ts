@@ -275,7 +275,7 @@ describe('the compact rows of a phone', () => {
   const phone = (): HeightContext => ({ ...ctx(), compact: true });
 
   it('is the desktop table with a shorter header, gap and hunk, and nothing else changed', () => {
-    expect(COMPACT_ROW_METRICS).toEqual({ ...ROW_METRICS, header: 36, gap: 28, hunk: 20 });
+    expect(COMPACT_ROW_METRICS).toEqual({ ...ROW_METRICS, header: 28, gap: 20, hunk: 20 });
     expect(COMPACT_ROW_METRICS.header).toBeLessThan(ROW_METRICS.header);
     expect(COMPACT_ROW_METRICS.gap).toBeLessThan(ROW_METRICS.gap);
     expect(COMPACT_ROW_METRICS.hunk).toBeLessThan(ROW_METRICS.hunk);
@@ -284,15 +284,26 @@ describe('the compact rows of a phone', () => {
     expect(COMPACT_ROW_METRICS.error).toBe(ROW_METRICS.error);
   });
 
-  it('holds a gap and a hunk header to 28px, and a hunk header to one code line', () => {
-    expect(estimateRowHeight(gap, phone())).toBeLessThanOrEqual(28);
-    expect(estimateRowHeight(hunk, phone())).toBeLessThanOrEqual(28);
+  it('holds a divider (a gap, or a hunk header) to 20px, one code line, and a file header to 28px', () => {
+    expect(estimateRowHeight(gap, phone())).toBeLessThanOrEqual(20);
+    expect(estimateRowHeight(hunk, phone())).toBeLessThanOrEqual(20);
+    expect(estimateRowHeight(gap, phone())).toBe(ROW_METRICS.line);
     expect(estimateRowHeight(hunk, phone())).toBe(ROW_METRICS.line);
+    expect(estimateRowHeight(fileHeader, phone())).toBeLessThanOrEqual(28);
+  });
+
+  it('sizes a gap that carries its hunk’s heading as a gap, not as a gap and a header', () => {
+    const merged: GapRow = {
+      ...gap,
+      hunk: { hunkIndex: 1, header: 'fn', range: '@@ -1,1 +1,1 @@' },
+    };
+    expect(estimateRowHeight(merged, phone())).toBe(20);
+    expect(estimateRowHeight(merged, ctx())).toBe(32);
   });
 
   it.each([
-    ['a file header', fileHeader, 40, 36],
-    ['a gap', gap, 32, 28],
+    ['a file header', fileHeader, 40, 28],
+    ['a gap', gap, 32, 20],
     ['a hunk header', hunk, 24, 20],
   ])('sizes %s at %ipx on a desktop and %ipx on a phone', (_, row, desktop, mobile) => {
     expect(estimateRowHeight(row, ctx())).toBe(desktop);
@@ -311,9 +322,9 @@ describe('the compact rows of a phone', () => {
     const desktop = computeGeometry(rows, ctx());
     const small = computeGeometry(rows, phone());
     expect([...desktop.sizes]).toEqual([40, 32, 24, 20, 20, 20]);
-    expect([...small.sizes]).toEqual([36, 28, 20, 20, 20, 20]);
+    expect([...small.sizes]).toEqual([28, 20, 20, 20, 20, 20]);
     // The offsets are the running totals of those sizes, which anchoring reads.
-    expect(small.offsets[rows.length]).toBe(36 + 28 + 20 + 3 * 20);
+    expect(small.offsets[rows.length]).toBe(28 + 20 + 20 + 3 * 20);
     expect(small.offsets[rows.length]).toBeLessThan(desktop.offsets[rows.length] ?? 0);
   });
 

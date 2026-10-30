@@ -49,6 +49,7 @@ import { hasLineBreak, LINE_BREAK_MESSAGE } from '../panes/DashboardBody';
 import { normalizePin, rootLabel } from '../panes/explorer-pins';
 import { entryIconUrl, iconIndex, loadIconIndex, type IconIndex } from '../panes/file-icons';
 import { pressMove } from '../panes/press';
+import { useMobileLayer } from '../review/review-density';
 import { useComments } from '../review/use-comments';
 import { loadSettings, onSettingsChange, type ClientSettings } from '../settings/settings';
 import { commentsMarkdown, copyPendingText } from './copy-comments';
@@ -311,9 +312,12 @@ interface GroupSectionProps {
 }
 
 const GroupSection = ({ id, title, repo, entries, icons, tree, onOpen }: GroupSectionProps) => {
-  // Rows are `--ctl-h` tall (28px, 36px on a phone), so they are measured rather
+  // Rows are `--scm-row-h` tall (28px, 24px on a phone), so they are measured rather
   // than assumed; the default only sizes the scrollbar until they are.
   const rowHeight = useDynamicRowHeight({ defaultRowHeight: 28 });
+  // On a phone the header takes the kit's extra-small step, so it is no taller than the
+  // rows it heads (24px); the desktop keeps the control height its rows have.
+  const compact = useMobileLayer();
   const listRef = useListRef(null);
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(
     () => new Set(readCollapsed(repo, id)),
@@ -398,6 +402,7 @@ const GroupSection = ({ id, title, repo, entries, icons, tree, onOpen }: GroupSe
         </>
       }
       storageKey={`palmux-scm-group-${id}`}
+      size={compact ? 'xs' : 'md'}
       data-testid={`scm-group-${id}`}
     >
       {entries.length > LONG_GROUP_ROWS ? (

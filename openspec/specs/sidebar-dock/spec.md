@@ -8,9 +8,9 @@ Settings, the new-tab chooser, Files and Dictation are views of one right-side d
 
 ### Requirement: App surfaces render in a side dock instead of modals
 
-palmux SHALL host Settings, the new-tab chooser, Files and Dictation as **views of one right-side
-dock** rather than as modal overlays. The dock SHALL occupy layout width, shrinking the content area,
-and MUST NOT cover the terminal — the terminal is what the user is reading from while using these
+palmux SHALL host Settings, the new-tab chooser, Files, Source Control and Dictation as **views of one
+right-side dock** rather than as modal overlays. The dock SHALL occupy layout width, shrinking the content
+area, and MUST NOT cover the terminal — the terminal is what the user is reading from while using these
 surfaces. Exactly one view SHALL be active at a time, and the active view SHALL persist per device.
 
 #### Scenario: Opening settings keeps the terminal readable
@@ -23,6 +23,12 @@ surfaces. Exactly one view SHALL be active at a time, and the active view SHALL 
 
 - **WHEN** the dock is showing Settings and the user selects Files
 - **THEN** the dock stays open and swaps its content
+
+#### Scenario: Source Control is a dock view
+
+- **WHEN** the user selects Source Control on the rail
+- **THEN** the dock shows the Source Control view beside the content area, and a review it opens goes to
+  the content area, not the dock
 
 ### Requirement: Toggling the dock must not storm attached shells
 
@@ -56,14 +62,19 @@ offer a control that promotes it to a full tab/pane, leaving the dock free for a
 
 ### Requirement: The rail orders entries by frequency of use
 
-The desktop rail SHALL list, from top to bottom: New tab, Explorer, Dictation, a separator, Upload,
-Download, and Settings pinned to the bottom of the rail.
+The desktop rail SHALL list, from top to bottom: the app menu button, New tab, Explorer, Source Control, Dictation, a
+separator, Upload, Download, and Settings pinned to the bottom of the rail.
 
 #### Scenario: Settings sits at the bottom
 
 - **WHEN** the rail is visible on desktop
-- **THEN** New tab is the topmost entry and Settings is the bottommost, separated from the other
-  entries by free space
+- **THEN** the app menu button is the topmost control, New tab the topmost view entry below it, and Settings is the
+  bottommost, separated from the other entries by free space
+
+#### Scenario: Source Control follows Explorer
+
+- **WHEN** the rail is visible on desktop
+- **THEN** Source Control is the entry directly below Explorer and directly above Dictation
 
 ### Requirement: The desktop rail is always shown
 

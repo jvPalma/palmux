@@ -149,3 +149,29 @@ describe('the real terminal follows the system scheme', () => {
     expect(document.querySelector('.xterm')).toBe(terminal);
   });
 });
+
+// The same gap, for the detached-window claim: the stub pane in App.test.tsx pins that App hands a
+// pane its window, and session-url.test.ts pins what `wsUrlFor` does with one. What joins them is
+// the real pane building its data URL, so a pane that forgot to pass it on would pass both.
+describe('the real terminal names its detached window on the data socket', () => {
+  const dataUrls = () => sockets.map((s) => s.url).filter((url) => !url.includes('control=1'));
+  const bootAt = (path: string, tab: Record<string, unknown>) => {
+    history.replaceState(null, '', path);
+    render(<App />);
+    const control = sockets.find((s) => s.url.includes('control=1'));
+    if (!control?.handler) throw new Error('control socket not connected');
+    act(() => control.handler?.({ type: 'sessions', tabs: [tab] }));
+  };
+
+  it('claims the window in a detached window', () => {
+    bootAt('/window/wq3k9x2m1ab?tab=0', { id: '0', kind: 'terminal', window: 'wq3k9x2m1ab' });
+    expect(dataUrls()).toHaveLength(1);
+    expect(dataUrls()[0]).toMatch(/\/ws\?session=0&kind=terminal&client=[^&]+&window=wq3k9x2m1ab$/);
+  });
+
+  it('claims nothing in the main window', () => {
+    bootAt('/0', { id: '0', kind: 'terminal' });
+    expect(dataUrls()).toHaveLength(1);
+    expect(dataUrls()[0]).not.toContain('window=');
+  });
+});

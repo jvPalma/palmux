@@ -2,12 +2,13 @@
 //
 // Replaces the desktop top bar on mobile. It lives on the RIGHT edge: a
 // right→left swipe across the extra-keys bar pulls it in (the direction of
-// travel). It covers the full height and all but a 44px scrim strip on the left,
-// so a thumb can always reach the terminal side to close it. There is no close
+// travel). It covers the full height and three quarters of the width (at most 340px),
+// and the uncovered part is the scrim strip, never under 44px, so a thumb can always
+// reach the terminal side to close it. There is no close
 // button: the scrim strip, a swipe and every action that leaves the drawer close
 // it, and Escape does for a keyboard or assistive tech that has focus in here.
 // Lists every workspace tab as a colour dot, a title and a subdued number; a
-// non-terminal tab adds its kind icon. A row is compact (`--drawer-row-h`, 32px
+// non-terminal tab adds its kind icon. A row is compact (`--drawer-row-h`, 28px
 // under the mobile class) so more of them fit above the footer.
 //
 // Reach order, bottom → top: the footer, the bottom-anchored session list, and at

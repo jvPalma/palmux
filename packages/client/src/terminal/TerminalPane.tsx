@@ -27,10 +27,15 @@ import { openLink } from './useTerminal';
 import { useMobileGestures } from '../mobile/useMobileGestures';
 import { WsClient } from '../lib/ws';
 import { wsUrlFor } from '../session/session-url';
-import type { PaneApi, SlotId, SplitRegistry } from '../session/SplitFocusContext';
+import type { PaneApi, SplitRegistry } from '../session/SplitFocusContext';
+
+/** How long a pane evicted by a move waits for the broadcast that moves its tab away before it
+ *  offers Take back: App's hold on an unconfirmed move (`OPTIMISTIC_MOVE_MS`) has the same bound. */
+const MOVED_TAKEOVER_MS = 2000;
 
 interface TerminalPaneProps {
-  slot: SlotId;
+  /** The pane's id; the registry and the pane's key are both this. */
+  slot: string;
   sessionId: string;
   registry: SplitRegistry;
   settings: ClientSettings;
@@ -50,10 +55,13 @@ interface TerminalPaneProps {
   onAutoCopy: () => void;
   onUploadError: (msg: string) => void;
   /** Tap/click focuses this slot. */
-  onFocusRequest: (slot: SlotId) => void;
+  onFocusRequest: (slot: string) => void;
   /** Read-and-clear the tmux session a freshly chosen terminal should open in.
    *  App owns the pending map; the pane consumes it as it opens the socket. */
   takeSpawnTmux?: ((id: string) => string | null | undefined) | undefined;
+  /** The detached window this pane lives in, named on its data socket so a terminal that attach
+   *  creates is born there. Absent in the main window. */
+  window?: string | undefined;
   /** Mobile gesture callbacks (owned by App; the soft keyboard lives there). */
   gestures: MobileGestures;
 }
@@ -80,6 +88,7 @@ export const TerminalPane = ({
   onUploadError,
   onFocusRequest,
   takeSpawnTmux,
+  window: windowId,
   gestures,
 }: TerminalPaneProps) => {
   const wsRef = useRef<WsClient | null>(null);
@@ -288,6 +297,7 @@ export const TerminalPane = ({
     // session's PTY (dispose clears pending + timer; the gate stays usable).
     mouseGateRef.current?.dispose();
     setExited(false);
+    setDetached(false);
     instance.reset();
     // A reset restarts absolute buffer coordinates, and the OSC 8 ranges are
     // keyed by them — without this a link from the previous tab survives and
@@ -299,7 +309,7 @@ export const TerminalPane = ({
     // after connect) is what makes it race-free — this attach is what spawns the
     // shell, so there is no window in which the shell exists without it.
     const tmux = takeSpawnTmuxRef.current?.(sessionId);
-    const ws = new WsClient(wsUrlFor(sessionId, 'terminal', clientKeyRef.current, tmux));
+    const ws = new WsClient(wsUrlFor(sessionId, 'terminal', clientKeyRef.current, tmux, windowId));
     wsRef.current = ws;
     let exitTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -346,15 +356,20 @@ export const TerminalPane = ({
         // A closed ACTIVE tab navigates to its strip neighbor within a frame or
         // two (App's sessions handler) and unmounts this pane — delaying the
         // overlay means the user never sees a Reconnect flash mid-navigation.
-        // A pane that STAYS (popout, no-neighbor races) still gets it.
+        // A pane that STAYS (a no-neighbor race) still gets it.
         exitTimer = setTimeout(() => setExited(true), 250);
       } else if (msg.type === 'detached') {
         // Another client took the session over. The shell is fine — we just
         // don't own it. Suppress the auto-reconnect (it would fight the new
-        // owner forever) and offer to take it back on purpose. No 250ms delay:
-        // this is never a navigation race, and the screen is stale immediately.
+        // owner forever) and offer to take it back on purpose. No delay for a
+        // rival: the screen is stale immediately.
         ws.stopReconnect();
-        setDetached(true);
+        // A tab moved to another window IS a navigation race: the broadcast that
+        // moved it takes this pane to another tab (or away), and it can land after
+        // this frame. Nothing is shown unless the pane is still here after the
+        // move's hold, which a broadcast this window never heard can cause.
+        if (msg.moved) exitTimer = setTimeout(() => setDetached(true), MOVED_TAKEOVER_MS);
+        else setDetached(true);
       }
       // sessions / settings / extraKeys / fonts / ready / tabCreated arrive here
       // too (broadcasts go to every socket) but are the control socket's job.
@@ -373,7 +388,7 @@ export const TerminalPane = ({
       if (trzszRef.current === bridge) trzszRef.current = null;
       ws.destroy();
     };
-  }, [instance, sessionId, reconnectNonce, clearLinks]);
+  }, [instance, sessionId, reconnectNonce, clearLinks, windowId]);
 
   // Neutralize xterm's own textarea on mobile so all input flows through App's
   // #mobile-kbd (incremental IME). Intact on desktop.

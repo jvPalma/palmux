@@ -1078,6 +1078,8 @@ const subjectOf = (selector: string): string => {
 /** The box a kit control subject must draw, at a given `--ctl-h`. */
 const boxOf = (subject: string, ctl: number): number => {
   if (/\.ui-seg-item\b/.test(subject)) return ctl - 6;
+  // The Collapsible trigger's extra-small step: `--ctl-h` less `--sp-3` (24px on a phone).
+  if (/-xs\b/.test(subject)) return ctl - 12;
   return /-sm\b/.test(subject) ? ctl - 4 : ctl;
 };
 
@@ -1393,6 +1395,7 @@ describe('scale guard — kit control heights', () => {
       expect(subjectOf('.ui-icon-btn svg')).toBe('svg');
       expect(KIT_CONTROL.test(subjectOf('.ui-icon-btn svg'))).toBe(false);
       expect(boxOf('.ui-btn-sm', 28)).toBe(24);
+      expect(boxOf('.ui-collapsible-trigger-xs', 36)).toBe(24);
       expect(boxOf('.ui-icon-btn-sm', 36)).toBe(32);
       expect(boxOf('.ui-seg-item', 36)).toBe(30);
       expect(boxOf('.ui-seg', 36)).toBe(36);

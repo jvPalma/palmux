@@ -2,11 +2,11 @@
 //
 // The persistent content layer for NON-terminal tabs: one element per open
 // non-terminal tab, all kept mounted (iframes keep navigation state, Monaco
-// keeps undo history) and positioned by rect. A pane shown in a slot gets that
-// slot's rect; a pane in no slot is display:none. NEVER reparented — layout
-// changes are style updates, so iframes/editors never reload. The
-// host is pointer-events:none so the terminal in the other slot stays clickable;
-// each visible pane re-enables pointer events over its own rect.
+// keeps undo history) and positioned by rect. A tab shown as a pane's active tab
+// gets that pane's rect; a tab shown nowhere is display:none. NEVER reparented —
+// layout changes are style updates, so iframes/editors never reload. The
+// host is pointer-events:none so the terminal in another pane stays clickable;
+// each visible tab re-enables pointer events over its own rect.
 
 import { memo, type CSSProperties } from 'react';
 import type { TabMeta } from '@palmux/shared';
@@ -18,16 +18,21 @@ import { MarkdownPane } from './MarkdownPane';
 import { FileTabPane } from './FileTabPane';
 import { ReviewPane } from '../review/ReviewPane';
 import type { WebAppLink } from '@palmux/shared';
-import type { Rect } from '../session/useSplit';
+import { rectCss, type Rect } from '../session/pane-grid';
 
 interface PaneHostProps {
   /** All live tabs; the host renders the non-terminal ones. */
   tabs: TabMeta[];
-  /** tabId → rect (%) for panes currently shown in a slot; absent = hidden. */
+  /** tabId → its pane's rect (%) for tabs currently shown as a pane's active tab; absent = hidden. */
   rects: { [tabId: string]: Rect };
+  /**
+   * True when each rect is a pane's and the body starts below that pane's strip
+   * (`--group-strip-h`). False on the mobile layer, which draws no strip.
+   */
+  bodyOffset: boolean;
   /** The focused pane's tab id (drives editor keyboard capture + focus ring). */
   focusedId: string | null;
-  /** True when a split is active (renders the slot focus ring). */
+  /** True when there is more than one pane (marks each pane's body as a slot). */
   inSplit: boolean;
   webApps: WebAppLink[];
   quickLinks: QuickLink[];
@@ -35,24 +40,22 @@ interface PaneHostProps {
   onUpdateQuickLinks: (links: QuickLink[]) => void;
   onChangeUrl: (id: string, url: string) => void;
   onDirtyChange: (id: string, dirty: boolean) => void;
-  /** Focus this pane's slot on click. */
+  /** Focus the pane showing this tab on click. */
   onFocus: (id: string) => void;
   /** Set on mobile: pane headers get a ☰ that opens the session drawer. */
   onMenu?: (() => void) | undefined;
 }
 
-const rectStyle = (r: Rect): CSSProperties => ({
+const rectStyle = (r: Rect, bodyOffset: boolean): CSSProperties => ({
   position: 'absolute',
-  left: `${r.left}%`,
-  top: `${r.top}%`,
-  width: `${r.width}%`,
-  height: `${r.height}%`,
+  ...rectCss(r, bodyOffset),
   pointerEvents: 'auto',
 });
 
 export const PaneHost = memo(function PaneHost({
   tabs,
   rects,
+  bodyOffset,
   focusedId,
   inSplit,
   webApps,
@@ -80,7 +83,7 @@ export const PaneHost = memo(function PaneHost({
           <div
             key={tab.id}
             className={cls}
-            style={shown && rect ? rectStyle(rect) : undefined}
+            style={shown && rect ? rectStyle(rect, bodyOffset) : undefined}
             onMouseDown={() => onFocus(tab.id)}
           >
             {tab.kind === 'web' && (

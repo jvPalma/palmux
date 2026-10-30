@@ -1,8 +1,11 @@
 // ── Kit: Dialog ───────────────────────────────────────────────────────────────
 //
-// For BLOCKING confirms only — killing a tab, closing a group — where the answer
+// For BLOCKING confirms — killing a tab, closing a group — where the answer
 // decides whether work is destroyed. App surfaces (settings, the new-tab
-// chooser) belong in the dock or a popover; a modal there just steals focus.
+// chooser) belong in the dock or the drawer; a modal there just steals focus.
+// The one exception is the New-tab chooser in a detached window, which has no
+// dock to host it: there the dialog asks nothing, so it is given no
+// `onConfirm` and its close is its only action.
 //
 // Radix supplies the parts that are easy to get wrong: focus is trapped inside
 // the content and restored to the trigger on close, Escape and an overlay press
@@ -25,7 +28,8 @@ export interface DialogProps {
   children?: ReactNode;
   confirmLabel?: string | undefined;
   cancelLabel?: string | undefined;
-  onConfirm: () => void;
+  /** Absent for a dialog that asks nothing: the close is then its only action. */
+  onConfirm?: (() => void) | undefined;
   /** Paints the confirm in the danger intent. */
   destructive?: boolean | undefined;
   'data-testid'?: string | undefined;
@@ -67,13 +71,15 @@ export function Dialog({
                 {cancelLabel}
               </Button>
             </RadixDialog.Close>
-            <Button
-              variant={destructive ? 'danger' : 'primary'}
-              onClick={onConfirm}
-              data-testid={`${testId}-confirm`}
-            >
-              {confirmLabel}
-            </Button>
+            {onConfirm !== undefined && (
+              <Button
+                variant={destructive ? 'danger' : 'primary'}
+                onClick={onConfirm}
+                data-testid={`${testId}-confirm`}
+              >
+                {confirmLabel}
+              </Button>
+            )}
           </div>
         </RadixDialog.Content>
       </RadixDialog.Portal>

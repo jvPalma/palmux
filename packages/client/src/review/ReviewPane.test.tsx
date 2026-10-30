@@ -1249,21 +1249,61 @@ describe('on a phone the review wastes no height', () => {
     expect(controls).toHaveLength(3);
     for (const control of controls) expect(control).toHaveClass('ui-btn', 'ui-btn-sm');
     expect(gaps()[1]!.querySelector('.rv-chip')).toBeNull();
+    // Two rows a hunk, as ever: the gap does not carry the heading, and the file header
+    // has the kit's buttons.
+    expect(screen.queryAllByTestId('review-gap-hunk')).toEqual([]);
+    const header = fileRow('a.txt');
+    expect(within(header).getByTestId('review-file-reviewed')).toHaveClass('ui-btn-sm');
+    expect(within(header).getByTestId('review-file-open')).toHaveClass('ui-icon-btn-sm');
+    expect(header.querySelector('.rv-chip')).toBeNull();
   });
 
-  it('draws the structural rows shorter: a header 36px, a gap 28px, a hunk header 20px', async () => {
+  it('draws one divider row of 20px per hunk, and a file header of 28px', async () => {
     document.documentElement.dataset['mobile'] = 'true';
     await open();
     expect(pane()).toHaveAttribute('data-dense', 'true');
-    expect(height(fileRow('a.txt'))).toBe(36);
-    expect(gaps().map(height)).toEqual([28, 28, 28]);
-    expect(hunks().map(height)).toEqual([20, 20]);
-    // Each is at most the 28px the owner's contract names, and a hunk header one code line.
-    for (const row of [...gaps(), ...hunks()]) expect(height(row)).toBeLessThanOrEqual(28);
-    expect(hunks().map(height)).toEqual([20, 20]);
+    expect(height(fileRow('a.txt'))).toBe(28);
+    // Both hunks have hidden lines above them, so each heading rides on its gap and no header
+    // row is built: the three dividers of the file are three rows, 20px each, 60px in all.
+    expect(gaps().map(height)).toEqual([20, 20, 20]);
+    expect(screen.queryAllByTestId('review-hunk')).toEqual([]);
+    for (const row of gaps()) expect(height(row)).toBeLessThanOrEqual(20);
     // A code line is what it always was: the rows between lines are what gave way.
     const line = screen.getAllByTestId('review-line')[0]!;
     expect(height(line)).toBe(20);
+  });
+
+  it('carries the count, the controls and the hunk heading on that one row', async () => {
+    document.documentElement.dataset['mobile'] = 'true';
+    await open();
+    const [start, between, end] = gaps();
+    expect(within(start!).getByTestId('review-gap-hunk')).toHaveTextContent('@@ -9 +9 @@');
+    expect(within(between!).getByTestId('review-gap-hunk')).toHaveTextContent('@@ -89 +90 @@');
+    expect(within(between!).getByTestId('review-gap-hidden')).toHaveTextContent('78 hidden lines');
+    for (const id of ['review-gap-up', 'review-gap-down', 'review-gap-all']) {
+      expect(within(between!).getByTestId(id)).toBeInTheDocument();
+    }
+    // The trailing gap has no hunk below it, so it is the count and its controls alone.
+    expect(within(end!).queryByTestId('review-gap-hunk')).toBeNull();
+    // The heading is the last thing in the row, after the controls, so it is what gives way.
+    const order = [...between!.querySelectorAll<HTMLElement>('[data-testid]')].map(
+      (el) => el.dataset['testid'],
+    );
+    expect(order.at(-1)).toBe('review-gap-hunk');
+  });
+
+  it('keeps a 20px header row of its own for a hunk with nothing hidden above it', async () => {
+    document.documentElement.dataset['mobile'] = 'true';
+    await open();
+    // Show all of the first gap: the first hunk has nothing hidden above it any more.
+    fireEvent.click(within(gaps()[0]!).getByTestId('review-gap-all'));
+    await settle();
+    expect(gaps().map((g) => g.dataset['gapIndex'])).toEqual(['1', '2']);
+    expect(hunks()).toHaveLength(1);
+    expect(hunks().map(height)).toEqual([20]);
+    expect(hunks()[0]).toHaveTextContent('@@ -9 +9 @@');
+    // The second hunk still has its heading on its gap, not on a header row.
+    expect(within(gaps()[0]!).getByTestId('review-gap-hunk')).toHaveTextContent('@@ -89 +90 @@');
   });
 
   it('adds the shorter heights up exactly: each row starts where the one above ends', async () => {
@@ -1310,12 +1350,15 @@ describe('on a phone the review wastes no height', () => {
   it('follows the app into and out of the mobile layer while a review is open', async () => {
     await open();
     expect(height(gaps()[0]!)).toBe(32);
+    expect(hunks()).toHaveLength(2);
     act(() => {
       document.documentElement.dataset['mobile'] = 'true';
     });
     await settle();
     expect(pane()).toHaveAttribute('data-dense', 'true');
-    expect(gaps().map(height)).toEqual([28, 28, 28]);
+    // The two rows a hunk become one: the header rows go, their headings ride on the gaps.
+    expect(gaps().map(height)).toEqual([20, 20, 20]);
+    expect(screen.queryAllByTestId('review-hunk')).toEqual([]);
     expect(within(gaps()[1]!).getByTestId('review-gap-up')).toHaveClass('rv-chip');
     act(() => {
       delete document.documentElement.dataset['mobile'];
@@ -1323,6 +1366,8 @@ describe('on a phone the review wastes no height', () => {
     await settle();
     expect(pane()).not.toHaveAttribute('data-dense');
     expect(gaps().map(height)).toEqual([32, 32, 32]);
+    expect(hunks().map(height)).toEqual([24, 24]);
+    expect(screen.queryAllByTestId('review-gap-hunk')).toEqual([]);
     expect(within(gaps()[1]!).getByTestId('review-gap-up')).toHaveClass('ui-btn');
   });
 
@@ -1333,8 +1378,17 @@ describe('on a phone the review wastes no height', () => {
     // Hidden by the stylesheet (`display: none`), never removed: assistive tech and the
     // desktop still have it, and the letter keeps it as its title.
     expect(within(header).getByTestId('review-file-state')).toHaveTextContent('Modified');
-    expect(within(header).getByTestId('review-file-reviewed')).toHaveClass('ui-btn-sm');
-    expect(within(header).getByTestId('review-file-open')).toBeInTheDocument();
+    // Reviewed and Open are chips on a phone (the kit's 32px buttons do not fit a 28px row),
+    // still reachable by name, by tab and by their test ids.
+    const reviewed = within(header).getByTestId('review-file-reviewed');
+    expect(reviewed).toHaveClass('rv-chip', 'rv-chip-primary');
+    expect(reviewed).not.toHaveClass('ui-btn');
+    expect(reviewed.tagName).toBe('BUTTON');
+    expect(reviewed).toHaveTextContent('Reviewed');
+    const openFile = within(header).getByTestId('review-file-open');
+    expect(openFile).toHaveClass('rv-chip');
+    expect(openFile.tagName).toBe('BUTTON');
+    expect(openFile).toHaveAccessibleName('Open file');
     expect(within(header).getByTestId('review-file-toggle')).toBeInTheDocument();
   });
 });
@@ -2161,9 +2215,9 @@ describe('a review opened for a file scrolls to it', () => {
     });
 
     // The compact rows are other numbers in the same sums: the list is given a height per
-    // row, and a landing is the offset those heights add up to. A phone's header (36px)
-    // and hunk header (20px) must still put the chosen file's header exactly at the top.
-    it('lands and steps the same way on a phone, whose header and hunk rows are shorter', async () => {
+    // row, and a landing is the offset those heights add up to. A phone's header (28px)
+    // and its dividers (20px) must still put the chosen file's header exactly at the top.
+    it('lands and steps the same way on a phone, whose header and divider rows are shorter', async () => {
       document.documentElement.dataset['mobile'] = 'true';
       bigGroup();
       const pane = mount({ visible: false });
@@ -2172,7 +2226,7 @@ describe('a review opened for a file scrolls to it', () => {
       await screen.findByTestId('review-list');
       await settleView();
       expect(screen.getByTestId('review-pane-7')).toHaveAttribute('data-dense', 'true');
-      expect(fileRow('f25.txt').style.height).toBe('36px');
+      expect(fileRow('f25.txt').style.height).toBe('28px');
       expectAtTop('f25.txt', '26 / 40');
       const step = async (run: () => void) => {
         act(run);

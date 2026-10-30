@@ -115,10 +115,14 @@ export class ReviewModel {
   private marks: LineMarks | null = null;
   /** The layout `getRows` was last asked for: what `refreshVisible` assembles with. */
   private layout: RowsLayout;
+  /** Whether it was last asked for merged dividers (`RowsOptions.merged`), kept the same way. */
+  private merged = false;
   private visibleRows: { start: number; stop: number } | undefined;
 
   private version = 0;
-  private assembled: { version: number; layout: RowsLayout; value: AssembledRows } | undefined;
+  private assembled:
+    | { version: number; layout: RowsLayout; merged: boolean; value: AssembledRows }
+    | undefined;
 
   constructor(options: ReviewModelOptions) {
     this.options = options;
@@ -278,23 +282,29 @@ export class ReviewModel {
   // ── Output ─────────────────────────────────────────────────────────────────
 
   /**
-   * The flat list in `layout`. The layout is an argument and not state so that a
-   * render can ask for it: a state change here would notify subscribers mid-render.
+   * The flat list in `layout`, with one divider row per hunk when `merged` (a phone). The
+   * layout and the merge are arguments and not state so that a render can ask for them:
+   * a state change here would notify subscribers mid-render.
    */
-  getRows(layout: RowsLayout = this.layout): AssembledRows {
+  getRows(layout: RowsLayout = this.layout, merged: boolean = this.merged): AssembledRows {
     this.layout = layout;
-    if (this.assembled?.version === this.version && this.assembled.layout === layout) {
+    this.merged = merged;
+    if (
+      this.assembled?.version === this.version &&
+      this.assembled.layout === layout &&
+      this.assembled.merged === merged
+    ) {
       return this.assembled.value;
     }
     const rows: Row[] = [];
     const fileStart: number[] = [];
     for (const entry of this.entries) {
-      const rowsOfFile = this.rowsOf(entry, layout);
+      const rowsOfFile = this.rowsOf(entry, layout, merged);
       fileStart.push(rows.length);
       for (const row of rowsOfFile) rows.push(row);
     }
     const value: AssembledRows = { rows, fileStart };
-    this.assembled = { version: this.version, layout, value };
+    this.assembled = { version: this.version, layout, merged, value };
     return value;
   }
 
@@ -337,7 +347,7 @@ export class ReviewModel {
 
   // ── Internals ──────────────────────────────────────────────────────────────
 
-  private rowsOf(entry: ScmEntry, layout: RowsLayout): readonly Row[] {
+  private rowsOf(entry: ScmEntry, layout: RowsLayout, merged: boolean): readonly Row[] {
     const snapshot = this.snapshots.get(entry.path);
     const collapsed = this.collapsed.has(entry.path);
     const reveals = this.reveals.get(entry.path);
@@ -352,6 +362,7 @@ export class ReviewModel {
     const sig = [
       snapshot ? snapshotKey(snapshot) : '-',
       layout,
+      merged ? 'm' : '',
       collapsed ? 'c' : '',
       reveals ? JSON.stringify(reveals) : '',
       placeholderHeight ?? '',
@@ -365,6 +376,7 @@ export class ReviewModel {
       { entry, snapshot },
       {
         layout,
+        merged,
         collapsed,
         ...(reveals ? { reveals } : {}),
         ...(placeholderHeight !== undefined ? { placeholderHeight } : {}),

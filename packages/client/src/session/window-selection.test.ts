@@ -12,6 +12,7 @@ import {
   parseSelection,
   readSelection,
   resolveSelection,
+  resolveStoredSelection,
   selectionFor,
   writeLastTab,
   writeSelection,
@@ -41,6 +42,12 @@ const denied = () => {
 describe('parseSelection', () => {
   it('reads a well-formed value', () => {
     expect(parseSelection('{"id":"3","kind":"editor"}')).toEqual({ id: '3', kind: 'editor' });
+  });
+
+  // `review` was missing from a private copy of the kind list, so a window focused on a review
+  // read back as unusable and always reloaded onto the first tab.
+  it('reads a review selection', () => {
+    expect(parseSelection('{"id":"4","kind":"review"}')).toEqual({ id: '4', kind: 'review' });
   });
 
   it('refuses anything else instead of throwing', () => {
@@ -162,6 +169,86 @@ describe('the device-wide last tab', () => {
   });
 });
 
+// A detached window is its own browsing context, but `window.open` may copy the opener's
+// `sessionStorage` into it, and the device-wide copy is whatever any main window chose last. Either
+// would put another window's tab under it, so a detached window reads and writes ONLY its own key.
+describe('a detached window', () => {
+  const WID = 'wq3k9x2m1a';
+  const OWN = `palmux-window-tab:${WID}`;
+  const raw = (key: string): unknown => JSON.parse(sessionStorage.getItem(key) ?? 'null');
+
+  it('round-trips through its own sessionStorage key', () => {
+    writeSelection({ id: '7', kind: 'markdown' }, WID);
+    expect(readSelection(WID)).toEqual({ id: '7', kind: 'markdown' });
+    expect(raw(OWN)).toEqual({ id: '7', kind: 'markdown' });
+  });
+
+  it("never touches the main window's key when it writes", () => {
+    writeSelection({ id: '5', kind: 'terminal' }); // the main window's
+    writeSelection({ id: '7', kind: 'markdown' }, WID);
+    expect(raw('palmux-window-tab')).toEqual({ id: '5', kind: 'terminal' });
+    writeSelection(null, WID);
+    expect(raw('palmux-window-tab')).toEqual({ id: '5', kind: 'terminal' });
+  });
+
+  // The copy `window.open` may have made of the opener's storage.
+  it("never reads the main window's key", () => {
+    writeSelection({ id: '5', kind: 'terminal' });
+    expect(readSelection(WID)).toBeNull();
+  });
+
+  it('never falls back to the device-wide last tab', () => {
+    writeLastTab({ id: '2', kind: 'editor' });
+    expect(readSelection(WID)).toBeNull();
+    // ...not even when its own value is unusable.
+    sessionStorage.setItem(OWN, '{oops');
+    expect(readSelection(WID)).toBeNull();
+  });
+
+  it('writes nothing to the device-wide key', () => {
+    writeSelection({ id: '7', kind: 'terminal' }, WID);
+    expect(localStorage.getItem(LAST_TAB_KEY)).toBeNull();
+  });
+
+  it('clears only its own key on null', () => {
+    writeSelection({ id: '7', kind: 'terminal' }, WID);
+    writeSelection({ id: '8', kind: 'terminal' }, 'wother00001');
+    writeSelection(null, WID);
+    expect(readSelection(WID)).toBeNull();
+    expect(readSelection('wother00001')).toEqual({ id: '8', kind: 'terminal' });
+  });
+
+  it('keeps two detached windows apart', () => {
+    writeSelection({ id: '1', kind: 'terminal' }, 'wfirst00001');
+    writeSelection({ id: '2', kind: 'editor' }, 'wsecond0001');
+    expect(readSelection('wfirst00001')).toEqual({ id: '1', kind: 'terminal' });
+    expect(readSelection('wsecond0001')).toEqual({ id: '2', kind: 'editor' });
+    expect(readSelection()).toBeNull();
+  });
+
+  it("leaves the main window's reads alone: null is the main window", () => {
+    writeSelection({ id: '7', kind: 'terminal' }, WID);
+    expect(readSelection()).toBeNull();
+    expect(readSelection(null)).toBeNull();
+    writeLastTab({ id: '2', kind: 'editor' });
+    expect(readSelection(null)).toEqual({ id: '2', kind: 'editor' });
+  });
+
+  it('survives storage that throws, on read and on write', () => {
+    vi.stubGlobal('sessionStorage', denied());
+    expect(readSelection(WID)).toBeNull();
+    expect(() => writeSelection({ id: '1', kind: 'terminal' }, WID)).not.toThrow();
+    expect(() => writeSelection(null, WID)).not.toThrow();
+  });
+
+  it('still resolves through the kind check: a recycled id is gone', () => {
+    writeSelection({ id: '2', kind: 'terminal' }, WID);
+    expect(resolveSelection({ stored: readSelection(WID), tabs: TABS })).toBe('5');
+    writeSelection({ id: '2', kind: 'editor' }, WID);
+    expect(resolveSelection({ stored: readSelection(WID), tabs: TABS })).toBe('2');
+  });
+});
+
 describe('resolveSelection', () => {
   it('keeps a remembered tab that is still there', () => {
     expect(resolveSelection({ stored: { id: '0', kind: 'web' }, tabs: TABS })).toBe('0');
@@ -192,6 +279,46 @@ describe('resolveSelection', () => {
   // be worse than the duplication it saves.
   it('sends a dead stored id to the first tab, leaving the neighbour rule to its owner', () => {
     expect(resolveSelection({ stored: { id: '9', kind: 'terminal' }, tabs: TABS })).toBe('5');
+  });
+});
+
+describe('a review selection', () => {
+  const withReview = [...TABS, tab('4', 'review')];
+
+  it('survives a reload: stored, read back and resolved to itself', () => {
+    writeSelection({ id: '4', kind: 'review' });
+    expect(resolveSelection({ stored: readSelection(), tabs: withReview })).toBe('4');
+  });
+
+  it('survives through the device-wide copy as well', () => {
+    writeLastTab({ id: '4', kind: 'review' });
+    expect(resolveSelection({ stored: readSelection(), tabs: withReview })).toBe('4');
+  });
+});
+
+describe('resolveStoredSelection', () => {
+  it('answers the stored id when it is live with the stored kind', () => {
+    expect(resolveStoredSelection(TABS, { id: '0', kind: 'web' })).toBe('0');
+    expect(resolveStoredSelection([...TABS, tab('4', 'review')], { id: '4', kind: 'review' })).toBe(
+      '4',
+    );
+  });
+
+  // The whole point of the helper: no `tabs[0]` guess, so a caller can tell "remembered" from
+  // "nothing usable" and leave a better answer (a restored layout's own focus) alone.
+  it('answers null for a stale stored value, where resolveSelection guesses the first tab', () => {
+    const stale = { id: '9', kind: 'terminal' } as const;
+    expect(resolveStoredSelection(TABS, stale)).toBeNull();
+    expect(resolveSelection({ stored: stale, tabs: TABS })).toBe('5');
+  });
+
+  it('treats a recycled id as gone', () => {
+    expect(resolveStoredSelection(TABS, { id: '2', kind: 'terminal' })).toBeNull();
+  });
+
+  it('answers null for nothing stored and for no tabs', () => {
+    expect(resolveStoredSelection(TABS, null)).toBeNull();
+    expect(resolveStoredSelection([], { id: '0', kind: 'web' })).toBeNull();
   });
 });
 

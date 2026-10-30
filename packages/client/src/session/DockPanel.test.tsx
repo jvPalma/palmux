@@ -149,6 +149,55 @@ describe('resize discipline', () => {
   });
 });
 
+// ── The app menu tops the rail ───────────────────────────────────────────────
+//
+// The topbar that used to end in the app menu is gone (each pane draws its own tab strip), so the
+// menu lives at the top of the rail, the one column of chrome every desktop window has.
+describe('the app menu at the top of the rail', () => {
+  const menu = (onSelect: () => void) => ({
+    items: [
+      { id: 'settings', label: 'Settings', onSelect },
+      { id: 'tips', label: 'Tips', onSelect: noop },
+    ],
+  });
+
+  it('is the rail’s first control, above New tab', () => {
+    render(<DockPanel view={null} onView={noop} menu={menu(noop)} />);
+    const order = [...screen.getByTestId('dock-rail').children].map((el) =>
+      el.getAttribute('data-testid'),
+    );
+    expect(order.slice(0, 2)).toEqual(['app-menu-button', 'dock-rail-newtab']);
+    expect(screen.getByTestId('app-menu-button')).toHaveAttribute('aria-label', 'palmux menu');
+  });
+
+  it('draws no button without a menu', () => {
+    render(<DockPanel view={null} onView={noop} />);
+    expect(screen.queryByTestId('app-menu-button')).not.toBeInTheDocument();
+    expect(screen.getByTestId('dock-rail').firstElementChild).toBe(
+      screen.getByTestId('dock-rail-newtab'),
+    );
+  });
+
+  it('opens to the left of the button, end-aligned, and runs the chosen item', async () => {
+    const onSelect = vi.fn();
+    render(<DockPanel view={null} onView={noop} menu={menu(onSelect)} />);
+    await userEvent.click(screen.getByTestId('app-menu-button'));
+    const open = screen.getByRole('menu');
+    expect(open).toHaveAttribute('data-side', 'left');
+    expect(open).toHaveAttribute('data-align', 'end');
+    await userEvent.click(screen.getByTestId('app-menu-settings'));
+    expect(onSelect).toHaveBeenCalledTimes(1);
+  });
+
+  it('is not a view: it never sets aria-pressed and opens nothing in the dock', async () => {
+    const onView = vi.fn();
+    render(<DockPanel view={null} onView={onView} menu={menu(noop)} />);
+    expect(screen.getByTestId('app-menu-button')).not.toHaveAttribute('aria-pressed');
+    await userEvent.click(screen.getByTestId('app-menu-button'));
+    expect(onView).not.toHaveBeenCalled();
+  });
+});
+
 // ── Rail actions ──────────────────────────────────────────────────────────────
 //
 // The desktop topbar used to carry ⬆ Upload, ⬇ Download, ? Tips and ⚙ Settings
@@ -171,15 +220,21 @@ describe('rail actions', () => {
 
   // Frequency of use, top to bottom: what you open mid-session, then the actions
   // behind their separator, then Settings alone at the bottom edge.
-  it('renders New tab, Explorer, Source Control, Dictation, a separator, Upload, Download, Settings', () => {
+  it('renders the menu, New tab, Explorer, Source Control, Dictation, a separator, Upload, Download, Settings', () => {
     const { container } = render(
-      <DockPanel view={null} onView={noop} actions={[...actions(noop)]} />,
+      <DockPanel
+        view={null}
+        onView={noop}
+        actions={[...actions(noop)]}
+        menu={{ items: [{ id: 'settings', label: 'Settings', onSelect: noop }] }}
+      />,
     );
     const rail = screen.getByTestId('dock-rail');
     const order = [...rail.children].map(
       (el) => el.getAttribute('data-testid') ?? (el.className.includes('sep') ? 'sep' : '?'),
     );
     expect(order).toEqual([
+      'app-menu-button',
       'dock-rail-newtab',
       'dock-rail-files',
       'dock-rail-scm',

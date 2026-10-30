@@ -23,6 +23,7 @@ import {
   isScmGroup,
   isTabId,
   isTabKind,
+  isWindowId,
   nextFreeId,
   normalizeOrder,
   parseClientMessage,
@@ -165,6 +166,12 @@ interface TabRecord {
   /** Tab-group membership (isGroupId). Independent of name/color. */
   groupId?: string;
   /**
+   * The detached window holding this tab (isWindowId); absent = the main window.
+   * Memory only, on purpose: `persist` never writes it, so a restart releases every
+   * tab and each window reclaims its own on reconnect.
+   */
+  window?: string;
+  /**
    * The pty's controlling tty (`pts/16`), captured while the process is ALIVE.
    * `ttyOf` reads /proc/<pid>/fd/0, which is gone the instant the shell exits,
    * so the exit path could otherwise never find the hint file to clear.
@@ -228,6 +235,8 @@ export interface CreateTabSpec {
   url?: string;
   name?: string;
   color?: string;
+  /** Detached window to create the tab in (isWindowId); absent = the main window. */
+  window?: string;
 }
 
 export interface UpdateTabPatch {
@@ -244,8 +253,13 @@ export interface SessionRegistry {
    * spawns it. It rides the /ws attach rather than a control message because the
    * attach IS the spawn trigger: a separate message travels on a different
    * socket and could lose the race with it.
+   *
+   * `spawn.window` claims the tab for a detached window, and only when this call
+   * creates the record for a NEW id, before the first broadcast that lists it. An
+   * existing tab, running or dormant, is never claimed by an attach; its owner
+   * changes only through `setWindow`.
    */
-  get(id: string, spawn?: { command?: string }): PtySession;
+  get(id: string, spawn?: { command?: string; window?: string }): PtySession;
   has(id: string): boolean;
   kill(id: string): void;
   ids(): string[];
@@ -278,6 +292,16 @@ export interface SessionRegistry {
   /** Mutate a group (name/color/add/remove/dissolve/order), forgiving. False =
    *  unknown group or no effective change. */
   groupUpdate(id: string, patch: GroupPatch): boolean;
+  /**
+   * Set (or, for null, clear) the detached window holding each known id; unknown
+   * ids are ignored. True = some tab's owner changed. Persists and broadcasts
+   * nothing: ownership is memory-only, and the caller broadcasts once per move.
+   */
+  setWindow(ids: string[], window: string | null): boolean;
+  /** Ids of the tabs a detached window holds, in strip order. */
+  tabsOfWindow(wid: string): string[];
+  /** The detached window holding `id`; undefined for the main window or an unknown id. */
+  windowOf(id: string): string | undefined;
   /** Fired when the tab list or any tab's metadata changes. */
   onListChanged(cb: () => void): void;
   /** Fired on every title change; the subscriber coalesces. */
@@ -640,7 +664,12 @@ export function createSessionRegistry(
       // A dormant terminal (restored, or created but not yet attached) keeps its
       // name/color; a brand-new id becomes a fresh terminal.
       if (existing) return spawnInto(id, existing, spawn?.command);
-      const rec: TabRecord = { kind: 'terminal' };
+      // `window` is set on the record BEFORE the first broadcast that lists it, so
+      // a terminal born in a detached window never shows in the main one.
+      const rec: TabRecord = {
+        kind: 'terminal',
+        ...(spawn?.window !== undefined ? { window: spawn.window } : {}),
+      };
       tabs.set(id, rec);
       order.push(id); // new tabs append — a recycled low id never jumps mid-strip
       const pty = spawnInto(id, rec, spawn?.command);
@@ -699,8 +728,22 @@ export function createSessionRegistry(
           ...(r.url !== undefined ? { url: r.url } : {}),
           ...(r.pty?.title ? { title: r.pty.title } : {}),
           ...(r.groupId !== undefined ? { groupId: r.groupId } : {}),
+          ...(r.window !== undefined ? { window: r.window } : {}),
         };
       }),
+    setWindow(ids, window) {
+      let changed = false;
+      for (const id of ids) {
+        const r = tabs.get(id);
+        if (!r || r.window === (window ?? undefined)) continue;
+        if (window === null) delete r.window;
+        else r.window = window;
+        changed = true;
+      }
+      return changed;
+    },
+    tabsOfWindow: (wid) => orderedIds().filter((id) => tabs.get(id)?.window === wid),
+    windowOf: (id) => tabs.get(id)?.window,
     groups: () => {
       const out: TabGroup[] = [];
       const seen = new Set<string>();
@@ -757,6 +800,7 @@ export function createSessionRegistry(
         kind: spec.kind,
         ...(spec.name ? { name: spec.name } : {}),
         ...(spec.color ? { color: spec.color } : {}),
+        ...(spec.window !== undefined ? { window: spec.window } : {}),
         ...(spec.kind === 'web' && spec.url ? { url: spec.url } : {}),
         ...(spec.kind === 'markdown' && spec.url ? { url: spec.url } : {}),
         ...(spec.kind === 'editor' && spec.url ? { url: spec.url } : {}),
@@ -920,10 +964,25 @@ function isJsonObject(body: unknown): body is Record<string, unknown> {
 /** A request value as text; anything else reads as blank, which every scm check refuses. */
 const textOrBlank = (value: unknown): string => (typeof value === 'string' ? value : '');
 
+/**
+ * How long a detached window's tabs wait for its control socket to come back
+ * before they return to the main window. Long enough for a reload, a network
+ * blip or a server restart; short enough that a closed laptop gives them back.
+ */
+export const WINDOW_GRACE_MS = 15_000;
+/** The same wait once the window announced `windowClosing` (its `pagehide`). */
+export const WINDOW_CLOSE_GRACE_MS = 3_000;
+
+export interface ServerOptions {
+  windowGraceMs?: number;
+  windowCloseGraceMs?: number;
+}
+
 export async function createServer(
   cfg: AppConfig,
   secret: string,
   registry: SessionRegistry = createSessionRegistry(cfg),
+  opts: ServerOptions = {},
 ): Promise<FastifyInstance> {
   const authCfg: AuthConfig = { secret, noAuth: !cfg.auth };
   const fonts = discoverFonts(cfg.fontDirs);
@@ -1685,7 +1744,7 @@ export async function createServer(
     );
   }
 
-  attachWebSocket(app, authCfg, fonts.faces, cfg, registry, killTab);
+  attachWebSocket(app, authCfg, fonts.faces, cfg, registry, killTab, opts);
   return app;
 }
 
@@ -1698,9 +1757,12 @@ function attachWebSocket(
   cfg: AppConfig,
   registry: SessionRegistry,
   killTab: (id: string) => void,
+  opts: ServerOptions,
 ): void {
   const wss = new WebSocketServer({ noServer: true });
   const connections = new Set<WebSocket>();
+  const graceMs = opts.windowGraceMs ?? WINDOW_GRACE_MS;
+  const closeMs = opts.windowCloseGraceMs ?? WINDOW_CLOSE_GRACE_MS;
 
   // Persisted config changes in one browser propagate to every open socket.
   const broadcast = (msg: string, except?: WebSocket) => {
@@ -1758,6 +1820,60 @@ function attachWebSocket(
     broadcast(encodeServerMessage({ type: 'themes', themes: dynamicThemes() }));
   });
   registry.onListChanged(broadcastSessions);
+
+  // Detached windows: a window holds its tabs for as long as one of its control
+  // sockets (`/ws?control=1&window=<wid>`) is open. When the last one closes while
+  // the window still holds tabs, a grace timer starts and the tabs go back to the
+  // main window if it runs out; any control socket for the id cancels it.
+  const windowSockets = new Map<string, Set<WebSocket>>();
+  const graceTimers = new Map<string, NodeJS.Timeout>();
+  // Sockets whose window said `windowClosing`: their close gets the short grace.
+  const closingSockets = new WeakSet<WebSocket>();
+
+  const armGrace = (wid: string, ms: number, reason: 'grace' | 'closing') => {
+    clearTimeout(graceTimers.get(wid));
+    const timer = setTimeout(() => {
+      graceTimers.delete(wid);
+      const ids = registry.tabsOfWindow(wid);
+      // Nothing left to release (the tabs were closed or moved meanwhile, and that
+      // already broadcast), so there is nothing to announce.
+      if (!registry.setWindow(ids, null)) return;
+      broadcastSessions();
+      console.info(`palmux: window ${wid} released ${ids.length} tabs (${reason})`);
+    }, ms);
+    // Never hold the process up on shutdown. Not cleared there either: a socket's
+    // close fires after `terminate()` and would arm one again anyway.
+    timer.unref();
+    graceTimers.set(wid, timer);
+  };
+  const joinWindow = (wid: string, ws: WebSocket) => {
+    let sockets = windowSockets.get(wid);
+    if (!sockets) windowSockets.set(wid, (sockets = new Set()));
+    sockets.add(ws);
+    clearTimeout(graceTimers.get(wid));
+    graceTimers.delete(wid);
+  };
+  const leaveWindow = (wid: string, ws: WebSocket) => {
+    const sockets = windowSockets.get(wid);
+    if (!sockets) return;
+    sockets.delete(ws);
+    if (sockets.size > 0) return;
+    windowSockets.delete(wid);
+    if (registry.tabsOfWindow(wid).length === 0) return;
+    const closing = closingSockets.has(ws);
+    armGrace(wid, closing ? closeMs : graceMs, closing ? 'closing' : 'grace');
+  };
+  const windows: ConnectionDeps['windows'] = {
+    // Tabs moved into a window nobody is connected for yet (a popup still loading):
+    // start the clock now, so one that never loads gives them back.
+    moved: (wid) => {
+      if (wid === null || windowSockets.has(wid)) return;
+      if (registry.tabsOfWindow(wid).length > 0) armGrace(wid, graceMs, 'grace');
+    },
+    closing: (ws) => closingSockets.add(ws),
+    resumed: (ws) => closingSockets.delete(ws),
+  };
+
   // Titles change on every prompt redraw — coalesce retitle broadcasts.
   let titleTimer: ReturnType<typeof setTimeout> | undefined;
   registry.onTitleChanged(() => {
@@ -1833,9 +1949,17 @@ function attachWebSocket(
     // then spawn a shell on that id.
     const claimedKind = params.get('kind');
     const expectKind: TabKind | undefined = isTabKind(claimedKind) ? claimedKind : undefined;
+    // The detached window this socket belongs to. An invalid value is ignored, as
+    // if the param were absent: the socket then claims and leases nothing.
+    const windowParam = params.get('window');
+    const windowId = isWindowId(windowParam) ? windowParam : undefined;
     wss.handleUpgrade(req, socket, head, (ws) => {
       connections.add(ws);
-      handleConnection(ws, sessionId, expectKind, isControl, clientKey, tmuxTarget, {
+      // Only a control socket is the window's lease; a pane's data socket comes and
+      // goes with its tab and only claims a terminal it spawns.
+      const leased = isControl ? windowId : undefined;
+      if (leased) joinWindow(leased, ws);
+      handleConnection(ws, sessionId, expectKind, isControl, clientKey, tmuxTarget, windowId, {
         broadcast,
         fonts,
         registry,
@@ -1843,8 +1967,12 @@ function attachWebSocket(
         killTab,
         maxUploadBytes: cfg.maxUploadBytes,
         webApps: cfg.webApps,
+        windows,
       });
-      ws.on('close', () => connections.delete(ws));
+      ws.on('close', () => {
+        connections.delete(ws);
+        if (leased) leaveWindow(leased, ws);
+      });
     });
   });
 }
@@ -1857,6 +1985,14 @@ interface ConnectionDeps {
   killTab: (id: string) => void;
   maxUploadBytes: number;
   webApps: WebAppLink[];
+  windows: {
+    /** Tabs were moved to `window` (null = the main window). */
+    moved(window: string | null): void;
+    /** `ws` announced that its window is closing. */
+    closing(ws: WebSocket): void;
+    /** `ws` sent something after `windowClosing`: the unload did not happen. */
+    resumed(ws: WebSocket): void;
+  };
 }
 
 function handleConnection(
@@ -1867,6 +2003,8 @@ function handleConnection(
   clientKey: string,
   /** Command to type if this attach is what spawns the shell (tmux picker). */
   spawnCommand: string | undefined,
+  /** The detached window this socket belongs to (already validated), if any. */
+  window: string | undefined,
   deps: ConnectionDeps,
 ): void {
   // Terminal tabs get the full PTY bridge; non-terminal tabs (and control
@@ -1879,10 +2017,23 @@ function handleConnection(
   const kind = isControl
     ? 'control'
     : (deps.registry.kindOf(sessionId) ?? expectKind ?? 'terminal');
+  // Only the attach that creates the id claims it; a reconnect to a tab that
+  // exists must not restart its window's grace.
+  const claims = window !== undefined && kind === 'terminal' && !deps.registry.has(sessionId);
   const pty =
     kind === 'terminal'
-      ? deps.registry.get(sessionId, spawnCommand ? { command: spawnCommand } : undefined)
+      ? deps.registry.get(
+          sessionId,
+          spawnCommand || window
+            ? {
+                ...(spawnCommand ? { command: spawnCommand } : {}),
+                ...(window ? { window } : {}),
+              }
+            : undefined,
+        )
       : null;
+  // A window that is not connected yet gets the clock now, as a move into it does.
+  if (claims) deps.windows.moved(window);
 
   // Handshake: ready (the live PTY's current size + upload cap) + config + fonts.
   ws.send(
@@ -1893,6 +2044,7 @@ function handleConnection(
       maxUploadBytes: deps.maxUploadBytes,
       webApps: deps.webApps,
       version: APP_VERSION,
+      detachedWindows: true,
     }),
   );
   ws.send(encodeServerMessage({ type: 'settings', settings: loadSettings() }));
@@ -1944,11 +2096,15 @@ function handleConnection(
           ws.close();
           return;
         }
-        // A genuine rival. Tell this client BEFORE closing — frames are
-        // delivered in order, so it suppresses its auto-reconnect (which would
-        // otherwise take the session straight back, forever) and offers a
-        // manual Reconnect instead.
-        ws.send(encodeServerMessage({ type: 'detached' }));
+        // Tell this client BEFORE closing — frames are delivered in order, so it
+        // suppresses its auto-reconnect (which would otherwise take the session
+        // straight back, forever). A rival gets a manual Take back. A socket of a
+        // window that no longer holds the tab is not one: the tab moved, and the
+        // `sessions` broadcast that moved it went out before this attach could
+        // happen, but on another socket, which can bring it later than this frame.
+        // Without the flag that pane showed "Opened somewhere else." until it did.
+        const moved = deps.registry.windowOf(sessionId) !== window;
+        ws.send(encodeServerMessage(moved ? { type: 'detached', moved } : { type: 'detached' }));
         ws.close();
       },
     );
@@ -1961,6 +2117,9 @@ function handleConnection(
     }
     const msg = parseClientMessage(raw.toString('utf8'));
     if (!msg) return;
+    // Anything but the heartbeat after `windowClosing` means the unload was
+    // cancelled, so a later real disconnect is a blip and gets the full grace.
+    if (msg.type !== 'ping' && msg.type !== 'windowClosing') deps.windows.resumed(ws);
     switch (msg.type) {
       case 'ping':
         // Liveness reply — lets the client detect a zombie socket (readyState
@@ -2035,13 +2194,27 @@ function handleConnection(
         });
         break;
       }
+      case 'moveToWindow': {
+        // One broadcast for the whole move; it is also the answer (no ack frame). A
+        // move that changes nothing must not restart the window's grace either.
+        if (!deps.registry.setWindow(msg.ids, msg.window)) break;
+        deps.broadcast(deps.sessionsMessage());
+        deps.windows.moved(msg.window);
+        break;
+      }
+      case 'windowClosing': {
+        deps.windows.closing(ws);
+        break;
+      }
       case 'createTab': {
         const id = deps.registry.createTab({
           kind: msg.kind,
           ...(msg.url !== undefined ? { url: msg.url } : {}),
           ...(msg.name !== undefined ? { name: msg.name } : {}),
           ...(msg.color !== undefined ? { color: msg.color } : {}),
+          ...(msg.window !== undefined ? { window: msg.window } : {}),
         });
+        if (id !== null && msg.window !== undefined) deps.windows.moved(msg.window);
         // Ack the assigned id to THIS client so it switches deterministically.
         if (id !== null && ws.readyState === ws.OPEN) {
           ws.send(encodeServerMessage({ type: 'tabCreated', id }));

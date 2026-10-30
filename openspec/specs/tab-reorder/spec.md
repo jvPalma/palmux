@@ -39,30 +39,6 @@ The server SHALL own the tab order: the `sessions` broadcast's `tabs` array orde
 - **WHEN** a `reorderTabs` message contains unknown ids, duplicates, or omits known ids
 - **THEN** unknown ids and duplicates are ignored, omitted known tabs remain (appended in their prior relative order), and no tab is ever lost or duplicated
 
-### Requirement: Strip drag reorders, Chrome-like
-
-Dragging a tab within the strip SHALL reorder it: during the drag an insertion indicator SHALL mark the drop position, and dropping SHALL move the tab there, applied optimistically in the dragging client and confirmed by the server broadcast. This SHALL work for split-member tabs — the split pairing follows the tab and is unaffected by order. This supersedes the previous drag-back-to-strip gesture: dropping a tab on the strip SHALL NOT collapse a split (un-splitting remains the per-slot eject control).
-
-#### Scenario: Drop between tabs moves the tab
-
-- **WHEN** the strip is `[t0, t1, t2, t3]` and `t3` is dropped between `t0` and `t1`
-- **THEN** the strip becomes `[t0, t3, t1, t2]`
-
-#### Scenario: Reordering a split member never touches the split
-
-- **WHEN** the split `(t0 | t1)` is on screen and member `t1` is dragged to the front of the strip
-- **THEN** the strip becomes `[t1, t0, …]`, the split stays `(t0 | t1)` tiled, and focus is unchanged
-
-#### Scenario: Strip drop no longer collapses
-
-- **WHEN** a split is on screen and a member tab is dragged and dropped on the strip
-- **THEN** the tab is reordered (or stays put) and the split is NOT collapsed
-
-#### Scenario: Content-area drag gestures are unchanged
-
-- **WHEN** a tab is dragged to a content-area edge (no split shown) or onto a slot (split shown)
-- **THEN** the existing open-split / replace-slot behaviors apply exactly as before
-
 ### Requirement: The strip renders the broadcast order
 
 The client strip SHALL render tabs in the order received from the server (no client-side numeric sorting); a freshly navigated id not yet present in the broadcast SHALL be appended at the end until the server includes it.
@@ -76,3 +52,22 @@ The client strip SHALL render tabs in the order received from the server (no cli
 
 - **WHEN** the user navigates to `/5` before the server has broadcast a tab with id `5`
 - **THEN** the strip shows the existing broadcast order with `t5` appended last
+
+### Requirement: A pane strip drag reorders, Chrome-like
+
+Dragging a tab within a pane's strip SHALL reorder it: during the drag an insertion indicator SHALL mark the drop position, and dropping SHALL move the tab there, applied optimistically in the dragging client and confirmed by the server broadcast. A pane's strip lists a subset of the tabs, so the drop position SHALL be mapped to the full server order (before the tab the marker precedes in that strip). Dropping a tab on the strip SHALL NOT change any other pane.
+
+#### Scenario: Drop between tabs moves the tab
+
+- **WHEN** the strip is `[t0, t1, t2, t3]` and `t3` is dropped between `t0` and `t1`
+- **THEN** the strip becomes `[t0, t3, t1, t2]`
+
+#### Scenario: A pane's reorder maps to the full order
+
+- **WHEN** the server order is `[t0, t1, t2, t3]`, pane A holds `t0, t2, t3` and pane B holds `t1`, and `t3` is dropped before `t2` in A's strip
+- **THEN** the server order becomes `[t0, t1, t3, t2]` and pane B is unchanged
+
+#### Scenario: Content-area drag gestures are separate
+
+- **WHEN** a tab is dragged to a pane's edge or centre instead of a strip
+- **THEN** the editor-group drops apply (see `editor-groups`)

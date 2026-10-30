@@ -775,3 +775,37 @@ describe('Reviewed from the keyboard', () => {
     expect(reviewApiFor('7')).toBeUndefined();
   });
 });
+
+// ── The phone's file header draws chips, and they write the same ─────────────
+
+describe('on a phone the file header’s chips stage and unstage like the kit’s buttons', () => {
+  beforeEach(() => {
+    document.documentElement.dataset['mobile'] = 'true';
+  });
+  afterEach(() => {
+    delete document.documentElement.dataset['mobile'];
+  });
+
+  it('Reviewed, drawn as a chip, stages the file as it was seen and moves on', async () => {
+    movesToStaged();
+    await openFiles();
+    expect(reviewed('b.ts')).toHaveClass('rv-chip', 'rv-chip-primary');
+    await press(reviewed('b.ts'));
+    expect(writes('stage')).toHaveLength(1);
+    expect(writes('stage')[0]?.body).toEqual({ path: 'b.ts', token: 'tok-b.ts-1' });
+    expect(paths()).toEqual(['a.ts', 'c.ts', 'd.ts', 'e.ts']);
+  });
+
+  it('Unstage, drawn as a chip, unstages the file', async () => {
+    server.status[REPO] = statusBody({ staged: [entry('a.ts'), entry('b.ts')] });
+    for (const path of ['a.ts', 'b.ts']) server.files[path] = snapshot(path, { group: 'staged' });
+    mountReview({ tab: tab(`staged:${REPO}`) });
+    await screen.findByTestId('review-list');
+    await settle();
+    expect(unstage('a.ts')).toHaveClass('rv-chip');
+    expect(unstage('a.ts')).not.toHaveClass('rv-chip-primary');
+    await press(unstage('a.ts'));
+    expect(writes('unstage')).toHaveLength(1);
+    expect(writes('unstage')[0]?.body).toEqual({ path: 'a.ts' });
+  });
+});

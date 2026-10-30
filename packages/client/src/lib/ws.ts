@@ -228,11 +228,26 @@ export class WsClient {
   sendImportTheme(source: string): boolean {
     return this.sendMessage({ type: 'importTheme', source });
   }
-  sendCreateTab(spec: { kind: TabKind; url?: string; name?: string; color?: string }): boolean {
+  sendCreateTab(spec: {
+    kind: TabKind;
+    url?: string;
+    name?: string;
+    color?: string;
+    /** The detached window to create the tab in; absent = the main window. */
+    window?: string;
+  }): boolean {
     return this.sendMessage({ type: 'createTab', ...spec });
   }
   sendUpdateTab(patch: { id: string; name?: string; color?: string; url?: string }): boolean {
     return this.sendMessage({ type: 'updateTab', ...patch });
+  }
+  /** Hand `ids` to a detached window (`window` = its id), or back to the main window (`null`). */
+  sendMoveToWindow(ids: string[], window: string | null): boolean {
+    return this.sendMessage({ type: 'moveToWindow', ids, window });
+  }
+  /** A detached window is going away (`pagehide`): its release grace is the short one. */
+  sendWindowClosing(): boolean {
+    return this.sendMessage({ type: 'windowClosing' });
   }
   /** Full desired tab order; the server rebroadcasts the applied order. */
   sendReorderTabs(ids: string[]): boolean {

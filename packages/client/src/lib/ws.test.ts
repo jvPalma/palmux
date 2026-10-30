@@ -116,3 +116,54 @@ describe('WsClient heartbeat', () => {
     c.destroy();
   });
 });
+
+describe('WsClient window messages', () => {
+  beforeEach(() => {
+    MockWS.last = null;
+    MockWS.count = 0;
+    vi.stubGlobal('WebSocket', MockWS);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  const lastSent = (): unknown => JSON.parse(String(MockWS.last!.sent.at(-1)));
+
+  it('sendCreateTab carries the window of a detached window', () => {
+    const c = openClient();
+    expect(c.sendCreateTab({ kind: 'editor', window: 'wq3k9x2m1a' })).toBe(true);
+    expect(lastSent()).toEqual({ type: 'createTab', kind: 'editor', window: 'wq3k9x2m1a' });
+    c.destroy();
+  });
+
+  it('sendCreateTab sends no window key for the main window', () => {
+    const c = openClient();
+    c.sendCreateTab({ kind: 'editor' });
+    expect(lastSent()).toEqual({ type: 'createTab', kind: 'editor' });
+    c.destroy();
+  });
+
+  it('sendMoveToWindow names the ids and the window, null being the main window', () => {
+    const c = openClient();
+    expect(c.sendMoveToWindow(['1', '3'], 'wq3k9x2m1a')).toBe(true);
+    expect(lastSent()).toEqual({ type: 'moveToWindow', ids: ['1', '3'], window: 'wq3k9x2m1a' });
+    c.sendMoveToWindow(['2'], null);
+    expect(lastSent()).toEqual({ type: 'moveToWindow', ids: ['2'], window: null });
+    c.destroy();
+  });
+
+  it('sendWindowClosing sends the bare message', () => {
+    const c = openClient();
+    expect(c.sendWindowClosing()).toBe(true);
+    expect(lastSent()).toEqual({ type: 'windowClosing' });
+    c.destroy();
+  });
+
+  // A frame the socket could not take must say so: `pagehide` and a move both need to know.
+  it('answers false when the socket is not open', () => {
+    const c = new WsClient('ws://x/ws');
+    c.connect(); // never accepted: still CONNECTING
+    expect(c.sendMoveToWindow(['1'], null)).toBe(false);
+    expect(c.sendWindowClosing()).toBe(false);
+    expect(MockWS.last!.sent).toEqual([]);
+    c.destroy();
+  });
+});

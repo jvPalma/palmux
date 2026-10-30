@@ -30,14 +30,17 @@
   font-size: var(--fs-2);
 }
 
-/* On a phone the list is COMPACT: a row is one step below the control height (32px, the
-   extra-keys bar's key and the drawer's rows), a level indents by 8px instead of 12px and
-   the parts of a row sit 4px apart, so a deep tree keeps its file names (a 4-level path lost
-   44px to its indent) and more rows fit above the footer. The text is already the body size.
-   The desktop keeps the kit's control height: a pointer does not need the room. A row's
-   height stays a control height, never a bare pixel count, so it follows the device class. */
+/* On a phone the list is COMPACT (owner, 2026-10-26, twice): a row is 24px (`--ctl-h` less
+   `--sp-3`, well under the extra-keys bar's key), a level indents by
+   8px instead of 12px, the parts of a row sit 4px apart, and rows follow one another with no
+   gap, so a deep tree keeps its file names and a screen holds about half again as many rows.
+   The text is already the body size. The desktop keeps the kit's control height: a pointer
+   does not need the room. A row's height stays a step off `--ctl-h`, never a bare pixel
+   count, so it follows the device class. A group header is the kit's Collapsible trigger,
+   which no rule here may size, so the view puts it on the kit's extra-small step on a phone
+   (`size="xs"`), the same 24px. */
 :root[data-mobile='true'] .scm-view {
-  --scm-row-h: calc(var(--ctl-h) - var(--sp-1));
+  --scm-row-h: calc(var(--ctl-h) - var(--sp-3));
   --scm-indent: var(--sp-2);
   --scm-gap: var(--sp-1);
 }

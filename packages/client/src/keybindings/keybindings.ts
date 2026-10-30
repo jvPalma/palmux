@@ -24,7 +24,6 @@ export type Action =
   | 'downloadFile'
   | 'splitRight'
   | 'splitDown'
-  | 'toggleSplitOrientation'
   | 'openSourceControl'
   | 'scmNextChange'
   | 'scmPrevChange'
@@ -53,7 +52,6 @@ export const ACTIONS: readonly Action[] = [
   'downloadFile',
   'splitRight',
   'splitDown',
-  'toggleSplitOrientation',
   'openSourceControl',
   'scmNextChange',
   'scmPrevChange',
@@ -83,7 +81,6 @@ export const ACTION_LABELS: Record<Action, string> = {
   downloadFile: 'Download from the server',
   splitRight: 'Split right',
   splitDown: 'Split down',
-  toggleSplitOrientation: 'Toggle split orientation',
   openSourceControl: 'Open Source Control',
   scmNextChange: 'Review: next change',
   scmPrevChange: 'Review: previous change',
@@ -122,7 +119,6 @@ export const DEFAULT_BINDINGS: Record<Action, Chord> = {
   downloadFile: { key: 'k', ctrl: true, alt: true },
   splitRight: { key: 'd', ctrl: true, shift: true },
   splitDown: { key: 'e', ctrl: true, shift: true },
-  toggleSplitOrientation: { key: 'o', ctrl: true, shift: true },
   // Ctrl+Alt+G, not VS Code's Ctrl+Shift+G: that one is `copyLastOutput` here, and
   // `matchAction` answers the first match, so reusing it would make one of the two
   // unreachable. The review keys are letters, not VS Code's F7: GNOME takes Alt+F7

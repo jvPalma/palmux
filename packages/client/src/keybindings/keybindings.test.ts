@@ -74,6 +74,21 @@ describe('persistence', () => {
     expect(loadBindings()).toEqual(DEFAULT_BINDINGS);
   });
 
+  // `toggleSplitOrientation` rotated the old two-slot pairing; panes have no orientation to flip,
+  // so the action is gone. A device that bound it keeps the blob: `loadBindings` walks `ACTIONS`,
+  // so the stale id is never read and the chord is free again.
+  it('ignores a persisted binding for the removed toggleSplitOrientation action', () => {
+    localStorage.setItem(
+      'palmux-keybindings',
+      JSON.stringify({ toggleSplitOrientation: { key: 'o', ctrl: true, shift: true } }),
+    );
+    const loaded = loadBindings();
+    expect(loaded).toEqual(DEFAULT_BINDINGS);
+    expect(Object.keys(loaded)).not.toContain('toggleSplitOrientation');
+    expect(ACTIONS as readonly string[]).not.toContain('toggleSplitOrientation');
+    expect(matchAction(loaded, kd('o', { ctrlKey: true, shiftKey: true }))).toBeNull();
+  });
+
   it('round-trips a custom binding merged over defaults', () => {
     const custom = { ...DEFAULT_BINDINGS, newTab: { key: 'n', ctrl: true } };
     saveBindings(custom);

@@ -27,15 +27,20 @@
 // decision, not this module's. It may write only when a window's selection really
 // changes — never because a tab-list or title broadcast re-ran the persist effect,
 // or a window that merely heard a rename would overwrite the tab another window
-// just chose. A pop-out writes neither value.
+// just chose. A detached window writes neither value: it keeps its selection under a key of its
+// own (`palmux-window-tab:<wid>`) and never reads the device's copy, because `window.open` may
+// have copied the opener's storage and the device's last tab is whatever a MAIN window chose.
 //
 // Nothing here throws. Storage can be unavailable (private mode, storage
 // disabled) or hold anything at all, and a terminal that refuses to load because
 // it could not remember a tab number would be a poor trade.
 
-import type { TabKind, TabMeta } from '@palmux/shared';
+import { isTabKind, type TabKind, type TabMeta } from '@palmux/shared';
 
 const KEY = 'palmux-window-tab';
+
+/** The storage key of a window's own selection: the main window's, or a detached window's (`wid`). */
+const keyFor = (wid: string | null): string => (wid ? `${KEY}:${wid}` : KEY);
 
 /** The device-wide copy: the tab most recently selected in ANY window here. */
 export const LAST_TAB_KEY = 'palmux-last-tab';
@@ -53,15 +58,12 @@ export interface WindowSelection {
   kind: TabKind;
 }
 
-const isKind = (v: unknown): v is TabKind =>
-  v === 'terminal' || v === 'web' || v === 'dashboard' || v === 'editor' || v === 'markdown';
-
 /** Parse a stored value, or null for anything unusable. Never throws. */
 export function parseSelection(raw: string | null): WindowSelection | null {
   if (!raw) return null;
   try {
     const v = JSON.parse(raw) as Record<string, unknown>;
-    return typeof v['id'] === 'string' && v['id'] && isKind(v['kind'])
+    return typeof v['id'] === 'string' && v['id'] && isTabKind(v['kind'])
       ? { id: v['id'], kind: v['kind'] }
       : null;
   } catch {
@@ -70,9 +72,9 @@ export function parseSelection(raw: string | null): WindowSelection | null {
 }
 
 /** This window's own remembered selection, or null. */
-function readOwnSelection(): WindowSelection | null {
+function readOwnSelection(wid: string | null): WindowSelection | null {
   try {
-    return parseSelection(sessionStorage.getItem(KEY));
+    return parseSelection(sessionStorage.getItem(keyFor(wid)));
   } catch {
     return null; // storage unavailable — fall through to the device-wide value
   }
@@ -93,16 +95,19 @@ export function readLastTab(): WindowSelection | null {
  * "Own" means usable — an unparsable `sessionStorage` value is the same as none,
  * so a window with a corrupt value still comes back on the last tab and not on
  * the first.
+ *
+ * A detached window (`wid`) answers its own key and nothing else: the device's last tab is
+ * whatever a main window chose, and the main window's key may be a copy `window.open` made.
  */
-export function readSelection(): WindowSelection | null {
-  return readOwnSelection() ?? readLastTab();
+export function readSelection(wid: string | null = null): WindowSelection | null {
+  return wid ? readOwnSelection(wid) : (readOwnSelection(null) ?? readLastTab());
 }
 
 /** Remember a selection for this window only. Best-effort. */
-export function writeSelection(sel: WindowSelection | null): void {
+export function writeSelection(sel: WindowSelection | null, wid: string | null = null): void {
   try {
-    if (sel) sessionStorage.setItem(KEY, JSON.stringify(sel));
-    else sessionStorage.removeItem(KEY);
+    if (sel) sessionStorage.setItem(keyFor(wid), JSON.stringify(sel));
+    else sessionStorage.removeItem(keyFor(wid));
   } catch {
     /* storage unavailable — the window simply forgets on reload */
   }
@@ -149,12 +154,24 @@ export interface ResolveInput {
  * neighbour of.
  */
 export function resolveSelection({ stored, tabs }: ResolveInput): string | null {
-  if (tabs.length === 0) return null;
-  if (stored) {
-    const live = tabs.find((t) => t.id === stored.id);
-    if (live && live.kind === stored.kind) return stored.id;
-  }
-  return tabs[0]!.id;
+  return resolveStoredSelection(tabs, stored) ?? tabs[0]?.id ?? null;
+}
+
+/**
+ * The stored selection's id, only when that tab is live AND still the stored kind; else null.
+ *
+ * `resolveSelection` answers the first tab for an unusable value, which is a guess. A caller that
+ * must not override something better (a restored pane layout already knows which tab each pane
+ * shows) needs to tell "the window remembered this" from "nothing usable was remembered", and
+ * this is the first half of `resolveSelection` without the guess.
+ */
+export function resolveStoredSelection(
+  tabs: TabMeta[],
+  stored: WindowSelection | null,
+): string | null {
+  if (!stored) return null;
+  const live = tabs.find((t) => t.id === stored.id);
+  return live && live.kind === stored.kind ? stored.id : null;
 }
 
 /** The selection to STORE for a chosen id, or null when the tab is unknown. */

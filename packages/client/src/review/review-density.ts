@@ -1,4 +1,4 @@
-// ── Whether the review is drawn compact ────────────────────────────────────────
+// ── Whether the app is in its mobile layer ─────────────────────────────────────
 //
 // On a phone the review gives up height before anything else: a gap, a hunk header and
 // a file header are shorter (`COMPACT_ROW_METRICS`). Height is JavaScript's number (the
@@ -7,6 +7,9 @@
 // mode, which is what raises `--ctl-h` to 36px. It keys on the device class and not on
 // the pane's width, as `review-layout.ts` does for the layout, because a phone held
 // sideways has a wide pane and still has little height.
+//
+// Source Control reads it too, to put its group headers on the kit's extra-small step on
+// a phone: a kit control's height is the kit's class, and no consumer sheet may set it.
 
 import { useSyncExternalStore } from 'react';
 
@@ -21,4 +24,4 @@ function subscribe(onChange: () => void): () => void {
 }
 
 /** True while the app is in its mobile layer. Follows a change of the mode at once. */
-export const useCompactReview = (): boolean => useSyncExternalStore(subscribe, read, () => false);
+export const useMobileLayer = (): boolean => useSyncExternalStore(subscribe, read, () => false);

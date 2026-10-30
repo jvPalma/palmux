@@ -20,7 +20,7 @@ export const TIPS: Tip[] = [
     category: 'Mobile',
     title: 'Sessions drawer',
     description:
-      'A bar with the drawer swipe is always there on mobile, whatever the tab is — the extra-keys bar, or the review bar while a review is open — because it is how you reach everything else. Swipe RIGHT→LEFT across it to pull the drawer in from the right edge. It covers the screen except a dimmed strip on the left: tap the strip, or the ✕ button at the top, to get back to the terminal. The drawer is laid out for your thumb. Upload, Download, Dictate and Images sit at the bottom and your tabs above them. At the very top is one row: Settings (the control you need least), a four-icon switcher (Sessions, Explorer, Source Control, Dictation) and the ✕. All of it opens as drawer views, never a modal stacked over the terminal. From the session list, + New tab opens the chooser in place of the list (‹ New tab goes back); a tmux session, a URL or a note all start from there.',
+      'A bar with the drawer swipe is always there on mobile, whatever the tab is — the extra-keys bar, or the review bar while a review is open — because it is how you reach everything else. Swipe RIGHT→LEFT across it to pull the drawer in from the right edge. It covers about three quarters of the screen and leaves a dimmed strip on the left: tap the strip to get back to the terminal. Choosing a tab, opening a file and every footer action close the drawer too, and with a keyboard, Escape closes it while focus is inside. The drawer is laid out for your thumb. Upload, Download, Dictate and Images sit at the bottom and your tabs above them. At the very top is one row: a four-icon switcher (Sessions, Explorer, Source Control, Dictation) with the Settings gear at its right end, the control you need least. All of it opens as drawer views, never a modal stacked over the terminal. From the session list, + New tab opens the chooser in place of the list (‹ New tab goes back); a tmux session, a URL or a note all start from there.',
   },
   {
     category: 'Mobile',
@@ -44,7 +44,7 @@ export const TIPS: Tip[] = [
     category: 'Mobile',
     title: 'Settings at the top of the drawer',
     description:
-      'Settings is the gear button at the top of the drawer, next to the close button. It sits as far from your thumb as the drawer allows, because you reach for it least. Tap it to open the settings list; ‹ Settings goes back. The Explorer, Source Control and Dictation views are the icons of the switcher between the gear and the close button.',
+      'Settings is the gear button at the top of the drawer, at the right end of the row. It sits as far from your thumb as the drawer allows, because you reach for it least. Tap it to open the settings list; ‹ Settings goes back. The Explorer, Source Control and Dictation views are the icons of the switcher to its left.',
   },
   {
     category: 'Mobile',
@@ -131,12 +131,6 @@ export const TIPS: Tip[] = [
       'There is no second row of buttons above the terminal any more. Upload (⬆) and Download (⬇) are the two icons at the bottom of the side rail, under a separator — they run something rather than opening a panel. Shortcuts & tips moved into Settings. Both also have keybindings and sit in the command palette.',
   },
   {
-    category: 'Side panel',
-    title: 'Split: swap and rotate',
-    description:
-      'Double-click the divider between two panes to swap their sides — the divider stays where you put it and the contents cross it. Hover the divider for a small ⬍ handle that rotates the split between side-by-side and stacked. Dragging the divider still resizes; a drag never counts as half a double-click.',
-  },
-  {
     category: 'Settings',
     title: 'Choosing a theme by looking at it',
     description:
@@ -176,7 +170,7 @@ export const TIPS: Tip[] = [
     category: 'Tabs',
     title: 'Chrome-style tabs',
     description:
-      'The top bar is a real tab strip. Click a tab to switch; click its ✕ to close (terminals confirm first). Tabs live on the server and survive closed browser tabs. Each browser window remembers which tab IT was on, so two windows can sit on two different tabs — and both still see the same strip.',
+      'The top bar is a real tab strip. Click a tab to switch; click its ✕ to close (terminals confirm first). Tabs live on the server and survive closed browser tabs. Each browser window remembers which tab IT was on, so two windows can sit on two different tabs — and both still see the same strip (a tab opened in a new window is the exception: it shows there alone).',
   },
   {
     category: 'Tabs',
@@ -198,15 +192,27 @@ export const TIPS: Tip[] = [
   },
   {
     category: 'Tabs',
-    title: 'Split view (desktop)',
+    title: 'Panes (desktop)',
     description:
-      'Right-click a tab → Split right / Split down to see two tabs at once — any pairing, including two terminals or an editor beside a shell. Or drag a tab into the content area: a highlight previews exactly which half it will take. A split pair FUSES into one strip button with two segments — click a segment to focus that pane (the solid segment is the focused one). You can keep several pairs; the one whose button is active is on screen. Drag a tab ONTO a slot to swap that slot; ⏏ on a slot un-splits (both tabs stay, side by side). Drag the divider to resize, ⬍/⬌ flips orientation. Remembered per device; desktop-only.',
+      "Drag a tab to the edge of a pane to open a new pane there, or onto a pane's middle or its tabs to move it. Right-click a tab → Split right / Split down, or Ctrl+Shift+D / Ctrl+Shift+E. Each pane has its own tabs and +, closes with its last tab, and drags its sashes to resize. Remembered per window; desktop-only.",
+  },
+  {
+    category: 'Tabs',
+    title: 'Open in a new window',
+    description:
+      'Right-click a tab → Open in new window to move it into a window of its own. The tab leaves the main window, so a terminal is never open in two places and nothing shows "Opened somewhere else." The new window has panes, tabs and + like the main one, without the side rail; its + opens the new-tab chooser in a dialog, and the tab menu has Move to main window. Close the window and its tabs come back to the main window, still running. While a window holds a tab, your other devices do not list it. Desktop-only, and the server must support it.',
+  },
+  {
+    category: 'Tabs',
+    title: 'Drag tabs between windows',
+    description:
+      "Drag a tab from one palmux window onto another window: onto its tab strip or a pane's middle to move it into that pane, or onto a pane's edge to open a new pane there. It works from the main window to a new window, back, and between two new windows. An editor with unsaved changes will not move by drag; save it first, or use the tab menu, which asks. A window whose last tab leaves closes itself.",
   },
   {
     category: 'Tabs',
     title: 'Rearrange tabs',
     description:
-      'Drag a tab along the strip to move it, Chrome-style — an accent bar marks where it will land. The order is shared across all your devices and survives server restarts. New tabs always append at the end. A fused split pair drags as one unit and its two tabs always stay adjacent.',
+      'Drag a tab along the strip to move it, Chrome-style — an accent bar marks where it will land. The order is shared across all your devices and survives server restarts. New tabs always append at the end.',
   },
   {
     category: 'Tabs',
@@ -218,7 +224,7 @@ export const TIPS: Tip[] = [
     category: 'Tabs',
     title: 'Collapse a group',
     description:
-      'Click a group button to collapse it — its members fold away and it shows a count; click again to expand. If you were viewing a member, it hops to the nearest tab outside the group first. Selecting a collapsed member (a split, a closed neighbour, anything) auto-expands the group. Collapse state is per device; on mobile the same groups appear as tappable headers in the drawer.',
+      'Click a group button to collapse it — its members fold away and it shows a count; click again to expand. If you were viewing a member, it hops to the nearest tab outside the group first. Selecting a collapsed member (a closed neighbour, anything) auto-expands the group. Collapse state is per device; on mobile the same groups appear as tappable headers in the drawer.',
   },
   {
     category: 'Mobile',
@@ -237,12 +243,6 @@ export const TIPS: Tip[] = [
     title: 'Download files from the server',
     description:
       'The ⬇ button (side rail on desktop, drawer on mobile) downloads files OFF the server machine: paste an absolute path for one file, a glob like /home/user/notes/*.md, or a directory — globs and directories arrive as a single .zip. Copy the path straight out of the terminal.',
-  },
-  {
-    category: 'Tabs',
-    title: 'Pop out to a window',
-    description:
-      'Right-click a tab → Open in new window to move it into a separate browser window. A terminal has ONE active view: the new window takes the session over and the old pane shows "Opened somewhere else." with a Take back button. The popped window has a ⇱ return-to-main button; closing it never ends the session.',
   },
   {
     category: 'Tabs',

@@ -25,17 +25,15 @@ no unsaved state it SHALL close immediately.
 
 ### Requirement: Tab strip overflows horizontally
 
-When tabs exceed the available width the strip SHALL keep every pill at or above its minimum width
-(fused split pills at their own minimum) and scroll horizontally; the `+` button and the app menu
-button SHALL remain reachable.
+When tabs exceed a pane strip's width the strip SHALL keep every pill at or above its minimum width
+and scroll horizontally; the strip's `+` button SHALL remain reachable.
 
 #### Scenario: Many tabs
 
 - **WHEN** 12 tabs are open in a narrow window
 - **THEN** no pill renders below its minimum width, the strip scrolls horizontally, and the active
   pill is scrolled into view on switch
-- **AND** the `+` button and the app menu button stay reachable, the menu button remaining at the end
-  of the bar outside the scrolling strip
+- **AND** the `+` button stays reachable at the end of the strip, outside the scrolling part
 
 ### Requirement: Mobile drawer rows show the same identity
 
@@ -91,38 +89,23 @@ a heavier weight. Colour SHALL NOT be what marks the active pill.
 - **THEN** the uncoloured active pill is the only raised, ringed pill, and the coloured inactive
   pills differ from the others only by their dots
 
-### Requirement: The topbar ends with an app menu button
+### Requirement: The app menu button tops the dock rail
 
-The topbar SHALL end with an icon button as its LAST control, after the tab strip and the `+` button,
-outside the scrolling strip and, except in window-controls-overlay mode, aligned over the dock rail
-column. It SHALL open an app menu offering at least Settings, Tips and Reload app, end-aligned so the
-menu opens inside the window. The `palmux` text wordmark SHALL NOT appear in the topbar.
+On a desktop the app menu button SHALL be the first control of the dock rail, above New tab, in every display mode,
+and SHALL open the app menu (at least Settings, Tips and Reload app) inside the window. There SHALL be no topbar;
+in window-controls-overlay mode the title-bar area is an empty drag region. The `palmux` wordmark SHALL NOT appear.
 
-#### Scenario: The menu is the last control
+#### Scenario: The menu tops the rail
 
-- **WHEN** the desktop topbar renders
-- **THEN** the app menu button is its last control, after the tab strip and `+`, and the tab strip
-  starts at the bar's left edge
+- **WHEN** the desktop app renders in a browser tab
+- **THEN** no topbar is drawn, the first rail button opens the app menu, and the panes start at the top edge
 
-#### Scenario: The button sits over the rail
+#### Scenario: Window-controls-overlay keeps a title bar
 
-- **WHEN** the dock rail is shown
-- **THEN** the app menu button shares the centre line of the rail's own buttons
-
-#### Scenario: Window-controls-overlay keeps the menu in the title bar
-
-- **WHEN** the installed app runs in window-controls-overlay mode, where the topbar fills only the
-  title-bar area
-- **THEN** the app menu button is the last control of the title-bar area, beside the native window
-  controls, and is not required to align over the rail
-
-#### Scenario: The menu opens inside the window
-
-- **WHEN** the user activates the app menu button at the window's right edge
-- **THEN** the menu opens with its right edge on the button's right edge and stays fully on screen
+- **WHEN** the installed app runs in window-controls-overlay mode
+- **THEN** the title-bar area is an empty drag region and the app menu button is still the rail's first control
 
 #### Scenario: A second route to Settings
 
-- **WHEN** the user chooses Settings from the app menu while the rail is shown
-- **THEN** the Settings view opens in the dock, the view the rail's Settings button and Ctrl+, also
-  open
+- **WHEN** the user chooses Settings from the app menu
+- **THEN** the Settings view opens in the dock, the view the rail's Settings button and Ctrl+, also open

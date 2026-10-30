@@ -1,64 +1,52 @@
 // ── Workspace navigation controller (pure) ────────────────────────────────────
 //
 // The decision core of the App hub: given a navigation EVENT and a read-only
-// context (the current session id, the set of split PAIRINGS, tabs, seen
+// context (the current session id, which pane holds a tab, tabs, seen
 // terminals, mode), it returns a list of declarative EFFECTS. App translates
-// gestures/sockets into events and applies the effects (history + setSessionId +
-// the useSplit ops + the fuse-sync wire message). Pure ⇒ every navigation
-// invariant (member focus, split-outside-new-tabs, eject-to-survivor,
-// recycled-id, close-nav, fuse ordering) is a direct unit test instead of a
-// full-render DOM assertion.
+// gestures/sockets into events and applies the effects (`setSessionId` through
+// the layout's `show`, the pane grid's `splitPane`). Pure ⇒ every navigation
+// invariant (recycled-id, close-nav, lone-tab split) is a direct unit test
+// instead of a full-render DOM assertion.
 //
-// A PAIRING is one SplitState; its stable KEY is `a.tabId`. `pairingOf` finds
-// the pairing a tab belongs to; the ACTIVE pairing is the one containing the
-// current session id (on screen). splitShown is subsumed: sessionId is a member
-// iff its pairing is displayed.
+// With editor groups ENABLED (the desktop) the layout owns the selection and the
+// per-pane close-navigation: `pane-grid.ts`'s `reconcile` re-picks a pane's active
+// tab by the same left-then-right rule on every broadcast. What stays here is the
+// one decision no pane can make, "the last tab went", and, for the mobile layer (one
+// virtual pane, no layout to reconcile), the neighbour rule itself. A detached window
+// has groups on and decides neither: reconcile owns its close-navigation, and an empty
+// window closes itself.
 
-import type { TabKind, TabMeta } from '@palmux/shared';
-import { nextFreeId } from './session-url';
+import type { TabMeta } from '@palmux/shared';
 import { neighborAfterClose } from './tab-meta';
-import {
-  memberSlot,
-  pairingOf,
-  type Orientation,
-  type SlotId,
-  type SlotRef,
-  type SplitState,
-} from './useSplit';
 
 export interface WorkspaceCtx {
   sessionId: string;
-  /** Every live split pairing (each a stable two-tab SplitState). */
-  pairings: SplitState[];
-  /** The CURRENT tab list (for fuse ctx this is the pre-broadcast list). */
+  /** The CURRENT tab list (for a `sessionsBroadcast` this is the pre-broadcast list). */
   tabs: TabMeta[];
   mobileActive: boolean;
-  activeKind: TabKind;
   /** Terminal ids ever seen in a broadcast (fresh-vs-killed discrimination). */
   seenTermIds: ReadonlySet<string>;
-  /** A popped-out window never runs close-navigation. */
-  popout: boolean;
-  /** The group id a tab belongs to (for fuse membership sync). */
-  groupOf: (id: string) => string | undefined;
+  /**
+   * A detached window: its panes reconcile the close-navigation and its empty list is a window that
+   * closes itself, so a `sessionsBroadcast` never asks for the New-tab page there.
+   */
+  detached: boolean;
+  /** Editor groups are on: the desktop and a detached window, not the mobile layer. */
+  groups: boolean;
+  /** The pane holding a tab and how many tabs that pane holds, or null when none does. */
+  leafOf: (tabId: string) => { id: string; count: number } | null;
+  /**
+   * A pane holds a tab no broadcast has listed yet: a terminal this window picked an id for, which
+   * exists on the server only once its pane attaches.
+   */
+  holdsPending: boolean;
 }
 
 export type WorkspaceEvent =
   | { type: 'selectTab'; id: string }
-  | { type: 'focusSlot'; slot: SlotId }
-  | { type: 'menuSplit'; otherId: string; orientation: Orientation }
-  | { type: 'dropSplit'; id: string; side: 'left' | 'right' | 'top' | 'bottom' }
-  | { type: 'dropSlot'; id: string; slot: SlotId }
-  | { type: 'eject'; keep?: SlotId | undefined }
-  | {
-      type: 'tabCreated';
-      id: string;
-      /**
-       * What the create this acknowledges asked for, when the client knows. A
-       * `review` create is idempotent on the server, so its answer may name a tab
-       * that already existed: see the `tabCreated` case.
-       */
-      expected?: { kind: TabKind; url: string } | undefined;
-    }
+  /** Split right / Split down on a tab: it moves into a new pane to its pane's right or below. */
+  | { type: 'menuSplit'; tabId: string; side: 'right' | 'bottom' }
+  | { type: 'tabCreated'; id: string }
   /** A `sessions` broadcast — only the close-navigation decision (App applies the
    *  rest). `tabs` is the NEW list; `ctx.tabs` is the OLD one. */
   | { type: 'sessionsBroadcast'; tabs: TabMeta[] };
@@ -74,175 +62,61 @@ export type WorkspaceEffect =
    */
   | { type: 'navigate'; id: string }
   | { type: 'chooserPage'; value: boolean }
-  | { type: 'openSplit'; a: SlotRef; b: SlotRef; orientation: Orientation; focused: SlotId }
-  | { type: 'dissolveP'; key: string }
-  | { type: 'setSlot'; key: string; slot: SlotId; ref: SlotRef }
-  | { type: 'focusSlotP'; key: string; slot: SlotId }
-  /** Sync the strip order + group membership of a tab fused next to another. */
-  | {
-      type: 'fuseSync';
-      keepId: string;
-      moveId: string;
-      moveGid: string | null;
-      targetGid: string | null;
-    }
-  /** Un-mark a freshly-allocated split-slot id as seen (recycled-id hazard). */
-  | { type: 'unsee'; id: string };
-
-const kindOf = (tabs: TabMeta[], id: string): TabKind =>
-  tabs.find((t) => t.id === id)?.kind ?? 'terminal';
-
-/** A fresh terminal slot id + the effect to keep it read as fresh by reconcile. */
-function freshSlot(ctx: WorkspaceCtx): { ref: SlotRef; unsee: WorkspaceEffect } {
-  const id = nextFreeId([...ctx.tabs.map((t) => t.id), ctx.sessionId]);
-  return { ref: { tabId: id, kind: 'terminal' }, unsee: { type: 'unsee', id } };
-}
-
-/** The fuse-sync effect for moving `moveId` next to `keepId` (order + membership). */
-function fuseSync(ctx: WorkspaceCtx, keepId: string, moveId: string): WorkspaceEffect {
-  return {
-    type: 'fuseSync',
-    keepId,
-    moveId,
-    moveGid: ctx.groupOf(moveId) ?? null,
-    targetGid: ctx.groupOf(keepId) ?? null,
-  };
-}
+  /** Move `tabId` out of pane `leafId` into a new pane on `side` of it. */
+  | { type: 'split'; leafId: string; tabId: string; side: 'right' | 'bottom' }
+  /**
+   * The tab is its pane's only one, so there is nothing to move: App opens a new
+   * terminal in the new pane (it picks the id, as `createTab` does).
+   */
+  | { type: 'splitLone'; leafId: string; side: 'right' | 'bottom' };
 
 export function decide(event: WorkspaceEvent, ctx: WorkspaceCtx): WorkspaceEffect[] {
-  const activePairing = pairingOf(ctx.pairings, ctx.sessionId);
-
   switch (event.type) {
-    case 'selectTab': {
-      // A pairing MEMBER re-tiles that pairing focused on its slot; any other tab
-      // shows full-width. Selection NEVER replaces a slot. chooserPage clears.
-      const out: WorkspaceEffect[] = [{ type: 'chooserPage', value: false }];
-      const p = pairingOf(ctx.pairings, event.id);
-      if (p) {
-        const slot = memberSlot(p, event.id);
-        if (slot) out.push({ type: 'focusSlotP', key: p.a.tabId, slot });
-      }
-      out.push({ type: 'navigate', id: event.id });
-      return out;
-    }
-
-    case 'focusSlot': {
-      // Only the active pairing (the one on screen): a click in a full-width
-      // non-member pane must never yank the view over to a hidden pairing.
-      if (!activePairing || activePairing.focused === event.slot) return [];
+    case 'selectTab':
+      // Every selection is an ordinary navigation; the layout turns it into "activate it
+      // where it is, else in the focused pane". chooserPage clears.
       return [
-        { type: 'focusSlotP', key: activePairing.a.tabId, slot: event.slot },
-        { type: 'navigate', id: activePairing[event.slot].tabId },
-      ];
-    }
-
-    case 'menuSplit': {
-      // Blocked while THIS tab is already in a pairing (on screen) or on mobile.
-      if (activePairing || ctx.mobileActive) return [];
-      const current: SlotRef = { tabId: ctx.sessionId, kind: ctx.activeKind };
-      const out: WorkspaceEffect[] = [];
-      let target: SlotRef;
-      if (event.otherId === ctx.sessionId) {
-        // Splitting with the only/active tab spawns a fresh terminal.
-        const f = freshSlot(ctx);
-        target = f.ref;
-        out.push(f.unsee);
-      } else {
-        target = { tabId: event.otherId, kind: kindOf(ctx.tabs, event.otherId) };
-      }
-      out.push(fuseSync(ctx, ctx.sessionId, target.tabId));
-      out.push({
-        type: 'openSplit',
-        a: current,
-        b: target,
-        orientation: event.orientation,
-        focused: 'b',
-      });
-      out.push({ type: 'navigate', id: target.tabId });
-      return out;
-    }
-
-    case 'dropSplit': {
-      if (activePairing || ctx.mobileActive) return [];
-      // Dragging the ACTIVE tab onto its own pane is refused. A pane cannot
-      // mirror itself — one PTY has one attachment — so the only thing this
-      // gesture could ever do was spawn a FRESH terminal, which is not what
-      // dropping a tab means anywhere else in the strip and read as a bug.
-      // `menuSplit` keeps the spawn, because "Split with… (this tab)" is an
-      // explicit request for a second terminal rather than a misfired drag.
-      // App hides the edge zones for this tab too, so the gesture is visibly
-      // unavailable; this is the guard for a drop that lands anyway.
-      if (event.id === ctx.sessionId) return [];
-      const orientation: Orientation =
-        event.side === 'left' || event.side === 'right' ? 'row' : 'column';
-      const before = event.side === 'left' || event.side === 'top';
-      const current: SlotRef = { tabId: ctx.sessionId, kind: ctx.activeKind };
-      const out: WorkspaceEffect[] = [];
-      const dragged: SlotRef = { tabId: event.id, kind: kindOf(ctx.tabs, event.id) };
-      out.push(fuseSync(ctx, ctx.sessionId, dragged.tabId));
-      const a = before ? dragged : current;
-      const b = before ? current : dragged;
-      out.push({ type: 'openSplit', a, b, orientation, focused: before ? 'a' : 'b' });
-      out.push({ type: 'navigate', id: dragged.tabId });
-      return out;
-    }
-
-    case 'dropSlot': {
-      // Replace a slot's content in the ACTIVE pairing (never duplicate a member).
-      if (!activePairing || memberSlot(activePairing, event.id)) return [];
-      const otherSlot: SlotId = event.slot === 'a' ? 'b' : 'a';
-      const keepId = activePairing[otherSlot].tabId;
-      const ref: SlotRef = { tabId: event.id, kind: kindOf(ctx.tabs, event.id) };
-      return [
-        fuseSync(ctx, keepId, event.id),
-        { type: 'setSlot', key: activePairing.a.tabId, slot: event.slot, ref },
+        { type: 'chooserPage', value: false },
         { type: 'navigate', id: event.id },
       ];
+
+    case 'menuSplit': {
+      // No split on the mobile layer: there is one virtual pane.
+      if (!ctx.groups || ctx.mobileActive) return [];
+      const leaf = ctx.leafOf(event.tabId);
+      if (!leaf) return [];
+      return leaf.count === 1
+        ? [{ type: 'splitLone', leafId: leaf.id, side: event.side }]
+        : [{ type: 'split', leafId: leaf.id, tabId: event.tabId, side: event.side }];
     }
 
-    case 'eject': {
-      // Collapse the active pairing to the KEPT slot's tab (full-width).
-      if (!activePairing) return [];
-      const survivor = activePairing[event.keep ?? activePairing.focused].tabId;
+    case 'tabCreated':
+      // The server answered a create with the assigned id: show it (a tab that already
+      // exists, as a review's idempotent create answers, is activated where it is).
       return [
-        { type: 'dissolveP', key: activePairing.a.tabId },
-        { type: 'navigate', id: survivor },
+        { type: 'chooserPage', value: false },
+        { type: 'navigate', id: event.id },
       ];
-    }
-
-    case 'tabCreated': {
-      // A server-assigned id colliding with a pairing member means that member is
-      // stale (died while away) — dissolve that pairing instead of focusing a ghost.
-      //
-      // Except when the answer is for a tab this window already holds. A review
-      // create is idempotent in the server registry (another window opened the same
-      // group first), so the id it answers may be a live review that this window has
-      // since put in a split: the same kind and url as what was asked for, in a slot
-      // of that kind. That is the tab itself and not a ghost, so the split stays and
-      // the view moves to the member's slot, exactly as selecting it would.
-      const out: WorkspaceEffect[] = [{ type: 'chooserPage', value: false }];
-      const p = pairingOf(ctx.pairings, event.id);
-      const slot = p ? memberSlot(p, event.id) : null;
-      const live = ctx.tabs.find((t) => t.id === event.id);
-      const isLiveTab =
-        event.expected !== undefined &&
-        live?.kind === event.expected.kind &&
-        live.url === event.expected.url &&
-        slot !== null &&
-        p?.[slot].kind === event.expected.kind;
-      if (p && slot && isLiveTab) out.push({ type: 'focusSlotP', key: p.a.tabId, slot });
-      else if (p) out.unshift({ type: 'dissolveP', key: p.a.tabId });
-      out.push({ type: 'navigate', id: event.id });
-      return out;
-    }
 
     case 'sessionsBroadcast': {
+      // A detached window takes no New-tab effect from here: its last tab leaving is the window's
+      // end, which App's self-close owns (it shows the New-tab page only if the browser refuses to
+      // close the window). This does not stop the page from rendering in between: App's layout
+      // effect sets it when the focused pane is left with no active tab. Everything else is
+      // reconcile's.
+      if (ctx.detached) return [];
+      // With groups, each pane re-picks its own active tab during reconcile, so the only
+      // decision left is the empty list: nothing to show, the New-tab PAGE is the content. Not
+      // while a pane holds a terminal this window just created: the list lacks it only because its
+      // attach has not spawned it yet, and the page would unmount the pane that is about to.
+      if (ctx.groups) {
+        return event.tabs.length === 0 && !ctx.holdsPending
+          ? [{ type: 'chooserPage', value: true }]
+          : [];
+      }
       // The ACTIVE tab was closed → go to its LEFT strip neighbor, else right;
       // nothing left → the New-tab PAGE. A never-broadcast terminal is FRESH
-      // (its attach hasn't spawned it), not closed. An active pairing + popouts
-      // handle their own reconcile/ended state (App reconcile navigates for a
-      // dead pairing member).
-      if (ctx.popout || activePairing) return [];
+      // (its attach hasn't spawned it), not closed.
       const active = ctx.sessionId;
       const gone = !event.tabs.some((t) => t.id === active);
       const wasLive =

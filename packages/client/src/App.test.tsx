@@ -1,19 +1,18 @@
-// App-level split model integration: the Chrome-like display scoping wired
-// through the REAL App (selectTab / doDropSlot / eject / tabCreated / [+]),
-// with the heavy leaves mocked at their seams — WsClient (we play the server),
-// TerminalPane (a stub div carrying slot/session/focus), PaneHost. These pin
-// the change's headline invariants: selection/creation NEVER replaces a slot,
-// exactly two slots ever, eject keeps the other tab, hidden pairings stay put.
+// App-level integration: the pane grid (editor groups), the strips, the dock and the drawer wired
+// through the REAL App (selectTab / drops on a pane / tabCreated / [+]), with the heavy leaves
+// mocked at their seams — WsClient (we play the server), TerminalPane (a stub div carrying
+// pane/session/focus), PaneHost. These pin the headline invariants: a tab is in one pane, a pane's
+// terminal is keyed by the pane, focus is the window selection, and creation lands in a pane.
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createRef, useEffect, type ComponentProps } from 'react';
 import { flushSync } from 'react-dom';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { App, shouldRestoreKeyboard, type DrawerCloseOptions } from './App';
-import { GROUP_DND_TYPE, TAB_DND_TYPE } from './session/SessionTabs';
+import { GROUP_DND_TYPE, TAB_DIRTY_DND_TYPE, TAB_DND_TYPE } from './session/SessionTabs';
 import type { SessionDrawer as SessionDrawerComponent } from './session/SessionDrawer';
 import type { DrawerDrop } from './session/drawer-tree';
 import type { PaneApi, SlotId, SplitRegistry } from './session/SplitFocusContext';
@@ -56,6 +55,12 @@ const { sockets } = vi.hoisted(() => ({
     reorders: string[][];
     groupCreates: unknown[];
     groupUpdates: Array<Record<string, unknown>>;
+    /** Every `moveToWindow` this client sent, in order. */
+    moves: Array<{ ids: string[]; window: string | null }>;
+    /** How many `windowClosing` messages this client sent. */
+    closings: number;
+    /** What App registered for the socket opening: a connect, and every reconnect. */
+    openHandler: (() => void) | null;
     /** Every settings blob this client sent the server, in order. */
     settingsSent: Array<Record<string, unknown>>;
     /** Every theme import request, as typed. */
@@ -72,6 +77,9 @@ vi.mock('./lib/ws', () => ({
     reorders: string[][] = [];
     groupCreates: unknown[] = [];
     groupUpdates: Array<Record<string, unknown>> = [];
+    moves: Array<{ ids: string[]; window: string | null }> = [];
+    closings = 0;
+    openHandler: (() => void) | null = null;
     settingsSent: Array<Record<string, unknown>> = [];
     imports: string[] = [];
     constructor(url: string) {
@@ -82,7 +90,9 @@ vi.mock('./lib/ws', () => ({
       this.handler = cb;
     }
     onBinary() {}
-    onOpen() {}
+    onOpen(cb: () => void) {
+      this.openHandler = cb;
+    }
     connect() {}
     destroy() {}
     stopReconnect() {}
@@ -106,6 +116,14 @@ vi.mock('./lib/ws', () => ({
       return true;
     }
     sendUpdateTab() {
+      return true;
+    }
+    sendMoveToWindow(ids: string[], window: string | null) {
+      this.moves.push({ ids, window });
+      return true;
+    }
+    sendWindowClosing() {
+      this.closings += 1;
       return true;
     }
     sendReorderTabs(ids: string[]) {
@@ -140,6 +158,8 @@ const paneApiFake = vi.hoisted(() => ({
   refits: 0,
   /** Every string a shared input surface sent the pane, typed or pasted: what reaches the PTY. */
   typed: [] as string[],
+  /** The panes (by slot) a picker was opened on: which terminal an Upload reached. */
+  pickers: [] as string[],
 }));
 const UploadingPaneApi = (p: { registry: SplitRegistry; slot: SlotId; sessionId: string }) => {
   const { openPicker, openImagePicker } = useFileUpload({
@@ -160,8 +180,14 @@ const UploadingPaneApi = (p: { registry: SplitRegistry; slot: SlotId; sessionId:
         return true;
       },
       pasteImage: noop,
-      openPicker: (onReturn) => (paneApiFake.launches ? openPicker(onReturn) : false),
-      openImagePicker: (onReturn) => (paneApiFake.launches ? openImagePicker(onReturn) : false),
+      openPicker: (onReturn) => {
+        paneApiFake.pickers.push(p.slot);
+        return paneApiFake.launches ? openPicker(onReturn) : false;
+      },
+      openImagePicker: (onReturn) => {
+        paneApiFake.pickers.push(p.slot);
+        return paneApiFake.launches ? openImagePicker(onReturn) : false;
+      },
       focus: noop,
       blur: noop,
       refit: () => void paneApiFake.refits++,
@@ -179,7 +205,7 @@ const UploadingPaneApi = (p: { registry: SplitRegistry; slot: SlotId; sessionId:
 };
 
 // TerminalPane stub: enough surface for the layout/focus assertions, plus the
-// real pane's mousedown→onFocusRequest wiring (pins the hidden-pairing guard).
+// real pane's mousedown→onFocusRequest wiring (a click inside a pane focuses it).
 vi.mock('./terminal/TerminalPane', () => ({
   TerminalPane: (p: {
     slot: SlotId;
@@ -188,11 +214,14 @@ vi.mock('./terminal/TerminalPane', () => ({
     inSplit: boolean;
     registry: SplitRegistry;
     settings: { themeId: string };
+    /** The detached window this pane's data socket names (absent in the main window). */
+    window?: string;
     onFocusRequest: (slot: string) => void;
   }) => (
     <div
       data-testid={`term-pane-${p.slot}`}
       data-session={p.sessionId}
+      data-window={p.window}
       // The theme id the pane is handed: the terminal paints exactly this one.
       data-theme={p.settings.themeId}
       className={p.inSplit ? `slot${p.focused ? ' focused' : ''}` : ''}
@@ -223,6 +252,19 @@ vi.mock('./session/SessionDrawer', async (orig) => {
     },
   };
 });
+// The real strip, with the props each pane's strip was drawn with kept, so a test can ask whether a
+// sash frame (which re-renders every pane's box) handed a strip anything new.
+const stripSpy = vi.hoisted(() => ({ renders: [] as Array<Record<string, unknown>> }));
+vi.mock('./session/SessionTabs', async (orig) => {
+  const real = await orig<typeof import('./session/SessionTabs')>();
+  return {
+    ...real,
+    SessionTabs: (p: ComponentProps<typeof real.SessionTabs>) => {
+      stripSpy.renders.push({ ...p });
+      return <real.SessionTabs {...p} />;
+    },
+  };
+});
 /** The height the app is pinned to, as the viewport effect last wrote it. */
 const appHeight = () => document.documentElement.style.getPropertyValue('--app-height');
 const keyboardTextarea = () => document.getElementById('mobile-kbd') as HTMLTextAreaElement;
@@ -250,11 +292,22 @@ const paneHost = vi.hoisted(() => ({
   onMenu: undefined as undefined | (() => void),
   /** What a review pane would read from the app around it (review/review-host.ts). */
   review: null as null | import('./review/review-host').ReviewHost,
+  /** The tabs of every render, in order: the real host mounts a pane for each non-terminal one. */
+  renders: [] as Array<Array<{ id: string; kind: string }>>,
+  /** The latest rects: the tabs the host shows, not merely keeps mounted. */
+  rects: {} as Record<string, unknown>,
 }));
 vi.mock('./panes/PaneHost', async () => {
   const { useReviewHost } = await import('./review/review-host');
   return {
-    PaneHost: (p: { onDirtyChange: (id: string, dirty: boolean) => void; onMenu?: () => void }) => {
+    PaneHost: (p: {
+      tabs: Array<{ id: string; kind: string }>;
+      rects: Record<string, unknown>;
+      onDirtyChange: (id: string, dirty: boolean) => void;
+      onMenu?: () => void;
+    }) => {
+      paneHost.renders.push(p.tabs);
+      paneHost.rects = p.rects;
       paneHost.onDirtyChange = p.onDirtyChange;
       paneHost.onMenu = p.onMenu;
       paneHost.review = useReviewHost();
@@ -324,6 +377,22 @@ vi.mock('./terminal/download', async (orig) => ({
   downloadFromServer,
 }));
 
+// The real dictation hook, with the callbacks App last handed it kept, so a test can play a failed
+// transcription without a microphone.
+const dictationSpy = vi.hoisted(() => ({
+  params: null as null | Parameters<typeof import('./dictation/useDictation').useDictation>[0],
+}));
+vi.mock('./dictation/useDictation', async (orig) => {
+  const real = await orig<typeof import('./dictation/useDictation')>();
+  return {
+    ...real,
+    useDictation: (params: Parameters<typeof real.useDictation>[0]) => {
+      dictationSpy.params = params;
+      return real.useDictation(params);
+    },
+  };
+});
+
 const server = () => {
   const s = sockets[0];
   if (!s?.handler) throw new Error('control socket not connected');
@@ -335,25 +404,50 @@ const send = (msg: Record<string, unknown>) =>
   });
 const broadcast = (ids: string[]) =>
   send({ type: 'sessions', tabs: ids.map((id) => ({ id, kind: 'terminal' })) });
+/** The control socket connects (or reconnects): the real client calls its open handlers, then the
+ *  server speaks. A detached window reclaims its tabs on the first `sessions` after each open. */
+const connect = () =>
+  act(() => {
+    server().openHandler?.();
+  });
 
+// The terminal panes on screen, in layout order: the pane's id, the session it shows and whether it
+// is the focused one of several (a lone pane wears no focus mark, as in the real TerminalPane).
 const panes = () =>
   [...document.querySelectorAll('[data-testid^="term-pane-"]')].map((e) => ({
-    slot: (e as HTMLElement).dataset['testid']!.slice(-1),
+    slot: (e as HTMLElement).dataset['testid']!.slice('term-pane-'.length),
     session: (e as HTMLElement).dataset['session'],
     focused: e.className.includes('focused'),
   }));
 
-// A member of an on-screen (or fused) pairing renders as a fused SEGMENT, not a
-// plain tab; click whichever surface is present.
+/** Every pane's strip: the pane, the tabs it lists in order, and whether it is the focused one. */
+const strips = () =>
+  [...document.querySelectorAll('.group-strip')].map((strip) => ({
+    pane: strip.getAttribute('data-pane-id'),
+    tabs: [...strip.querySelectorAll('[data-testid^="session-tab-"]')].map((e) =>
+      (e as HTMLElement).dataset['testid']!.replace('session-tab-', ''),
+    ),
+    focused: strip.classList.contains('group-strip-focused'),
+  }));
+
+/** The tab a pane's strip shows as its active one. */
+const shownIn = (pane: string): string | undefined =>
+  document
+    .querySelector(`.group-strip[data-pane-id="${pane}"] .ctab.active`)
+    ?.getAttribute('data-testid')
+    ?.replace('session-tab-', '');
+
+const stripOf = (pane: string) =>
+  within(document.querySelector<HTMLElement>(`.group-strip[data-pane-id="${pane}"]`)!);
+
 const clickTab = (id: string) => {
-  const seg = screen.queryByTestId(`fused-seg-${id}`);
-  fireEvent.click(seg ?? screen.getByTestId(`session-tab-${id}`), { button: 0 });
+  fireEvent.click(screen.getByTestId(`session-tab-${id}`), { button: 0 });
 };
 
-/** Open a split (current tab | otherId) via the real context-menu path. */
-const openSplitVia = (otherId: string) => {
-  fireEvent.contextMenu(screen.getByTestId(`session-tab-${otherId}`));
-  fireEvent.click(screen.getByTestId('menu-split-right'));
+/** Split a tab into a new pane, through the real context-menu path. */
+const splitVia = (id: string, direction: 'right' | 'down' = 'right') => {
+  fireEvent.contextMenu(screen.getByTestId(`session-tab-${id}`));
+  fireEvent.click(screen.getByTestId(`menu-split-${direction}`));
 };
 
 const dt = () => {
@@ -379,7 +473,12 @@ const iconPaths = (name: string): string | undefined => {
 
 beforeEach(() => {
   sockets.length = 0;
+  paneHost.renders = [];
+  paneHost.rects = {};
   localStorage.clear();
+  // The window's saved pane layout (and selection) lives in sessionStorage: without this it would
+  // carry from one test into the next, as one browsing context does across a reload.
+  sessionStorage.clear();
   localStorage.setItem('palmux-settings', JSON.stringify({ mobileMode: 'off' }));
   history.replaceState(null, '', '/0');
 });
@@ -401,187 +500,732 @@ const active = (): string | null => {
   return (p.find((x) => x.focused) ?? p[0])?.session ?? null;
 };
 
-describe('split display scoping (selection never replaces a slot)', () => {
-  it('member selection re-tiles; non-member shows full-width with the pairing kept', () => {
-    setup();
-    openSplitVia('1'); // split (0|1), navigated to 1
-    expect(panes()).toEqual([
-      { slot: 'a', session: '0', focused: false },
-      { slot: 'b', session: '1', focused: true },
-    ]);
-    clickTab('2'); // non-member → full-width, split preserved
-    expect(active()).toBe('2');
-    expect(panes()).toEqual([{ slot: 'a', session: '2', focused: false }]);
-    expect(localStorage.getItem('palmux-splits')).toContain('"tabId":"0"');
-    clickTab('0'); // member → re-tile focused on its slot
-    expect(active()).toBe('0');
-    expect(panes()).toEqual([
-      { slot: 'a', session: '0', focused: true },
-      { slot: 'b', session: '1', focused: false },
-    ]);
-    clickTab('1'); // the other member → stays tiled, focus moves
-    expect(panes()[1]).toEqual({ slot: 'b', session: '1', focused: true });
+// ── Editor groups ─────────────────────────────────────────────────────────────
+//
+// The content area is a grid of panes, each with its own strip, through the REAL App (the control
+// socket, the layout hook, GroupsView, SessionTabs and the controller are all real; the terminal
+// and the non-terminal panes are stubs). What is pinned here is what only the wiring can get wrong:
+// which pane a gesture reaches, and what the strips and the focus mark then say.
+
+/** Where in a pane's 300x300 body (happy-dom has no layout) a drop claims each region. */
+const REGION_AT = {
+  left: [20, 150],
+  right: [280, 150],
+  top: [150, 20],
+  bottom: [150, 280],
+  centre: [150, 150],
+} as const;
+
+/** A drag event carrying a pointer position, which `fireEvent` would drop (no DragEvent here). */
+const dragAt = (
+  type: 'dragover' | 'drop',
+  el: Element,
+  dataTransfer: unknown,
+  x = 0,
+  y = 0,
+): void => {
+  const ev = new Event(type, { bubbles: true, cancelable: true });
+  Object.assign(ev, { dataTransfer, clientX: x, clientY: y });
+  fireEvent(el, ev);
+};
+
+/** Drag tab `id` and drop it on the body of the `index`th pane (layout order) in `region`. */
+const dropOnPane = (id: string, index: number, region: keyof typeof REGION_AT) => {
+  const t = dt();
+  fireEvent.dragStart(screen.getByTestId(`session-tab-${id}`), { dataTransfer: t });
+  t.setData(TAB_DND_TYPE, id);
+  const overlay = screen.getAllByTestId('group-drop-overlay')[index]!;
+  overlay.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 300 }) as DOMRect;
+  const [x, y] = REGION_AT[region];
+  dragAt('dragover', overlay, t, x, y);
+  dragAt('drop', overlay, t, x, y);
+};
+
+/** Drag tab `id` and drop it on the empty space of pane `pane`'s strip. */
+const dropOnStrip = (id: string, pane: string) => {
+  const t = dt();
+  fireEvent.dragStart(screen.getByTestId(`session-tab-${id}`), { dataTransfer: t });
+  t.setData(TAB_DND_TYPE, id);
+  const strip = stripOf(pane).getByTestId('session-tabs');
+  dragAt('dragover', strip, t);
+  fireEvent.drop(strip, { dataTransfer: t });
+};
+
+/** Two columns: p0 holds 0 and 1 (0 shown), p1 holds 2 (focused pane p0). A saved layout, as a reload finds it. */
+const TWO_COLUMNS = JSON.stringify({
+  v: 3,
+  root: {
+    type: 'branch',
+    orientation: 'row',
+    size: 1,
+    children: [
+      {
+        type: 'leaf',
+        id: 'p0',
+        tabs: [
+          { id: '0', kind: 'terminal' },
+          { id: '1', kind: 'terminal' },
+        ],
+        active: '0',
+        size: 0.5,
+      },
+      { type: 'leaf', id: 'p1', tabs: [{ id: '2', kind: 'terminal' }], active: '2', size: 0.5 },
+    ],
+  },
+  focused: 'p0',
+  nextId: 2,
+});
+
+describe('editor groups', () => {
+  beforeEach(() => {
+    paneApiFake.pickers = [];
+  });
+  afterEach(() => {
+    paneApiFake.enabled = false;
   });
 
-  it('tabCreated activates the new tab OUTSIDE the split', () => {
+  it('starts as one pane holding every tab, showing the first', () => {
     setup();
-    openSplitVia('1');
-    send({ type: 'tabCreated', id: '7' });
-    expect(active()).toBe('7');
-    expect(panes()).toEqual([{ slot: 'a', session: '7', focused: false }]);
-    expect(localStorage.getItem('palmux-splits')).toContain('"tabId":"1"');
+    expect(strips()).toEqual([{ pane: 'p0', tabs: ['0', '1', '2'], focused: true }]);
+    expect(panes()).toEqual([{ slot: 'p0', session: '0', focused: false }]);
   });
 
-  it('[+] → New terminal creates outside the split (never consumes a slot)', () => {
+  describe('dropping a tab on a pane', () => {
+    it('on its right edge opens a pane there, holding the tab and focused', () => {
+      setup(['0', '1', '2', '3', '4']);
+      dropOnPane('2', 0, 'right');
+      expect(strips()).toEqual([
+        { pane: 'p0', tabs: ['0', '1', '3', '4'], focused: false },
+        { pane: 'p1', tabs: ['2'], focused: true },
+      ]);
+      expect(panes()).toEqual([
+        { slot: 'p0', session: '0', focused: false },
+        { slot: 'p1', session: '2', focused: true },
+      ]);
+    });
+
+    it('on the bottom edge of the right column splits that column, leaving the left alone', () => {
+      setup(['0', '1', '2', '3', '4']);
+      dropOnPane('2', 0, 'right');
+      dropOnPane('3', 1, 'bottom'); // the right column's own body
+      expect(strips()).toEqual([
+        { pane: 'p0', tabs: ['0', '1', '4'], focused: false },
+        { pane: 'p1', tabs: ['2'], focused: false },
+        { pane: 'p2', tabs: ['3'], focused: true },
+      ]);
+    });
+
+    it('on its own pane’s edge, when it is that pane’s only tab, changes nothing', () => {
+      setup();
+      dropOnPane('2', 0, 'right'); // p1 holds 2 alone
+      const before = strips();
+      dropOnPane('2', 1, 'right');
+      expect(strips()).toEqual(before);
+      expect(panes()).toHaveLength(2);
+    });
+
+    it('in the centre of another pane moves it there, and the emptied pane goes', () => {
+      setup(['0', '1', '2']);
+      dropOnPane('2', 0, 'right'); // p1 = [2]
+      dropOnPane('1', 1, 'centre');
+      expect(strips()).toEqual([
+        { pane: 'p0', tabs: ['0'], focused: false },
+        { pane: 'p1', tabs: ['1', '2'], focused: true },
+      ]);
+      expect(shownIn('p1')).toBe('1');
+      // Moving the last tab out of a pane removes it.
+      dropOnPane('0', 1, 'centre');
+      expect(strips()).toEqual([{ pane: 'p1', tabs: ['0', '1', '2'], focused: true }]);
+      expect(panes()).toEqual([{ slot: 'p1', session: '0', focused: false }]);
+    });
+
+    it('shows no overlay and takes no drop for an OS file drag', () => {
+      setup();
+      dropOnPane('2', 0, 'right');
+      expect(screen.queryAllByTestId('group-drop-overlay')).toHaveLength(0); // the drag ended
+      const files = { ...dt(), types: ['Files'] };
+      fireEvent.dragOver(document.querySelector('.groups-view')!, { dataTransfer: files });
+      expect(screen.queryAllByTestId('group-drop-overlay')).toHaveLength(0);
+    });
+
+    // A pill that unmounts mid-drag (a broadcast took its tab away) fires no `dragend`, so the
+    // strip never reports the end and every pane would keep its overlay. The window hears the drag
+    // end (`dragend`) or land (`drop`) whatever became of the pill. It waits for the event to
+    // finish: the overlay's own `drop` handler reads the id it carries.
+    describe('a drag whose pill never reports its end', () => {
+      beforeEach(() => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      });
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      const startDrag = (id: string) => {
+        const t = dt();
+        fireEvent.dragStart(screen.getByTestId(`session-tab-${id}`), { dataTransfer: t });
+        t.setData(TAB_DND_TYPE, id);
+        expect(screen.getAllByTestId('group-drop-overlay')).toHaveLength(1);
+      };
+
+      it.each(['dragEnd', 'drop'] as const)(
+        'is ended by a window-level %s, after the event has finished',
+        (type) => {
+          setup();
+          startDrag('1');
+          // Where no pane or strip claims it: the source is gone, so nothing else clears the id.
+          fireEvent[type](document.body, { dataTransfer: dt() });
+          expect(screen.getAllByTestId('group-drop-overlay')).toHaveLength(1); // still mid-event
+          act(() => void vi.advanceTimersByTime(0));
+          expect(screen.queryAllByTestId('group-drop-overlay')).toHaveLength(0);
+        },
+      );
+
+      it('does not take the drop from the overlay it lands on', () => {
+        setup(['0', '1', '2']);
+        dropOnPane('2', 0, 'right'); // the real handler reads the id, then the window clears it
+        act(() => void vi.advanceTimersByTime(0));
+        expect(strips().map((x) => x.tabs)).toEqual([['0', '1'], ['2']]);
+        expect(screen.queryAllByTestId('group-drop-overlay')).toHaveLength(0);
+      });
+
+      // The pill can go with no window event at all (the browser may never deliver the drag's end
+      // to a source that left the DOM), so the broadcast that takes the dragged tab ends the drag.
+      it('is ended by a broadcast that no longer lists the dragged tab', () => {
+        setup(['0', '1', '2']);
+        startDrag('1');
+        broadcast(['0', '1', '2']); // still listed: the drag goes on
+        expect(screen.getAllByTestId('group-drop-overlay')).toHaveLength(1);
+        broadcast(['0', '2']);
+        expect(screen.queryAllByTestId('group-drop-overlay')).toHaveLength(0);
+      });
+
+      // A terminal this window just created is in no list until its attach spawns it, and its pill
+      // is drawn all the same. A broadcast that lacks it has not taken it away.
+      it('is not ended by a broadcast that lacks a terminal this window just created', () => {
+        setup(['0', '1']);
+        fireEvent.pointerDown(stripOf('p0').getByTestId('session-new'), { button: 0 });
+        tapPress(screen.getByTestId('dash-new-terminal'));
+        expect(shownIn('p0')).toBe('2');
+        startDrag('2');
+        broadcast(['0', '1']);
+        expect(screen.getAllByTestId('group-drop-overlay')).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('a strip drop', () => {
+    it('moves a tab from another pane without a reorder: it shows among its pane’s tabs in server order', () => {
+      setup(['0', '1', '2', '3']);
+      dropOnPane('1', 0, 'right'); // p1 = [1]
+      dropOnStrip('0', 'p1');
+      // 0 comes BEFORE 1 in the server's order, so it shows there, though it joined later.
+      expect(strips()).toEqual([
+        { pane: 'p0', tabs: ['2', '3'], focused: false },
+        { pane: 'p1', tabs: ['0', '1'], focused: true },
+      ]);
+      expect(shownIn('p1')).toBe('0');
+      expect(server().reorders).toEqual([]);
+    });
+
+    // The drop keeps the tab's server-order place, so its target strip is lit whole and draws no
+    // insertion bar; the strip it came from, and any other, draws nothing.
+    it('lights only the strip a tab from another pane hovers, with no insertion bar', () => {
+      setup(['0', '1', '2']);
+      dropOnPane('2', 0, 'right'); // p1 = [2]
+      const t = dt();
+      fireEvent.dragStart(screen.getByTestId('session-tab-0'), { dataTransfer: t });
+      t.setData(TAB_DND_TYPE, '0');
+      dragAt('dragover', stripOf('p1').getByTestId('session-tab-2'), t);
+      expect(stripOf('p1').getByTestId('session-tabs')).toHaveClass('drop-into');
+      expect(stripOf('p0').getByTestId('session-tabs')).not.toHaveClass('drop-into');
+      expect(document.querySelectorAll('.drop-before, .drop-after')).toHaveLength(0);
+      fireEvent.drop(stripOf('p1').getByTestId('session-tabs'), { dataTransfer: t });
+      expect(strips()).toEqual([
+        { pane: 'p0', tabs: ['1'], focused: false },
+        { pane: 'p1', tabs: ['0', '2'], focused: true },
+      ]);
+      expect(stripOf('p1').getByTestId('session-tabs')).not.toHaveClass('drop-into');
+    });
+
+    it('maps a reorder inside a pane onto the full order', () => {
+      setup(['0', '1', '2', '3', '4']);
+      dropOnPane('1', 0, 'right'); // p0 = [0, 2, 3, 4], p1 = [1]
+      const t = dt();
+      fireEvent.dragStart(screen.getByTestId('session-tab-4'), { dataTransfer: t });
+      t.setData(TAB_DND_TYPE, '4');
+      // happy-dom has no layout, so a pill is always dropped "after": the boundary right after 0.
+      fireEvent.dragOver(screen.getByTestId('session-tab-0'), { dataTransfer: t });
+      fireEvent.drop(stripOf('p0').getByTestId('session-tabs'), { dataTransfer: t });
+      // Before 2 in the full order, which is after the OTHER pane's 1.
+      expect(server().reorders.at(-1)).toEqual(['0', '1', '4', '2', '3']);
+    });
+
+    it('lands past a pane’s last entry right after that pane’s last tab, not at the end of the list', () => {
+      setup(['0', '1', '2', '3']);
+      dropOnPane('2', 0, 'right'); // p1 = [2]
+      dropOnStrip('3', 'p1'); // p0 = [0, 1], p1 = [2, 3]
+      const t = dt();
+      fireEvent.dragStart(screen.getByTestId('session-tab-0'), { dataTransfer: t });
+      t.setData(TAB_DND_TYPE, '0');
+      const strip = stripOf('p0').getByTestId('session-tabs');
+      dragAt('dragover', strip, t); // the empty space past the last pill
+      fireEvent.drop(strip, { dataTransfer: t });
+      expect(server().reorders.at(-1)).toEqual(['1', '0', '2', '3']);
+    });
+  });
+
+  describe('the + of a pane', () => {
+    it('creates in its own pane, whichever pane was focused', () => {
+      setup(['0', '1', '2']);
+      dropOnPane('2', 0, 'right'); // p1 focused
+      fireEvent.pointerDown(stripOf('p0').getByTestId('session-new'), { button: 0 });
+      tapPress(screen.getByTestId('dash-new-terminal'));
+      expect(panes()).toEqual([
+        { slot: 'p0', session: '3', focused: true },
+        { slot: 'p1', session: '2', focused: false },
+      ]);
+      expect(strips().map((x) => x.focused)).toEqual([true, false]);
+    });
+
+    it('creates in the second pane when it is that pane’s', () => {
+      setup(['0', '1', '2']);
+      dropOnPane('2', 0, 'right');
+      fireEvent.mouseDown(screen.getByTestId('term-pane-p0')); // p0 has the focus …
+      fireEvent.pointerDown(stripOf('p1').getByTestId('session-new'), { button: 0 }); // … p1's + takes it
+      tapPress(screen.getByTestId('dash-new-terminal'));
+      expect(panes()).toEqual([
+        { slot: 'p0', session: '0', focused: false },
+        { slot: 'p1', session: '3', focused: true },
+      ]);
+    });
+  });
+
+  describe('opening a file', () => {
+    const FILE = '/work/a.txt';
+    const withFile = () =>
+      send({
+        type: 'sessions',
+        tabs: [
+          { id: '0', kind: 'terminal' },
+          { id: '1', kind: 'terminal' },
+          { id: '3', kind: 'editor', url: FILE },
+        ],
+      });
+    const open = (path: string) => act(() => paneHost.review!.openFile(path));
+
+    it('opens a new file in the focused pane', async () => {
+      setup(['0', '1']);
+      dropOnPane('1', 0, 'right'); // p1 focused
+      open(FILE);
+      expect(server().created).toEqual([{ kind: 'editor', url: FILE }]);
+      await withFile(); // the broadcast first: it joins the focused pane, not shown …
+      expect(shownIn('p1')).toBe('1');
+      await send({ type: 'tabCreated', id: '3' }); // … then the answer shows it there
+      expect(strips()).toEqual([
+        { pane: 'p0', tabs: ['0'], focused: false },
+        { pane: 'p1', tabs: ['1', '3'], focused: true },
+      ]);
+      expect(shownIn('p1')).toBe('3');
+    });
+
+    it('reopening an open file selects it in its own pane and focuses that pane', async () => {
+      render(<App />);
+      await withFile();
+      splitVia('1'); // p1 = [1], focused; the file sits in p0
+      expect(strips().map((x) => x.focused)).toEqual([false, true]);
+      open(FILE);
+      expect(server().created).toEqual([]); // no second tab
+      expect(strips()).toEqual([
+        { pane: 'p0', tabs: ['0', '3'], focused: true },
+        { pane: 'p1', tabs: ['1'], focused: false },
+      ]);
+      expect(shownIn('p0')).toBe('3');
+    });
+  });
+
+  describe('closing a tab', () => {
+    it('activates its left neighbour in the same pane and leaves the other pane alone', () => {
+      setup(['0', '1', '2', '3']);
+      splitVia('3'); // p0 = [0, 1, 2], p1 = [3]
+      clickTab('2'); // p0 shows 2 and takes focus
+      expect(shownIn('p0')).toBe('2');
+      broadcast(['0', '1', '3']); // 2 was closed
+      expect(shownIn('p0')).toBe('1');
+      expect(shownIn('p1')).toBe('3');
+      expect(strips()).toEqual([
+        { pane: 'p0', tabs: ['0', '1'], focused: true },
+        { pane: 'p1', tabs: ['3'], focused: false },
+      ]);
+      expect(active()).toBe('1');
+    });
+
+    it('removes a pane whose last tab closed, and its neighbour takes the space and the focus', () => {
+      setup(['0', '1', '2']);
+      splitVia('2'); // p1 = [2], focused
+      broadcast(['0', '1']);
+      expect(strips()).toEqual([{ pane: 'p0', tabs: ['0', '1'], focused: true }]);
+    });
+  });
+
+  describe('clicking a pane', () => {
+    it('moves the shared input surfaces to it', () => {
+      paneApiFake.enabled = true;
+      setup(['0', '1', '2']);
+      splitVia('2'); // p1 focused
+      fireEvent.click(screen.getByTestId('dock-rail-upload'));
+      expect(paneApiFake.pickers).toEqual(['p1']);
+      fireEvent.mouseDown(screen.getByTestId('term-pane-p0')); // a click inside p0
+      expect(strips().map((x) => x.focused)).toEqual([true, false]);
+      fireEvent.click(screen.getByTestId('dock-rail-upload'));
+      expect(paneApiFake.pickers).toEqual(['p1', 'p0']);
+    });
+
+    // A key, assistive tech or `element.click()` reaches a pill as a click with no pointerdown, so
+    // nothing in the pane's body saw a press: the click on the pane's own active tab is what focuses it.
+    it('focuses a pane through a click on its active tab that no pointerdown came before', () => {
+      setup(['0', '1', '2']);
+      splitVia('2'); // p1 focused; p0 shows 0
+      fireEvent.click(screen.getByTestId('session-tab-0'), { button: 0, detail: 0 });
+      expect(strips().map((x) => x.focused)).toEqual([true, false]);
+      expect(shownIn('p0')).toBe('0');
+      expect(active()).toBe('0');
+    });
+
+    it('moves the window selection with it', () => {
+      setup(['0', '1', '2']);
+      splitVia('2');
+      expect(active()).toBe('2');
+      fireEvent.mouseDown(screen.getByTestId('term-pane-p0'));
+      expect(active()).toBe('0');
+      expect(JSON.parse(sessionStorage.getItem('palmux-window-tab')!)).toEqual({
+        id: '0',
+        kind: 'terminal',
+      });
+    });
+  });
+
+  describe('a reload', () => {
+    it('comes back with the same panes, tabs and focus', () => {
+      setup(['0', '1', '2']);
+      splitVia('2'); // p1 focused, showing 2
+      cleanup();
+      history.replaceState(null, '', '/');
+      sockets.length = 0;
+      setup(['0', '1', '2']);
+      expect(strips()).toEqual([
+        { pane: 'p0', tabs: ['0', '1'], focused: false },
+        { pane: 'p1', tabs: ['2'], focused: true },
+      ]);
+      expect(active()).toBe('2');
+    });
+
+    it('does not bring back a saved pane for a terminal that is gone, and attaches nothing for it', () => {
+      setup(['0', '1', '2']);
+      splitVia('2');
+      cleanup();
+      history.replaceState(null, '', '/');
+      sockets.length = 0;
+      setup(['0', '1']); // terminal 2 closed while the window was away
+      expect(strips()).toEqual([{ pane: 'p0', tabs: ['0', '1'], focused: true }]);
+      expect(panes().map((x) => x.session)).toEqual(['0']);
+    });
+
+    it('is per window: a window with no saved layout opens one pane', () => {
+      setup(['0', '1', '2']);
+      splitVia('2');
+      cleanup();
+      sessionStorage.clear(); // another window of the same device
+      history.replaceState(null, '', '/');
+      sockets.length = 0;
+      setup(['0', '1', '2']);
+      expect(strips()).toHaveLength(1);
+    });
+  });
+
+  describe('a colour group spanning two panes', () => {
+    it('draws its chip in each pane’s strip', () => {
+      setup(['0', '1', '2']);
+      sendGroups(
+        [{ id: '0', groupId: 'gaa111' }, { id: '1', groupId: 'gaa111' }, { id: '2' }],
+        [{ id: 'gaa111', color: 'blue', name: 'proj' }],
+      );
+      splitVia('1');
+      const chips = screen.getAllByTestId('group-chip-gaa111');
+      expect(chips).toHaveLength(2);
+      expect(stripOf('p0').getByTestId('group-chip-gaa111')).toBe(chips[0]);
+      expect(stripOf('p1').getByTestId('group-chip-gaa111')).toBe(chips[1]);
+    });
+
+    // The collapse guard switches every pane showing a member, one after the other, in one click.
+    // Each switch is a layout command, and the second used to be computed from the layout of the
+    // last render, which put the first pane back on its member: the auto-expand then re-opened the
+    // group, and nothing collapsed.
+    it('collapses after moving EVERY pane showing a member to a tab outside it', () => {
+      const terms = (ids: string[]) => ids.map((id) => ({ id, kind: 'terminal' }));
+      sessionStorage.setItem(
+        'palmux-layout',
+        JSON.stringify({
+          v: 3,
+          root: {
+            type: 'branch',
+            orientation: 'row',
+            size: 1,
+            children: [
+              { type: 'leaf', id: 'p0', tabs: terms(['0', '1', '2']), active: '0', size: 0.5 },
+              { type: 'leaf', id: 'p1', tabs: terms(['3', '4', '5']), active: '4', size: 0.5 },
+            ],
+          },
+          focused: 'p0',
+          nextId: 2,
+        }),
+      );
+      render(<App />);
+      // Members are contiguous in the server's order; each pane's strip is its own slice of it.
+      sendGroups(
+        [
+          { id: '0', groupId: 'gaa111' },
+          { id: '1', groupId: 'gaa111' },
+          { id: '3', groupId: 'gaa111' },
+          { id: '4', groupId: 'gaa111' },
+          { id: '2' },
+          { id: '5' },
+        ],
+        [{ id: 'gaa111', color: 'blue' }],
+      );
+      expect([shownIn('p0'), shownIn('p1')]).toEqual(['0', '4']);
+      fireEvent.click(stripOf('p0').getByTestId('group-chip-gaa111'));
+      expect([shownIn('p0'), shownIn('p1')]).toEqual(['2', '5']);
+      // The members are hidden in both strips: each shows only its chip and its outside tab.
+      expect(strips()).toEqual([
+        { pane: 'p0', tabs: ['2'], focused: true },
+        { pane: 'p1', tabs: ['5'], focused: false },
+      ]);
+      expect(stripOf('p0').getByTestId('group-count-gaa111')).toBeTruthy();
+      expect(stripOf('p1').getByTestId('group-count-gaa111')).toBeTruthy();
+      expect(JSON.parse(localStorage.getItem('palmux-collapsed-groups')!)).toEqual(['gaa111']);
+    });
+  });
+
+  describe('a closed pane', () => {
+    afterEach(() => {
+      Reflect.deleteProperty(navigator, 'maxTouchPoints');
+    });
+    const touchPoints = (n: number) =>
+      Object.defineProperty(navigator, 'maxTouchPoints', { value: n, configurable: true });
+    const lastStripOf = (pane: string) => stripSpy.renders.findLast((r) => r['paneId'] === pane);
+
+    // Each pane's strip callbacks are cached by pane id so a sash frame does not redraw the strips.
+    // A pane that goes takes its entry with it, so the cache is as long as the layout. A layout
+    // rebuilt with no saved copy (here: the phone layer came and went, and the window's storage
+    // was lost) mints `p0` again and then `p1`, and that `p1` is a new pane.
+    it('takes its strip handlers with it, so a pane that reuses its id gets its own', () => {
+      localStorage.setItem('palmux-settings', JSON.stringify({ mobileMode: 'auto' }));
+      setup(['0', '1', '2']);
+      splitVia('2'); // p0 = [0, 1], p1 = [2], focused
+      fireEvent.mouseDown(screen.getByTestId('term-pane-p0')); // the one pane the rebuild keeps
+      const first = lastStripOf('p1')?.['onNewTab'];
+      expect(first).toBeDefined();
+
+      touchPoints(5); // `auto` resolves on every render: the next one is the phone layer
+      broadcast(['0', '1', '2']);
+      expect(document.querySelector('.app')).toHaveClass('mobile');
+      sessionStorage.removeItem('palmux-layout');
+      Reflect.deleteProperty(navigator, 'maxTouchPoints');
+      broadcast(['0', '1', '2']);
+      expect(strips().map((x) => x.pane)).toEqual(['p0']);
+
+      splitVia('1');
+      expect(strips().map((x) => x.pane)).toEqual(['p0', 'p1']);
+      expect(lastStripOf('p1')?.['onNewTab']).not.toBe(first);
+    });
+  });
+
+  describe('sashes', () => {
+    let frames: Array<() => void> = [];
+    const flushFrames = () => {
+      const queued = frames;
+      frames = [];
+      act(() => {
+        for (const run of queued) run();
+      });
+    };
+    beforeEach(() => {
+      frames = [];
+      vi.stubGlobal('requestAnimationFrame', (run: () => void) => frames.push(run));
+      vi.stubGlobal('cancelAnimationFrame', () => {});
+      // happy-dom has no pointer capture; the sash calls it unconditionally.
+      Element.prototype.setPointerCapture = vi.fn();
+      Element.prototype.releasePointerCapture = vi.fn();
+      // A 1000x800 content area: the sash turns pixels into a fraction of its branch.
+      vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(
+        function (this: HTMLElement) {
+          const area = this.classList.contains('content-area');
+          return { left: 0, top: 0, width: area ? 1000 : 0, height: area ? 800 : 0 } as DOMRect;
+        },
+      );
+    });
+    afterEach(() => {
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    });
+
+    const sashes = () => screen.getAllByTestId('group-sash');
+    const press = (el: HTMLElement, x: number) =>
+      fireEvent.pointerDown(el, { pointerId: 1, clientX: x, clientY: 300, button: 0 });
+    const dragTo = (el: HTMLElement, x: number) => {
+      fireEvent.pointerMove(el, { pointerId: 1, clientX: x, clientY: 300 });
+      flushFrames();
+    };
+    const release = (el: HTMLElement, x: number) =>
+      fireEvent.pointerUp(el, { pointerId: 1, clientX: x, clientY: 300 });
+    /** A pane's width as drawn, in percent. */
+    const widthOf = (pane: string) =>
+      parseFloat(
+        document.querySelector<HTMLElement>(`.group-strip[data-pane-id="${pane}"]`)!.style.width,
+      );
+    const saved = () => JSON.parse(sessionStorage.getItem('palmux-layout')!);
+
+    it('draws every frame of a drag, and saves the layout once, on release', () => {
+      setup(['0', '1', '2']);
+      splitVia('2');
+      expect(widthOf('p0')).toBe(50);
+      const [sash] = sashes();
+      press(sash!, 500);
+      dragTo(sash!, 600); // 100px of a 1000px area, in one branch
+      expect(widthOf('p0')).toBeCloseTo(60);
+      expect(saved().root.children[0].size).toBe(0.5); // not saved while it moves
+      release(sash!, 600);
+      expect(saved().root.children[0].size).toBeCloseTo(0.6);
+      expect(widthOf('p0')).toBeCloseTo(60);
+    });
+
+    it('refits every terminal once on release, a frame later', () => {
+      paneApiFake.enabled = true;
+      setup(['0', '1', '2']);
+      splitVia('2');
+      const [sash] = sashes();
+      const before = paneApiFake.refits;
+      press(sash!, 500);
+      dragTo(sash!, 600);
+      expect(paneApiFake.refits).toBe(before);
+      release(sash!, 600);
+      flushFrames();
+      expect(paneApiFake.refits - before).toBe(2); // one per pane
+    });
+
+    it('refuses a layout command while a drag is on, and takes it again after', () => {
+      setup(['0', '1', '2']);
+      splitVia('2');
+      const [sash] = sashes();
+      press(sash!, 500);
+      dragTo(sash!, 560);
+      splitVia('1'); // the next drag frame would undo it, so it is refused
+      expect(strips()).toHaveLength(2);
+      release(sash!, 560);
+      splitVia('1');
+      expect(strips()).toHaveLength(3);
+    });
+
+    it('stops resizing once a broadcast has reshaped the layout under the drag', () => {
+      setup(['0', '1', '2', '3']);
+      splitVia('2'); // p0 = [0, 1, 3], p1 = [2]
+      dropOnPane('3', 1, 'right'); // p2 = [3]
+      const [first] = sashes();
+      press(first!, 500);
+      dragTo(first!, 550);
+      expect(widthOf('p0')).toBeCloseTo(55);
+      broadcast(['0', '1', '2']); // another window closed 3: p2 is gone, its room goes to the rest
+      const reshaped = widthOf('p0');
+      expect(strips().map((x) => x.pane)).toEqual(['p0', 'p1']);
+      dragTo(first!, 650); // a frame measured against the shape the drag began on
+      expect(widthOf('p0')).toBe(reshaped);
+      release(first!, 650);
+      expect(saved().root.children[0].size).toBeCloseTo(reshaped / 100);
+    });
+
+    it('settles the layout the window has now when the dragged sash is removed mid-drag', () => {
+      setup(['0', '1', '2', '3']);
+      splitVia('2');
+      dropOnPane('3', 1, 'right'); // p0 | p1 | p2, two sashes
+      const second = sashes()[1]!;
+      press(second, 800);
+      dragTo(second, 850);
+      broadcast(['0', '1', '2']); // p2 goes, and the sash between p1 and p2 with it
+      expect(sashes()).toHaveLength(1);
+      expect(saved().root.children.map((c: { id: string }) => c.id)).toEqual(['p0', 'p1']);
+      splitVia('1'); // the drag is over: commands work again
+      expect(strips()).toHaveLength(3);
+    });
+
+    it('hands each strip the same props on every frame, so a drag does not redraw them', () => {
+      setup(['0', '1', '2']);
+      splitVia('2');
+      const [sash] = sashes();
+      press(sash!, 500);
+      dragTo(sash!, 520);
+      const frame = () => stripSpy.renders.filter((r) => r['paneId'] === 'p0').slice(-2);
+      dragTo(sash!, 540);
+      const [before, after] = frame();
+      expect(before).toBeDefined();
+      for (const key of Object.keys(after!)) {
+        expect(Object.is(after![key], before![key]), key).toBe(true);
+      }
+      release(sash!, 540);
+    });
+  });
+
+  describe('on a phone', () => {
+    it('shows one pane and no strip, drop overlay or split item, and leaves the saved layout alone', () => {
+      localStorage.setItem('palmux-settings', JSON.stringify({ mobileMode: 'on' }));
+      sessionStorage.setItem('palmux-layout', TWO_COLUMNS);
+      setup(['0', '1', '2']);
+      expect(document.querySelectorAll('.group-strip')).toHaveLength(0);
+      expect(panes()).toEqual([{ slot: 'p0', session: '0', focused: false }]);
+      expect(sessionStorage.getItem('palmux-layout')).toBe(TWO_COLUMNS);
+      // The drawer still lists every tab.
+      expect(drawer().tabs.map((t) => t.id)).toEqual(['0', '1', '2']);
+      expect(screen.queryAllByTestId('group-drop-overlay')).toHaveLength(0);
+    });
+  });
+});
+
+describe('the split chords', () => {
+  const chord = (key: 'd' | 'e') =>
+    fireEvent.keyDown(window, { key, ctrlKey: true, shiftKey: true });
+
+  // Ctrl+Shift+D: the focused pane's active tab moves into a new pane to its right.
+  it('Split right moves the tab', () => {
     setup(['0', '1']);
-    openSplitVia('1');
-    fireEvent.pointerDown(screen.getByTestId('session-new'), { button: 0 });
-    tapPress(screen.getByTestId('dash-new-terminal'));
-    expect(active()).toBe('2'); // fresh id, not a member
-    expect(panes()).toEqual([{ slot: 'a', session: '2', focused: false }]);
-    expect(localStorage.getItem('palmux-splits')).toContain('"tabId":"0"');
-  });
-
-  it('a mousedown inside a full-width non-member pane never yanks to the pairing', () => {
-    setup();
-    openSplitVia('1');
-    clickTab('2'); // hidden pairing
-    fireEvent.mouseDown(screen.getByTestId('term-pane-a'));
-    expect(active()).toBe('2');
-    expect(panes()).toEqual([{ slot: 'a', session: '2', focused: false }]);
-  });
-});
-
-describe('drag-onto-slot replacement', () => {
-  it('dropping a non-member on a slot replaces it; the replaced tab stays in the strip', () => {
-    setup();
-    openSplitVia('1'); // (0|1)
-    const t = dt();
-    fireEvent.dragStart(screen.getByTestId('session-tab-2'), { dataTransfer: t });
-    t.setData(TAB_DND_TYPE, '2');
-    fireEvent.drop(screen.getByTestId('slot-dropzone-a'), { dataTransfer: t });
-    expect(panes()).toEqual([
-      { slot: 'a', session: '2', focused: true },
-      { slot: 'b', session: '1', focused: false },
+    clickTab('1');
+    chord('d');
+    expect(strips()).toEqual([
+      { pane: 'p0', tabs: ['0'], focused: false },
+      { pane: 'p1', tabs: ['1'], focused: true },
     ]);
-    expect(screen.getByTestId('session-tab-0')).toBeTruthy(); // replaced, not closed
-    expect(active()).toBe('2');
-  });
-
-  it('dragging a fused member never lights the slot drop zones (no self-duplication)', () => {
-    setup();
-    openSplitVia('1'); // (0|1) focused b, fused in the strip
-    const t = dt();
-    // The fused button drags as its slot-A id — a member of the active pairing.
-    fireEvent.dragStart(screen.getByTestId('fused-tab-0-1'), { dataTransfer: t });
-    t.setData(TAB_DND_TYPE, '0');
-    // Slot zones must stay hidden: dropping a member on a slot would duplicate it.
-    expect(screen.queryByTestId('slot-dropzone-a')).toBeNull();
-    expect(screen.queryByTestId('slot-dropzone-b')).toBeNull();
     expect(panes()).toEqual([
-      { slot: 'a', session: '0', focused: false },
-      { slot: 'b', session: '1', focused: true },
+      { slot: 'p0', session: '0', focused: false },
+      { slot: 'p1', session: '1', focused: true },
     ]);
   });
-});
 
-describe('per-slot eject', () => {
-  it('ejecting slot A keeps B full-width; both tabs stay in the strip', () => {
-    setup();
-    openSplitVia('1'); // (0|1)
-    fireEvent.click(screen.getByTestId('slot-eject-a'));
-    expect(active()).toBe('1');
-    expect(panes()).toEqual([{ slot: 'a', session: '1', focused: false }]);
-    expect(screen.getByTestId('session-tab-0')).toBeTruthy();
-    expect(screen.getByTestId('session-tab-1')).toBeTruthy();
-    expect(localStorage.getItem('palmux-splits')).toBeNull();
+  it('Split down on a lone tab opens a new terminal in the pane below', () => {
+    setup(['0', '1']);
+    chord('d'); // tab 0 moves into a new pane on the right, leaving p0 = [1]
+    chord('e'); // that pane holds 0 alone, so it splits down into a NEW terminal
+    expect(strips().map((x) => x.pane)).toEqual(['p0', 'p1', 'p2']);
+    expect(panes()).toEqual([
+      { slot: 'p0', session: '1', focused: false },
+      { slot: 'p1', session: '0', focused: false },
+      { slot: 'p2', session: '2', focused: true },
+    ]);
+    expect(shownIn('p1')).toBe('0'); // the pane it split from still shows its own tab
   });
 
-  it('ejecting slot B keeps A full-width', () => {
-    setup();
-    openSplitVia('1');
-    fireEvent.click(screen.getByTestId('slot-eject-b'));
-    expect(active()).toBe('0');
-    expect(panes()).toEqual([{ slot: 'a', session: '0', focused: false }]);
-  });
-
-  // The ⏏ character is the eject icon now. The icon is aria-hidden and the button
-  // has no text, so its aria-label is the whole accessible name.
-  it('draws the eject control as the eject icon and keeps it named', () => {
-    setup();
-    openSplitVia('1');
-    for (const [slot, name] of [
-      ['a', 'Remove the first tab from the split'],
-      ['b', 'Remove the second tab from the split'],
-    ] as const) {
-      const eject = screen.getByTestId(`slot-eject-${slot}`);
-      expect(eject.textContent).toBe('');
-      expect(eject.querySelectorAll('svg')).toHaveLength(1);
-      expect(eject.querySelector('svg')?.innerHTML).toBe(iconPaths('eject'));
-      expect(eject).toHaveAttribute('aria-label', name);
-      expect(eject).toHaveAttribute('title', 'Remove from split');
-    }
-  });
-
-  // The chooser opens the DOCK, which is layout beside the split rather than
-  // anything over it — both slots keep their eject control and stay usable.
-  it('the [+] chooser does not disturb the split beneath it', () => {
-    setup();
-    openSplitVia('1');
-    expect(screen.getByTestId('slot-eject-a')).toBeTruthy();
-    fireEvent.pointerDown(screen.getByTestId('session-new'), { button: 0 });
-    expect(screen.getByTestId('dock')).toHaveAttribute('data-view', 'newtab');
-    expect(screen.getByTestId('slot-eject-a')).toBeTruthy();
-    expect(screen.getByTestId('slot-eject-b')).toBeTruthy();
-  });
-});
-
-describe('reconcile with the pairing (review fixes)', () => {
-  it('a hidden pairing collapses silently when a member dies (no navigation)', () => {
-    setup();
-    openSplitVia('1'); // (0|1); both now seen
-    clickTab('2'); // hidden
-    broadcast(['0', '2']); // member 1 killed elsewhere
-    expect(active()).toBe('2');
-    expect(panes()).toEqual([{ slot: 'a', session: '2', focused: false }]);
-    expect(localStorage.getItem('palmux-splits')).toBeNull();
-  });
-
-  it('a shown pairing collapses to the survivor when the active member dies', () => {
-    setup();
-    openSplitVia('1'); // (0|1) focused b, on /1
-    broadcast(['0', '2']); // member 1 killed
-    expect(active()).toBe('0');
-    expect(panes()).toEqual([{ slot: 'a', session: '0', focused: false }]);
-  });
-
-  it('a fresh self-split slot survives broadcasts even when its id recycles a killed one', () => {
-    setup(['0', '1', '2']);
-    broadcast(['0', '2']); // terminal 1 killed → '1' is in seenTermIds
-    openSplitVia('0'); // self-split → fresh terminal gets nextFreeId = '1'
-    expect(panes().map((p) => p.session)).toEqual(['0', '1']);
-    broadcast(['0', '2']); // title-change-style broadcast BEFORE '1' spawns
-    // Without the seenTermIds.delete fix this collapsed the split instantly.
-    expect(panes().map((p) => p.session)).toEqual(['0', '1']);
-  });
-
-  it('tabCreated colliding with a stale never-seen member drops the dead pairing', () => {
-    // Persisted pairing (0|5) where 5 died while the browser was closed.
-    localStorage.setItem(
-      'palmux-split',
-      JSON.stringify({
-        a: { tabId: '0', kind: 'terminal' },
-        b: { tabId: '5', kind: 'terminal' },
-        orientation: 'row',
-        ratio: 0.5,
-        focused: 'a',
-      }),
-    );
-    setup(['0', '1']); // '5' never seen this session → kept as "fresh"
-    send({ type: 'tabCreated', id: '5' }); // server recycles id 5
-    expect(active()).toBe('5');
-    expect(panes()).toEqual([{ slot: 'a', session: '5', focused: false }]); // NOT tiled
-    expect(localStorage.getItem('palmux-splits')).toBeNull();
+  it('does nothing on the New-tab page', () => {
+    setup(['0']);
+    broadcast([]);
+    chord('d');
+    expect(document.querySelectorAll('.group-strip')).toHaveLength(1);
   });
 });
 
@@ -605,23 +1249,6 @@ describe('strip reorder (Chrome-like, supersedes drop-to-strip collapse)', () =>
     // The authoritative broadcast (any order) then wins:
     broadcast(['2', '0', '1']);
     expect(stripOrder()).toEqual(['2', '0', '1']);
-  });
-
-  it('reordering a fused member moves the whole block, never collapsing the split', () => {
-    setup();
-    openSplitVia('1'); // (0|1) shown, on /1 — fused in the strip
-    const t = dt();
-    // Dragging the fused button carries its slot-A id; both members move together.
-    fireEvent.dragStart(screen.getByTestId('fused-tab-0-1'), { dataTransfer: t });
-    t.setData(TAB_DND_TYPE, '0');
-    fireEvent.dragOver(screen.getByTestId('session-tab-2'), { dataTransfer: t }); // → after 2
-    fireEvent.drop(screen.getByTestId('session-tabs'), { dataTransfer: t });
-    // The block [0,1] lands after 2 (still adjacent, still fused) → split intact.
-    expect(server().reorders.at(-1)).toEqual(['2', '0', '1']);
-    expect(screen.getByTestId('fused-tab-0-1')).toBeTruthy();
-    expect(panes()).toHaveLength(2); // split still tiled
-    expect(active()).toBe('1');
-    expect(localStorage.getItem('palmux-splits')).toContain('"tabId":"0"');
   });
 
   it('a no-op drop sends nothing', () => {
@@ -654,22 +1281,33 @@ describe('strip reorder (Chrome-like, supersedes drop-to-strip collapse)', () =>
     expect(server().reorders.at(-1)).toEqual(['0', '2', '1', '3']);
     expect(stripOrder()).toEqual(['0', '2', '1', '3']);
   });
-
-  // A split's partner is moved next to its anchor with no broadcast to follow
-  // until the server answers, and a drop in that gap is resolved against the
-  // order the move made, not the one before it.
-  it('a drop after a split moved its partner is resolved against the moved order', () => {
-    setup(['0', '1', '2', '3']);
-    openSplitVia('2'); // (0|2): 2 moves next to 0
-    expect(server().reorders.at(-1)).toEqual(['0', '2', '1', '3']);
-    const t = dt();
-    fireEvent.dragStart(screen.getByTestId('session-tab-3'), { dataTransfer: t });
-    t.setData(TAB_DND_TYPE, '3');
-    fireEvent.dragOver(screen.getByTestId('fused-tab-0-2'), { dataTransfer: t }); // → after the pair
-    fireEvent.drop(screen.getByTestId('session-tabs'), { dataTransfer: t });
-    expect(server().reorders.at(-1)).toEqual(['0', '2', '3', '1']);
-  });
 });
+
+interface SavedNode {
+  tabs?: { id: string }[];
+  children?: SavedNode[];
+}
+const savedNodeIds = (node: SavedNode): string[] => [
+  ...(node.tabs ?? []).map((t) => t.id),
+  ...(node.children ?? []).flatMap(savedNodeIds),
+];
+/** Every tab id the window's saved layout holds. */
+const savedIds = (): string[] => {
+  const raw = sessionStorage.getItem('palmux-layout');
+  return raw === null ? [] : savedNodeIds((JSON.parse(raw) as { root: SavedNode }).root);
+};
+/** Turn the mobile layer on or off through the real Settings field: the dock, or the drawer. */
+const flipMobile = (mode: 'on' | 'off') => {
+  fireEvent.keyDown(window, { key: ',', ctrlKey: true });
+  fireEvent.click(screen.getByTestId(`set-mobile-${mode}`));
+  expect(document.querySelector('.app')!.classList.contains('mobile')).toBe(mode === 'on');
+};
+/** A plain tap on a drawer row: press and release in place. */
+const tapDrawerRow = (id: string) => {
+  const row = screen.getByTestId(`drawer-session-${id}`);
+  fireEvent.pointerDown(row, { pointerType: 'mouse' });
+  fireEvent.pointerUp(row, { pointerType: 'mouse' });
+};
 
 describe('close-tab navigation (no Reconnect page)', () => {
   const stripIds = () =>
@@ -683,7 +1321,7 @@ describe('close-tab navigation (no Reconnect page)', () => {
     expect(active()).toBe('1');
     broadcast(['0', '2']); // tab 1 killed
     expect(active()).toBe('0');
-    expect(panes()).toEqual([{ slot: 'a', session: '0', focused: false }]);
+    expect(panes()).toEqual([{ slot: 'p0', session: '0', focused: false }]);
   });
 
   it('the leftmost tab falls back to its RIGHT neighbor', () => {
@@ -737,6 +1375,247 @@ describe('close-tab navigation (no Reconnect page)', () => {
     expect(screen.getByTestId('newtab-page')).toBeTruthy();
   });
 
+  // The list is not empty, so no "last tab went" decision fires, but the one pane's only tab is
+  // gone: its id came back as an editor, a different tab, which joins the pane without becoming
+  // its selection. The pane shows nothing, and showing nothing is the New-tab page, not a blank.
+  it('shows the New-tab page when the only tab’s id comes back as another kind', () => {
+    setup(['0']);
+    expect(panes()).toEqual([{ slot: 'p0', session: '0', focused: false }]);
+    const socketsBefore = sockets.length;
+    const lastTabBefore = localStorage.getItem('palmux-last-tab');
+    send({ type: 'sessions', tabs: [{ id: '0', kind: 'editor' }] });
+    expect(screen.getByTestId('newtab-page')).toBeTruthy();
+    expect(strips()).toEqual([{ pane: 'p0', tabs: ['0'], focused: true }]);
+    expect(shownIn('p0')).toBeUndefined(); // the editor is listed, not selected
+    expect(panes()).toEqual([]);
+    expect(screen.queryByTestId('pane-host')).toBeNull();
+    expect(sockets).toHaveLength(socketsBefore);
+    // Nothing was selected, so the device-wide tab is not moved onto the editor.
+    expect(localStorage.getItem('palmux-last-tab')).toBe(lastTabBefore);
+  });
+
+  // The page is the content from the render that empties the pane, not from the one after: the
+  // pane host mounts a pane for every non-terminal tab it is handed, and an editor's mount starts
+  // loading Monaco and the file, on a window that shows only a terminal.
+  it('hands the pane host nothing for the editor the id came back as, not even for one render', () => {
+    setup(['0']);
+    paneHost.renders = [];
+    send({ type: 'sessions', tabs: [{ id: '0', kind: 'editor' }] });
+    expect(screen.getByTestId('newtab-page')).toBeTruthy();
+    const editorHanded = paneHost.renders.some((tabs) =>
+      tabs.some((t) => t.id === '0' && t.kind === 'editor'),
+    );
+    expect(editorHanded).toBe(false);
+  });
+
+  // The window's own value says what a reload of this window opens. The page selects nothing, so
+  // the tab the closed id came back as is not stored as its selection.
+  it.each([
+    ['in the broadcast that empties the pane', false],
+    ['while the page is already up', true],
+  ] as const)('stores no window selection for the recycled id, %s', (_name, pageFirst) => {
+    setup(['0']);
+    if (pageFirst) broadcast([]);
+    send({ type: 'sessions', tabs: [{ id: '0', kind: 'editor' }] });
+    expect(screen.getByTestId('newtab-page')).toBeTruthy();
+    expect(sessionStorage.getItem('palmux-window-tab')).toBeNull();
+  });
+
+  // The phone's page keeps the closed id as `sessionId` too, so a tap is not "already there" just
+  // because it names that id, and a tap on any tab leaves the page.
+  describe('on the phone page, a drawer tap', () => {
+    beforeEach(() => {
+      localStorage.setItem('palmux-settings', JSON.stringify({ mobileMode: 'on' }));
+    });
+
+    /** The phone's way into the drawer: a right→left swipe across the extra-keys bar. */
+    const swipeDrawerOpen = () => {
+      const key = screen.getAllByTestId(/^extra-key-/)[0]!;
+      const touch = { pointerId: 1, pointerType: 'touch', clientY: 100 };
+      fireEvent.pointerDown(key, { ...touch, clientX: 300 });
+      fireEvent.pointerMove(key, { ...touch, clientX: 100 });
+      fireEvent.pointerUp(key, { ...touch, clientX: 100 });
+      expect(drawerIsOpen()).toBe(true);
+    };
+
+    it('on a tab another window opened leaves the page and shows it', () => {
+      setup(['0']);
+      broadcast([]);
+      broadcast(['5']);
+      expect(screen.getByTestId('newtab-page')).toBeTruthy();
+      swipeDrawerOpen();
+      tapDrawerRow('5');
+      expect(drawerIsOpen()).toBe(false);
+      expect(screen.queryByTestId('newtab-page')).toBeNull();
+      expect(panes()).toEqual([{ slot: 'p0', session: '5', focused: false }]);
+    });
+
+    it('on the tab the closed id came back as shows it', () => {
+      setup(['0']);
+      broadcast([]);
+      send({ type: 'sessions', tabs: [{ id: '0', kind: 'editor' }] });
+      expect(screen.getByTestId('newtab-page')).toBeTruthy();
+      swipeDrawerOpen();
+      tapDrawerRow('0');
+      expect(drawerIsOpen()).toBe(false);
+      expect(screen.queryByTestId('newtab-page')).toBeNull();
+      expect(Object.keys(paneHost.rects)).toEqual(['0']);
+      expect(panes()).toEqual([]);
+    });
+
+    // The drawer appends a `current` the list lacks as a terminal row (a terminal this window just
+    // picked an id for). The page's `current` is the closed id, so that row would be a ghost, and
+    // tapping it leaves the page onto a terminal pane that attaches and spawns a shell there.
+    it('cannot be on the closed tab: the drawer lists no row for it', async () => {
+      setup(['0']);
+      const socketsBefore = sockets.length;
+      broadcast([]);
+      expect(screen.getByTestId('newtab-page')).toBeTruthy();
+      swipeDrawerOpen();
+      // The row the tab had leaves on the micro tier; a row for the closed id must not stay.
+      await waitFor(() => expect(screen.queryByTestId('drawer-session-0')).toBeNull());
+      expect(drawer().current).toBe('');
+      expect(panes()).toEqual([]);
+      expect(sockets).toHaveLength(socketsBefore);
+    });
+
+    // The page selects nothing, so the closed id is no tab on screen for the groups either, even
+    // once another window recycles it into a group: the group neither unfolds on its own nor takes
+    // the fold guard's way out (select the nearest outside tab), which would drop the page.
+    describe('on a group header, with the closed id recycled into the group', () => {
+      const gid = 'gaa111';
+      const header = () => screen.getByTestId(`drawer-group-${gid}`);
+      const tapHeader = () => {
+        fireEvent.pointerDown(header(), { pointerType: 'mouse' });
+        fireEvent.pointerUp(header(), { pointerType: 'mouse' });
+      };
+      /** The page, with tabs 1 (in the group) and 2 another window opened, and the drawer open. */
+      const pageWithGroup = () => {
+        setup(['0']);
+        broadcast([]);
+        sendGroups([{ id: '1', groupId: gid }, { id: '2' }], [{ id: gid, color: 'blue' }]);
+        expect(screen.getByTestId('newtab-page')).toBeTruthy();
+        swipeDrawerOpen();
+      };
+      /** Another window creates a terminal in the group; it takes the lowest free id, the closed 0. */
+      const recycleIntoGroup = () =>
+        sendGroups(
+          [{ id: '0', groupId: gid }, { id: '1', groupId: gid }, { id: '2' }],
+          [{ id: gid, color: 'blue' }],
+        );
+      const stillOnPage = (socketsBefore: number) => {
+        expect(screen.getByTestId('newtab-page')).toBeTruthy();
+        expect(drawer().current).toBe('');
+        expect(panes()).toEqual([]);
+        expect(sockets).toHaveLength(socketsBefore);
+      };
+
+      it('a group this device folded stays folded', () => {
+        pageWithGroup();
+        const socketsBefore = sockets.length;
+        tapHeader();
+        expect(header()).toHaveAttribute('aria-expanded', 'false');
+        recycleIntoGroup();
+        expect(header()).toHaveAttribute('aria-expanded', 'false');
+        stillOnPage(socketsBefore);
+      });
+
+      it('folding the group stays on the page', () => {
+        pageWithGroup();
+        const socketsBefore = sockets.length;
+        recycleIntoGroup();
+        expect(header()).toHaveAttribute('aria-expanded', 'true');
+        tapHeader();
+        expect(header()).toHaveAttribute('aria-expanded', 'false');
+        stillOnPage(socketsBefore);
+      });
+    });
+  });
+
+  // The page keeps the closed tab's id in `sessionId`. Turning the mobile layer on or off under it
+  // must not read that id as a selection: on the one-pane path it is a terminal the server does not
+  // list, and a pane mounted on it attaches `/ws?session=<dead id>` and spawns a shell there.
+  describe('across a mobile-layer flip', () => {
+    it('from the desktop page to the phone, stays on the page and attaches nothing', () => {
+      setup(['0']);
+      broadcast([]);
+      expect(screen.getByTestId('newtab-page')).toBeTruthy();
+      const socketsBefore = sockets.length;
+      flipMobile('on');
+      expect(screen.getByTestId('newtab-page')).toBeTruthy();
+      expect(panes()).toEqual([]);
+      expect(sockets).toHaveLength(socketsBefore);
+    });
+
+    it('from the phone page to the desktop, stays on the page and saves no pane for the dead id', () => {
+      localStorage.setItem('palmux-settings', JSON.stringify({ mobileMode: 'on' }));
+      setup(['0']);
+      broadcast([]);
+      expect(screen.getByTestId('newtab-page')).toBeTruthy();
+      flipMobile('off');
+      expect(screen.getByTestId('newtab-page')).toBeTruthy();
+      expect(panes()).toEqual([]);
+      expect(sessionStorage.getItem('palmux-layout')).not.toBeNull();
+      expect(savedIds()).not.toContain('0');
+      // A terminal made and closed from here goes back to the page, and the dead id never returns.
+      tapPress(screen.getByTestId('dash-new-terminal'));
+      const created = active()!;
+      expect(created).not.toBe('0');
+      expect(panes()).toEqual([{ slot: 'p0', session: created, focused: false }]);
+      broadcast([created]);
+      broadcast([]);
+      expect(screen.getByTestId('newtab-page')).toBeTruthy();
+      expect(panes()).toEqual([]);
+      expect(savedIds()).not.toContain('0');
+    });
+
+    it.each(['off', 'on'] as const)(
+      'with mobileMode %s, creating a terminal from the page mounts its pane',
+      (mode) => {
+        localStorage.setItem('palmux-settings', JSON.stringify({ mobileMode: mode }));
+        setup(['0']);
+        broadcast([]);
+        tapPress(screen.getByTestId('dash-new-terminal'));
+        expect(screen.queryByTestId('newtab-page')).toBeNull();
+        expect(panes()).toEqual([{ slot: 'p0', session: '1', focused: false }]);
+      },
+    );
+
+    // A review swaps the extra-keys bar for its own, but the page shows no review: the bar is
+    // the extra-keys one, which keeps the drawer swipe.
+    it('from a desktop page whose closed id came back as a review, the phone keeps the extra-keys bar', () => {
+      setup(['0']);
+      send({ type: 'sessions', tabs: [{ id: '0', kind: 'review', url: 'changes:/home/u/app' }] });
+      expect(screen.getByTestId('newtab-page')).toBeTruthy();
+      flipMobile('on');
+      expect(screen.getByTestId('newtab-page')).toBeTruthy();
+      expect(document.getElementById('extra-keys-bar')).not.toBeNull();
+      expect(screen.queryByTestId('review-bar')).toBeNull();
+    });
+  });
+
+  // A terminal this window creates exists on the server only once its pane attaches. An empty
+  // list that lands first (from before the attach) says nothing about it: the New-tab page would
+  // unmount the pane that is about to spawn it, and the window would sit on the page beside a
+  // pill for a terminal that never starts.
+  it('an empty list that lands before a just-created terminal is listed keeps its pane', () => {
+    setup(['0']);
+    broadcast([]);
+    tapPress(screen.getByTestId('dash-new-terminal'));
+    const created = active()!;
+    expect(screen.queryByTestId('newtab-page')).toBeNull();
+    broadcast([]);
+    expect(screen.queryByTestId('newtab-page')).toBeNull();
+    expect(panes()).toEqual([{ slot: 'p0', session: created, focused: false }]);
+    broadcast([created]); // its attach spawned it
+    expect(screen.queryByTestId('newtab-page')).toBeNull();
+    expect(panes()).toEqual([{ slot: 'p0', session: created, focused: false }]);
+    expect(strips()).toEqual([{ pane: 'p0', tabs: [created], focused: true }]);
+    // Closed for real now, so the page comes back.
+    broadcast([]);
+    expect(screen.getByTestId('newtab-page')).toBeTruthy();
+  });
+
   it('a FRESH terminal missing from a broadcast is not treated as closed', () => {
     setup(['0', '1']);
     send({ type: 'tabCreated', id: '7' }); // navigated to 7, never in a broadcast
@@ -777,6 +1656,68 @@ describe('close-tab navigation (no Reconnect page)', () => {
       });
       expect(active()).toBe('1');
     });
+
+    // A terminal this window just created is pending until a broadcast lists it, so the pane that
+    // is about to spawn it is not dropped by a list that lacks it. Two frames handled before one
+    // render show only the SECOND to the layout: a first that lists the terminal and a second that
+    // omits it again (it was killed) used to leave the id pending for ever, and the pane for a
+    // terminal the server no longer has stayed mounted, a "Session ended" pane in the real app.
+    it('a terminal the first frame lists and the second omits is not left pending', () => {
+      setup(['0']);
+      fireEvent.pointerDown(stripOf('p0').getByTestId('session-new'), { button: 0 });
+      tapPress(screen.getByTestId('dash-new-terminal'));
+      expect(panes()).toEqual([{ slot: 'p0', session: '1', focused: false }]);
+      act(() => {
+        server().handler!({ type: 'sessions', tabs: terms(['0', '1']) });
+        server().handler!({ type: 'sessions', tabs: terms(['0']) });
+      });
+      expect(panes()).toEqual([{ slot: 'p0', session: '0', focused: false }]);
+      expect(strips()).toEqual([{ pane: 'p0', tabs: ['0'], focused: true }]);
+    });
+
+    it('and the window goes to the New-tab page when that was its only tab', () => {
+      setup(['0']);
+      broadcast([]);
+      tapPress(screen.getByTestId('dash-new-terminal'));
+      const created = active()!;
+      act(() => {
+        server().handler!({ type: 'sessions', tabs: terms([created]) });
+        server().handler!({ type: 'sessions', tabs: [] });
+      });
+      expect(screen.getByTestId('newtab-page')).toBeTruthy();
+      expect(panes()).toEqual([]);
+    });
+
+    // The exception to forgetting a listed id: reconcile adopts the kind the list states only while
+    // the id is still pending, so an id the layout holds as a terminal (the guess for a tab this
+    // window learned of from its `tabCreated`) that the list says is an editor stays pending for the
+    // render that adopts it. Forgotten at once it would be dropped as a recycled id.
+    it('a guessed terminal the list states as an editor takes the listed kind', () => {
+      setup(['0']);
+      send({ type: 'tabCreated', id: '7' }); // shown before any list holds it
+      expect(shownIn('p0')).toBe('7');
+      act(() => {
+        server().handler!({
+          type: 'sessions',
+          tabs: [...terms(['0']), { id: '7', kind: 'editor' }],
+        });
+      });
+      expect(strips()).toEqual([{ pane: 'p0', tabs: ['0', '7'], focused: true }]);
+      expect(shownIn('p0')).toBe('7');
+    });
+
+    // The other half of the rule: an id nobody has listed yet stays pending across a broadcast
+    // that lacks it, even when two such frames land in one render.
+    it('a terminal no frame has listed yet survives two frames that lack it', () => {
+      setup(['0']);
+      fireEvent.pointerDown(stripOf('p0').getByTestId('session-new'), { button: 0 });
+      tapPress(screen.getByTestId('dash-new-terminal'));
+      act(() => {
+        server().handler!({ type: 'sessions', tabs: terms(['0']) });
+        server().handler!({ type: 'sessions', tabs: terms(['0']) });
+      });
+      expect(panes()).toEqual([{ slot: 'p0', session: '1', focused: false }]);
+    });
   });
 });
 
@@ -800,7 +1741,7 @@ describe('[+] opens the container', () => {
     fireEvent.pointerDown(screen.getByTestId('session-new'), { button: 0 });
     await act(() => new Promise((r) => setTimeout(r, 0)));
 
-    fireEvent.pointerDown(screen.getByTestId('term-pane-a'));
+    fireEvent.pointerDown(screen.getByTestId('term-pane-p0'));
     expect(screen.getByTestId('dock')).toHaveAttribute('data-view', 'newtab');
   });
 
@@ -1001,20 +1942,6 @@ describe('tab grouping', () => {
     // visible-index-on-full-list would have produced a no-op (index 2 == '2').
     expect(server().reorders.at(-1)).toEqual(['0', '1', '3', '2']);
   });
-
-  it("a broadcast diverging paired members' group membership dissolves the pairing", () => {
-    setup(['0', '1', '2']);
-    openSplitVia('1'); // split (0|1) shown, active 1
-    // A fused pair requires shared membership. A broadcast putting ONLY 0 into a
-    // group breaks that → the pairing dissolves; the active member goes full-width.
-    sendGroups(
-      [{ id: '0', groupId: 'gaa111' }, { id: '1' }, { id: '2' }],
-      [{ id: 'gaa111', color: 'blue' }],
-    );
-    expect(panes()).toEqual([{ slot: 'a', session: '0', focused: false }]);
-    expect(active()).toBe('0');
-    expect(localStorage.getItem('palmux-splits')).toBeNull();
-  });
 });
 
 // Which elements carry the strip's insertion marker right now, as `testid:side`.
@@ -1033,7 +1960,7 @@ const framed = (gid: string) =>
 //
 // Through the REAL App: SessionTabs resolves the boundary from pointer x and
 // doReorder/moveGroup turn it into an order. happy-dom has no layout, so each
-// strip unit (pill, fused pill, chip — in strip order) is handed a rect.
+// strip unit (pill, chip — in strip order) is handed a rect.
 describe('strip drops around groups and in gaps', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -1163,45 +2090,6 @@ describe('strip drops around groups and in gaps', () => {
       layout(spans);
       dropTab('4', screen.getByTestId('session-tab-0'), 90);
       expect(lastOrder()).toEqual(['0', '4', '1', '2', '3']);
-    });
-
-    // A fused pairing moves as ONE block, and doReorder bails on a drop "onto
-    // itself". With the group collapsed the entry index after "before the chip"
-    // names the pairing's own first member, so without the anchor this drop was
-    // swallowed as a no-op and the pair never moved.
-    it('a fused pair dropped before the chip moves past the group, split intact', () => {
-      // order [4, g1, g2, 0, 1, 5] with {2,3} grouped; (0|1) split → fused in the strip
-      setup(['4', '2', '3', '0', '1', '5']);
-      sendGroups(
-        [
-          { id: '4' },
-          { id: '2', groupId: G.id },
-          { id: '3', groupId: G.id },
-          { id: '0' },
-          { id: '1' },
-          { id: '5' },
-        ],
-        [G],
-      );
-      openSplitVia('1');
-      collapse(G.id);
-      expect(screen.getByTestId('fused-tab-0-1')).toBeTruthy();
-      // strip: 4 [0,100] | chip G [108,170] | fused(0,1) [178,478] | 5 [486,586]
-      layout([
-        [0, 100],
-        [108, 170],
-        [178, 478],
-        [486, 586],
-      ]);
-      const t = dtOf(TAB_DND_TYPE);
-      fireEvent.dragStart(screen.getByTestId('fused-tab-0-1'), { dataTransfer: t });
-      overAt(chip(G.id), t, 120); // left half: before the group
-      expect(screen.getByTestId(`group-cluster-${G.id}`).className).toContain('drop-before');
-      fireEvent.drop(strip(), { dataTransfer: t });
-      expect(lastOrder()).toEqual(['4', '0', '1', '2', '3', '5']);
-      noGroupOps();
-      expect(screen.getByTestId('fused-tab-0-1')).toBeTruthy();
-      expect(panes()).toHaveLength(2); // still tiled
     });
 
     describe('two adjacent', () => {
@@ -1824,64 +2712,6 @@ describe('strip drops around groups and in gaps', () => {
       noGroupOps();
       expect(framed(G.id)).toEqual(['2', '1']);
     });
-
-    // A fused pill has no centre gesture at all, so both its halves are
-    // boundaries. Inside a group the dragged tab is not in, each resolves to that
-    // group's nearer edge — never the join the bare index between members read as.
-    describe('a fused pill inside the group', () => {
-      // [a, g1, g2, g3, g4, b] with (g2|g3) split: a | chip | g1 | fused | g4 | b
-      const fusedInGroup = () => {
-        setup(['0', '1', '2', '3', '4', '5']);
-        sendGroups(
-          [
-            { id: '0' },
-            { id: '1', groupId: G.id },
-            { id: '2', groupId: G.id },
-            { id: '3', groupId: G.id },
-            { id: '4', groupId: G.id },
-            { id: '5' },
-          ],
-          [G],
-        );
-        clickTab('2');
-        openSplitVia('3');
-        expect(screen.getByTestId('fused-tab-2-3')).toBeTruthy();
-        // Opening the split sends its own fuse-time groupUpdate (the partner
-        // adopts the anchor's membership); only what the DROP sends is asserted.
-        server().groupUpdates.length = 0;
-        layout([
-          [0, 100],
-          [108, 170],
-          [178, 278],
-          [286, 586],
-          [594, 694],
-          [708, 808],
-        ]);
-      };
-      const joins = () => server().groupUpdates.filter((u) => 'addIds' in u);
-
-      it('its left half nearer the left edge lands before the group', () => {
-        fusedInGroup();
-        const t = dtOf(TAB_DND_TYPE);
-        fireEvent.dragStart(screen.getByTestId('session-tab-5'), { dataTransfer: t });
-        overAt(screen.getByTestId('fused-tab-2-3'), t, 300);
-        expect(marked()).toEqual([`group-cluster-${G.id}:before`]);
-        fireEvent.drop(strip(), { dataTransfer: t });
-        expect(joins()).toEqual([]);
-        expect(lastOrder()).toEqual(['0', '5', '1', '2', '3', '4']);
-      });
-
-      it('its right half nearer the right edge lands after the group', () => {
-        fusedInGroup();
-        const t = dtOf(TAB_DND_TYPE);
-        fireEvent.dragStart(screen.getByTestId('session-tab-0'), { dataTransfer: t });
-        overAt(screen.getByTestId('fused-tab-2-3'), t, 570);
-        expect(marked()).toEqual(['session-tab-5:before']);
-        fireEvent.drop(strip(), { dataTransfer: t });
-        expect(joins()).toEqual([]);
-        expect(lastOrder()).toEqual(['1', '2', '3', '4', '0', '5']);
-      });
-    });
   });
 
   // A group dropped inside another expanded group used to send that split order
@@ -2062,12 +2892,16 @@ describe('the URL is not the workspace', () => {
     expect(active()).toBe('0');
   });
 
-  it('keeps the address at / while splitting and ejecting', () => {
+  it('keeps the address at / while splitting and moving tabs between panes', () => {
     setup();
-    openSplitVia('1');
+    const historyLength = history.length;
+    splitVia('1');
     expect(location.pathname).toBe('/');
     clickTab('2');
     expect(location.pathname).toBe('/');
+    dropOnPane('2', 1, 'centre');
+    expect(location.pathname).toBe('/');
+    expect(history.length).toBe(historyLength);
   });
 });
 
@@ -2082,7 +2916,8 @@ describe('the last tab survives a relaunch', () => {
   const OWN = 'palmux-window-tab';
   const lastTab = (): unknown => JSON.parse(localStorage.getItem(LAST) ?? 'null');
   const ownTab = (): unknown => JSON.parse(sessionStorage.getItem(OWN) ?? 'null');
-  type Spec = { id: string; kind?: string; name?: string };
+  type Spec = { id: string; kind?: string; name?: string; url?: string; window?: string };
+  const DETACHED = 'wq3k9x2m1ab';
   const tabsOf = (specs: Spec[]) => specs.map((t) => ({ kind: 'terminal', ...t }));
   const sessions = (specs: Spec[]) => send({ type: 'sessions', tabs: tabsOf(specs) });
   const terms = (ids: string[]): Spec[] => ids.map((id) => ({ id }));
@@ -2150,6 +2985,14 @@ describe('the last tab survives a relaunch', () => {
     expect(active()).toBe('1');
   });
 
+  // The pre-existing contract: the attach to an id the list lacks spawns a terminal there.
+  it('opens a legacy /<id> the list lacks as a fresh terminal', () => {
+    history.replaceState(null, '', '/5');
+    boot(terms(['0', '1']));
+    expect(panes()).toEqual([{ slot: 'p0', session: '5', focused: false }]);
+    expect(strips().map((s) => s.tabs)).toEqual([['0', '1', '5']]);
+  });
+
   /**
    * Put a spy between the app and `localStorage` for ONE key: every value written to
    * it is recorded, and `denied` makes any access to it throw. Everything else passes
@@ -2192,20 +3035,110 @@ describe('the last tab survives a relaunch', () => {
     expect(watch.touched()).toBeGreaterThan(0);
   });
 
-  describe('a pop-out', () => {
-    it('writes neither the window selection nor the device-wide one', () => {
-      history.replaceState(null, '', '/popout/0');
+  // Ctrl+W must never reach the browser's "close tab", which closes the whole app.
+  describe('Ctrl+W', () => {
+    const chord = (mods: { ctrlKey?: boolean; metaKey?: boolean; repeat?: boolean }) => {
+      const e = new KeyboardEvent('keydown', { key: 'w', code: 'KeyW', bubbles: true, cancelable: true, ...mods });
+      window.dispatchEvent(e);
+      return e;
+    };
+
+    it('closes the active file tab and claims the chord', () => {
+      boot([{ id: '0' }, { id: '7', kind: 'editor', name: 'notes' }]);
+      clickTab('7');
+      expect(chord({ ctrlKey: true }).defaultPrevented).toBe(true);
+      expect(server().killed).toEqual(['7']);
+    });
+
+    it('closes a web tab too, once per press however long it is held', () => {
+      boot([{ id: '0' }, { id: '3', kind: 'web', url: 'https://example.com' }]);
+      clickTab('3');
+      chord({ ctrlKey: true });
+      expect(chord({ ctrlKey: true, repeat: true }).defaultPrevented).toBe(true);
+      expect(server().killed).toEqual(['3']);
+    });
+
+    it('leaves the terminal tab open and claims the chord for the shell', () => {
+      const confirm = vi.spyOn(window, 'confirm');
       boot(terms(['0', '1']));
+      expect(chord({ ctrlKey: true }).defaultPrevented).toBe(true);
+      expect(confirm).not.toHaveBeenCalled();
+      expect(server().killed).toEqual([]);
+      confirm.mockRestore();
+    });
+
+    it('closes a terminal on Cmd+W behind the kill confirm', () => {
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+      boot(terms(['0', '1']));
+      expect(chord({ metaKey: true }).defaultPrevented).toBe(true);
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(server().killed).toEqual(['0']);
+      confirm.mockRestore();
+    });
+
+    it('swallows the chord and closes nothing on the New-tab page', () => {
+      boot([]);
+      expect(screen.getByTestId('newtab-page')).toBeTruthy();
+      expect(chord({ metaKey: true }).defaultPrevented).toBe(true);
+      expect(server().killed).toEqual([]);
+    });
+
+    // The page keeps the closed tab's id, and that id can come back as another kind. The page does
+    // not show the newcomer, so the chord is claimed and closes nothing.
+    it('closes nothing on the New-tab page when the closed id came back as an editor', () => {
+      boot(terms(['0']));
+      sessions([{ id: '0', kind: 'editor' }]);
+      expect(screen.getByTestId('newtab-page')).toBeTruthy();
+      expect(chord({ ctrlKey: true }).defaultPrevented).toBe(true);
+      expect(server().killed).toEqual([]);
+      expect(screen.getByTestId('session-tab-0')).toBeTruthy(); // the editor is still listed
+    });
+
+    // The pop-out used to be left alone here so the browser could close its window. A detached
+    // window is the main window's twin: the chord closes the TAB, never the window.
+    it('closes the active tab in a detached window, as in the main window', () => {
+      history.replaceState(null, '', `/window/${DETACHED}?tab=0`);
+      boot([
+        { id: '0', window: DETACHED },
+        { id: '7', kind: 'editor', name: 'notes', window: DETACHED },
+      ]);
+      expect(active()).toBe('0');
+      clickTab('7');
+      expect(chord({ ctrlKey: true }).defaultPrevented).toBe(true);
+      expect(server().killed).toEqual(['7']);
+    });
+  });
+
+  // The retired `/popout/<id>` is a detached window with an id of its own: what the pop-out wrote
+  // (nothing, to either key) a detached window writes under a key of its own.
+  describe('a retired pop-out address', () => {
+    const widOfAddress = () => /^\/window\/(w[0-9a-z]{10})$/.exec(location.pathname)?.[1];
+    /** The window connects, then the server lists the tabs: the order a real client sees. */
+    const bootRetired = (specs: Spec[]) => {
+      render(<App />);
+      connect();
+      sessions(specs);
+    };
+
+    it('boots a detached window that writes neither main key, and its own selection', () => {
+      history.replaceState(null, '', '/popout/0');
+      bootRetired(terms(['0', '1']));
+      const wid = widOfAddress();
+      expect(wid).toBeTruthy();
       expect(active()).toBe('0');
       expect(lastTab()).toBeNull();
       expect(ownTab()).toBeNull();
+      expect(JSON.parse(sessionStorage.getItem(`${OWN}:${wid}`) ?? 'null')).toEqual({
+        id: '0',
+        kind: 'terminal',
+      });
     });
 
     it('leaves the main window\'s remembered tab alone', () => {
       localStorage.setItem(LAST, JSON.stringify({ id: '2', kind: 'terminal' }));
       sessionStorage.setItem(OWN, JSON.stringify({ id: '2', kind: 'terminal' }));
       history.replaceState(null, '', '/popout/0');
-      boot(terms(['0', '1', '2']));
+      bootRetired(terms(['0', '1', '2']));
       sessions(terms(['0', '1', '2', '3']));
       expect(lastTab()).toEqual({ id: '2', kind: 'terminal' });
       expect(ownTab()).toEqual({ id: '2', kind: 'terminal' });
@@ -2272,12 +3205,14 @@ describe('the last tab survives a relaunch', () => {
       expect(lastTab()).toEqual({ id: '0', kind: 'terminal' });
     });
 
-    // The same id as a different kind is a different selection.
-    it('is rewritten when the selected id comes back as another kind', () => {
+    // The same id as a different kind is a different tab, not the one this window was showing: the
+    // layout drops the old one, as for any closed tab, and the window moves to its neighbour (the
+    // recycled id joins the focused pane without taking over, like any tab another window made).
+    it('moves off a selected id that comes back as another kind, to the neighbour', () => {
       boot(terms(['0', '1']));
       expect(lastTab()).toEqual({ id: '0', kind: 'terminal' });
       sessions([{ id: '0', kind: 'editor' }, { id: '1' }]);
-      expect(lastTab()).toEqual({ id: '0', kind: 'editor' });
+      expect(lastTab()).toEqual({ id: '1', kind: 'terminal' });
     });
 
     // B9-R2-01. Closing the last terminal `0` and creating an editor that reuses id
@@ -3481,7 +4416,7 @@ describe('the drawer holds the layout until it closes', () => {
         ],
       });
       send({ type: 'tabCreated', id: '1' }); // the window is now showing that tab
-      expect(screen.queryByTestId('term-pane-a')).toBeNull();
+      expect(screen.queryByTestId('term-pane-p0')).toBeNull();
       attempt(action);
       expect(document.querySelector('.toast.show')?.textContent).toBe(
         'Open a terminal tab to upload',
@@ -4128,41 +5063,6 @@ describe('data-mobile follows the resolved mobile mode', () => {
   });
 });
 
-// The pop-out's only control. The ⇱ character is the external icon now, the label
-// stays beside it, and the dead-opener state still reads as plain text.
-describe('pop-out return button', () => {
-  const openerAlive = (alive: boolean) =>
-    Object.defineProperty(window, 'opener', {
-      value: alive ? { closed: false, postMessage: vi.fn() } : null,
-      configurable: true,
-    });
-  afterEach(() => {
-    Reflect.deleteProperty(window, 'opener');
-  });
-
-  it('wears the external icon beside its label while the main window is open', () => {
-    openerAlive(true);
-    history.replaceState(null, '', '/popout/0');
-    render(<App />);
-    const button = screen.getByTestId('popout-return');
-    expect(button).not.toBeDisabled();
-    expect(button).toHaveTextContent(/^return to main$/);
-    expect(button.querySelectorAll('svg')).toHaveLength(1);
-    expect(button.querySelector('svg')?.innerHTML).toBe(iconPaths('external'));
-    expect(button).toHaveAttribute('title', 'Return this tab to the main window');
-  });
-
-  it('is plain disabled text once the main window is gone', () => {
-    openerAlive(false);
-    history.replaceState(null, '', '/popout/0');
-    render(<App />);
-    const button = screen.getByTestId('popout-return');
-    expect(button).toBeDisabled();
-    expect(button).toHaveTextContent('main window closed');
-    expect(button.querySelector('svg')).toBeNull();
-  });
-});
-
 // The topbar ENDS with an app menu (it replaced the wordmark, then moved over the
 // rail). It is a second pointer route to Settings beside the rail's, and the one
 // place Reload app can be reached without opening a panel — so it carries the same discard guard Settings does.
@@ -4172,10 +5072,6 @@ const openSettingsRow = async () => {
   fireEvent.click(screen.getByTestId('dock-rail-settings'));
   return screen.findByTestId('reload-app');
 };
-
-/** A client stylesheet's text with its comments removed (happy-dom loads no CSS). */
-const sheetWithoutComments = (file: string) =>
-  readFileSync(join(__dirname, file), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
 
 describe('app menu', () => {
   const EDITOR_TABS = [
@@ -4204,59 +5100,44 @@ describe('app menu', () => {
     vi.unstubAllGlobals();
   });
 
-  it('replaces the palmux wordmark in the topbar', () => {
+  // There is no topbar: each pane draws its own tab strip, and the menu took the wordmark's
+  // place at the top of the dock rail.
+  it('tops the dock rail, where the wordmark and the topbar used to be', () => {
     setup();
-    const topbar = document.querySelector('.topbar');
-    expect(topbar?.querySelector('.topbar-brand')).toBeNull();
-    expect(topbar?.textContent).not.toMatch(/^palmux/);
+    expect(document.querySelector('.topbar')).toBeNull();
+    expect(document.querySelector('.topbar-brand')).toBeNull();
     const button = screen.getByTestId('app-menu-button');
     expect(button).toHaveAttribute('aria-label', 'palmux menu');
     expect(button.querySelector('svg')?.innerHTML).toBe(iconPaths('menu'));
-    // Batch 12: it moved from the START of the bar to its END, over the rail.
-    expect(topbar?.lastElementChild).toBe(button);
-    expect(topbar?.firstElementChild).not.toBe(button);
+    // The rail's first control, above New tab.
+    expect(screen.getByTestId('dock-rail').firstElementChild).toBe(button);
+    expect(
+      button.compareDocumentPosition(screen.getByTestId('dock-rail-newtab')) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
-  // The menu sits over the rail column, which is the right edge; the strip has
-  // the left edge to itself. DOM order is what lays that out (the spacer between
-  // them takes the slack), so it is what is pinned here.
-  it('starts the topbar with the tab strip and ends it with the menu, after [+]', () => {
+  // The panes start at the top edge. In window-controls-overlay mode the native controls lie over
+  // it, so an empty drag region above the content row keeps them off the panes and the rail (the
+  // stylesheet shows it only there).
+  it('leaves an empty title-bar region above the content, and nothing else above the panes', () => {
     setup();
-    const topbar = document.querySelector('.topbar')!;
-    const strip = screen.getByTestId('session-tabs');
-    const plus = screen.getByTestId('session-new');
-    const button = screen.getByTestId('app-menu-button');
-    expect(topbar.firstElementChild).toBe(strip);
-    expect(strip).toContainElement(plus);
-    expect(plus.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(topbar.lastElementChild).toBe(button);
+    const app = document.querySelector('.app')!;
+    const titlebar = app.querySelector('.wco-titlebar')!;
+    expect(titlebar).not.toBeNull();
+    expect(titlebar).toBeEmptyDOMElement();
+    expect(titlebar.nextElementSibling).toBe(app.querySelector('.content-row'));
+    expect(app.firstElementChild).toBe(titlebar);
   });
 
-  // The dropdown grows from a trigger at the right edge of the window. Left-aligned
-  // (the kit's default) it would open rightwards and leave the screen.
-  it('opens its menu aligned to the trigger\'s right edge', async () => {
+  // The rail is at the window's right edge, so the menu opens to the LEFT of its button and lines
+  // up with the button's right edge. Opened below, or left-aligned (the kit's defaults), it would
+  // leave the screen.
+  it('opens its menu to the left of the button, aligned to its right edge', async () => {
     setup();
     await openMenu();
     expect(screen.getByRole('menu')).toHaveAttribute('data-align', 'end');
-  });
-
-  // happy-dom has no layout, so the column alignment is checked where it is
-  // written. The rail's width is a literal in dock.css and the topbar needs the
-  // same number to centre the button over the rail's own buttons: two copies of
-  // one figure, so this fails the moment either moves alone.
-  it('centres the menu button over the dock rail column, from the rail\'s own width', () => {
-    const railWidth = /\.dock-rail\s*\{[^}]*?flex:\s*0 0 (\d+)px/.exec(
-      sheetWithoutComments('session/dock.css'),
-    )?.[1];
-    const topbarCss = sheetWithoutComments('index.css');
-    const cell = /\.topbar\s*\{[^}]*?--rail-w:\s*(\d+)px/.exec(topbarCss)?.[1];
-    expect(railWidth).toBeDefined();
-    expect(cell).toBe(railWidth);
-    const menuRule = /\.topbar \.topbar-menu\s*\{([^}]*)\}/.exec(topbarCss)?.[1];
-    expect(menuRule).toContain('var(--rail-w)');
-
-    setup();
-    expect(screen.getByTestId('app-menu-button')).toHaveClass('topbar-menu');
+    expect(screen.getByRole('menu')).toHaveAttribute('data-side', 'left');
   });
 
   it('offers Settings, Tips and Reload app', async () => {
@@ -4320,14 +5201,13 @@ describe('app menu', () => {
     );
   });
 
-  // The menu is the desktop window's control. The pop-out is chrome-less on
-  // purpose and keeps its brand; the mobile layer has no topbar at all (its route
-  // to Settings is the drawer).
-  it('is absent from the pop-out bar, which keeps its brand', () => {
-    history.replaceState(null, '', '/popout/0');
+  // The menu is the main window's control. A detached window draws no rail and so no menu; the
+  // mobile layer has no topbar at all (its route to Settings is the drawer).
+  it('is absent from a detached window, which draws no rail', () => {
+    history.replaceState(null, '', '/window/wq3k9x2m1ab');
     render(<App />);
+    send({ type: 'sessions', tabs: [{ id: '1', kind: 'terminal', window: 'wq3k9x2m1ab' }] });
     expect(screen.queryByTestId('app-menu-button')).toBeNull();
-    expect(document.querySelector('.popout-bar .topbar-brand')).toHaveTextContent(/^palmux$/);
     expect(document.querySelector('.topbar')).toBeNull();
   });
 
@@ -5150,7 +6030,7 @@ describe('Settings in the app', () => {
     const stored = () =>
       JSON.parse(localStorage.getItem('palmux-settings') ?? '{}') as ClientSettings;
     /** The theme id the terminal pane was handed: what it paints. */
-    const paneTheme = () => screen.getByTestId('term-pane-a').dataset['theme'];
+    const paneTheme = () => screen.getByTestId('term-pane-p0').dataset['theme'];
     const sent = () => server().settingsSent;
 
     /** A `matchMedia` the test flips, as the browser would on a scheme change. */
@@ -5879,34 +6759,36 @@ describe('Source Control in the dock', () => {
   // what a Source Control row hands the pane that shows it, and a create that is
   // answered with a tab this window already holds.
 
-  describe('a review in a split', () => {
+  describe('a review in its own pane', () => {
     const openRows = () => {
       answers[APP_REPO] = scmStatus(APP_REPO, {
         changes: [entryOf('c.ts'), entryOf('d.ts')],
       });
       storeSettings({ scmRepos: [APP_REPO], scmActiveRepo: APP_REPO });
     };
-    const splitsHold = (id: string) =>
-      (localStorage.getItem('palmux-splits') ?? '').includes(`"tabId":"${id}"`);
 
-    it('keeps the split when another file of the review it holds is chosen', async () => {
+    it('keeps the panes when another file of the review it holds is chosen', async () => {
       openRows();
       boot([
         { id: '0', kind: 'terminal' },
         { id: '4', kind: 'review', url: `changes:${APP_REPO}` },
       ]);
-      openSplitVia('4'); // (0 | 4), the review focused
-      expect(splitsHold('0') && splitsHold('4')).toBe(true);
+      splitVia('4'); // p0 = [0], p1 = [4], the review focused
+      const before = strips();
+      expect(before).toEqual([
+        { pane: 'p0', tabs: ['0'], focused: false },
+        { pane: 'p1', tabs: ['4'], focused: true },
+      ]);
 
       await openScm();
       fireEvent.click(await screen.findByTestId('scm-row-changes:d.ts'));
-      // The review is selected, not created again, and the pairing it is in survives.
+      // The review is selected where it is, not created again, and no pane moves.
       expect(server().created).toEqual([]);
-      expect(splitsHold('0') && splitsHold('4')).toBe(true);
-      expect(panes()).toEqual([{ slot: 'a', session: '0', focused: false }]);
+      expect(strips()).toEqual(before);
+      expect(panes()).toEqual([{ slot: 'p0', session: '0', focused: false }]);
     });
 
-    it('keeps the split when a create is answered with the review it holds', async () => {
+    it('keeps the panes when a create is answered with the review it holds', async () => {
       openRows();
       boot([{ id: '0', kind: 'terminal' }]);
       await openScm();
@@ -5914,7 +6796,7 @@ describe('Source Control in the dock', () => {
       expect(server().created).toEqual([{ kind: 'review', url: `changes:${APP_REPO}` }]);
 
       // Another window's create won: the tab arrives in a broadcast, and this window
-      // puts it in a split before the answer to its own create (the same tab) comes.
+      // moves it to a pane of its own before the answer to its own create (the same tab) comes.
       await send({
         type: 'sessions',
         tabs: [
@@ -5922,10 +6804,14 @@ describe('Source Control in the dock', () => {
           { id: '4', kind: 'review', url: `changes:${APP_REPO}` },
         ],
       });
-      openSplitVia('4');
-      expect(splitsHold('4')).toBe(true);
+      splitVia('4');
+      const before = strips();
+      expect(before).toEqual([
+        { pane: 'p0', tabs: ['0'], focused: false },
+        { pane: 'p1', tabs: ['4'], focused: true },
+      ]);
       await send({ type: 'tabCreated', id: '4' });
-      expect(splitsHold('0') && splitsHold('4')).toBe(true);
+      expect(strips()).toEqual(before);
     });
   });
 
@@ -6112,15 +6998,17 @@ describe('Source Control in the dock', () => {
       expect(stored()['scmActiveRepo']).toBe(APP_REPO);
     });
 
-    it('moves to the review’s project when focus moves within a split', async () => {
+    it('moves to the review’s project when focus moves between panes', async () => {
       storeSettings({ scmRepos: [APP_REPO, LIB_REPO], scmActiveRepo: APP_REPO });
       boot(tabs);
-      openSplitVia('4'); // (0 | 4), review focused
+      splitVia('4'); // p0 = [0], p1 = [4], review focused
       await flush();
       expect(stored()['scmActiveRepo']).toBe(LIB_REPO);
-      clickTab('0');
+      // Each pane's own tab is already ITS active one, so what moves focus is the press on the
+      // strip (the pane takes focus on pointerdown), not a switch.
+      fireEvent.pointerDown(screen.getByTestId('session-tab-0'), { button: 0 });
       await act(async () => paneHost.review!.activate(APP_REPO));
-      clickTab('4');
+      fireEvent.pointerDown(screen.getByTestId('session-tab-4'), { button: 0 });
       await flush();
       expect(stored()['scmActiveRepo']).toBe(LIB_REPO);
     });
@@ -6329,6 +7217,39 @@ describe('Source Control keys and comments in the app', () => {
       fireEvent.pointerDown(screen.getByTestId('palette-item-scmNextFile'));
       expect(api.nextFile).toHaveBeenCalledTimes(1);
     });
+
+    // The New-tab page shows no tab, though `sessionId` keeps the closed one's id. When that id
+    // comes back as a review, the review is listed and not shown: its keys stay unwired, the
+    // palette does not offer them, and its project is not made the one this device reads.
+    it.each(['off', 'on'] as const)(
+      'stay unwired on the New-tab page when the closed id comes back as a review (mobileMode %s)',
+      async (mobileMode) => {
+        const LIB = '/home/u/work/lib';
+        localStorage.setItem(
+          'palmux-settings',
+          JSON.stringify({ mobileMode, scmRepos: [APP, LIB], scmActiveRepo: LIB }),
+        );
+        const api = fakeApi();
+        registerReview('0', api);
+        render(<App />);
+        broadcast(['0']);
+        broadcast([]); // the last tab closes
+        send({ type: 'sessions', tabs: [{ id: '0', kind: 'review', url: `changes:${APP}` }] });
+        await flush();
+        expect(screen.getByTestId('newtab-page')).toBeTruthy();
+
+        expect(JSON.parse(localStorage.getItem('palmux-settings')!).scmActiveRepo).toBe(LIB);
+        expect(press({ key: 'j', ...CTRL_ALT })).toBe(false);
+        expect(press({ key: 'Enter', ...CTRL_ALT })).toBe(false);
+        expect(api.nextChange).not.toHaveBeenCalled();
+        expect(api.reviewCurrent).not.toHaveBeenCalled();
+
+        fireEvent.keyDown(window, { key: 'p', ctrlKey: true, shiftKey: true });
+        await flush();
+        expect(screen.getByTestId('palette-item-openSourceControl')).toBeTruthy();
+        expect(screen.queryByTestId('palette-item-scmNextChange')).toBeNull();
+      },
+    );
   });
 
   describe('the Undo toast', () => {
@@ -6821,6 +7742,1502 @@ describe('Source Control on a phone', () => {
       expect(drawerIsOpen()).toBe(true);
       expect(drawer().view).toBe('scm');
       expect(screen.queryByTestId('dock')).toBeNull();
+    });
+  });
+});
+
+// ── Detached windows ──────────────────────────────────────────────────────────
+//
+// One tab, one window: the server says which detached window holds a tab (`TabMeta.window`), and
+// every window draws only the tabs it holds. What only the REAL App can get wrong is which list each
+// reader takes (the filtered one for everything a window shows, the full one for ids and order), how
+// a move is held until the server agrees, and that nothing is ever attached or shown from two windows.
+describe('detached windows', () => {
+  const WID = 'wq3k9x2m1ab';
+  const OTHER = 'wother00001';
+  const term = (id: string, window?: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    kind: 'terminal',
+    ...(window ? { window } : {}),
+    ...extra,
+  });
+  const stripIds = () => strips().flatMap((s) => s.tabs);
+  const bootMain = (tabs: Array<Record<string, unknown>>) => {
+    history.replaceState(null, '', '/'); // the app's own address, not the legacy `/0` the suite starts at
+    render(<App />);
+    send({ type: 'sessions', tabs });
+  };
+  const bootDetached = (tabs: Array<Record<string, unknown>>, path = `/window/${WID}?tab=1`) => {
+    history.replaceState(null, '', path);
+    render(<App />);
+    send({ type: 'sessions', tabs });
+  };
+  /** The server announces detached windows (it does in `ready`, on every connect). */
+  const supported = (on = true) =>
+    send({
+      type: 'ready',
+      maxUploadBytes: 1024,
+      webApps: [],
+      ...(on ? { detachedWindows: true } : {}),
+    });
+  const menuOf = (id: string) => fireEvent.contextMenu(screen.getByTestId(`session-tab-${id}`));
+  /** Pick "Open in new window" on a tab and return the window id the browser was asked to open. */
+  const popOut = (id: string, open: MockInstance<typeof window.open>): string | undefined => {
+    menuOf(id);
+    fireEvent.click(screen.getByTestId('menu-popout'));
+    const url = String(open.mock.calls.at(-1)?.[0] ?? '');
+    return new RegExp(`^/window/(w[0-9a-z]{10})\\?tab=${id}$`).exec(url)?.[1];
+  };
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  describe('which tabs a window shows', () => {
+    it('hides, in a main window, a tab a detached window holds', () => {
+      bootMain([term('0'), term('1', WID), term('2')]);
+      expect(stripIds()).toEqual(['0', '2']);
+      expect(active()).toBe('0');
+    });
+
+    it('shows, in a detached window, only its own tabs', () => {
+      bootDetached([term('0'), term('1', WID), term('2', OTHER), term('3', WID)]);
+      expect(stripIds()).toEqual(['1', '3']);
+      expect(active()).toBe('1');
+    });
+
+    it('names itself on the control socket, and the main window names nothing', () => {
+      bootDetached([term('1', WID)]);
+      expect(server().url).toMatch(new RegExp(`/ws\\?control=1&window=${WID}$`));
+      cleanup();
+      sockets.length = 0;
+      history.replaceState(null, '', '/0');
+      bootMain([term('0')]);
+      expect(server().url).toMatch(/\/ws\?control=1$/);
+    });
+
+    it('ignores the mobile layer: a detached window is always the desktop layout', () => {
+      localStorage.setItem('palmux-settings', JSON.stringify({ mobileMode: 'on' }));
+      bootDetached([term('1', WID)]);
+      expect(document.querySelector('.app')!.classList.contains('mobile')).toBe(false);
+      expect(stripIds()).toEqual(['1']);
+    });
+
+    it('hands its panes the window they attach for, and a main window hands none', () => {
+      bootDetached([term('1', WID)]);
+      expect(screen.getByTestId('term-pane-p0')).toHaveAttribute('data-window', WID);
+      cleanup();
+      sockets.length = 0;
+      history.replaceState(null, '', '/0');
+      bootMain([term('0')]);
+      expect(screen.getByTestId('term-pane-p0')).not.toHaveAttribute('data-window');
+    });
+
+    // A pane for an editor another window holds would mount its own Monaco over the same file.
+    it('mounts no pane, in a main window, for an editor a detached window holds', () => {
+      bootMain([term('0'), term('5', OTHER, { kind: 'editor', url: '/home/u/notes.md' })]);
+      expect(paneHost.renders.at(-1)!.map((t) => t.id)).toEqual(['0']);
+    });
+
+    // Attached from both windows, a terminal would show "Opened somewhere else." in one of them.
+    it('does nothing when a navigation names a tab another window holds', () => {
+      bootMain([term('0'), term('1', OTHER)]);
+      send({ type: 'tabCreated', id: '1' });
+      expect(panes().map((p) => p.session)).toEqual(['0']);
+      expect(active()).toBe('0');
+      expect(stripIds()).toEqual(['0']);
+    });
+
+    it('shows a window that holds nothing the New-tab page', () => {
+      bootMain([term('1', OTHER), term('2', OTHER)]);
+      expect(screen.getByTestId('newtab-page')).toBeTruthy();
+      expect(panes()).toEqual([]);
+    });
+
+    // The phone's page keeps the closed id as `sessionId`. A navigation refused for another
+    // window's tab must not clear the page as well: the one-pane path would then draw that closed
+    // id as a fresh terminal and spawn a shell on it.
+    it('keeps the phone on the New-tab page when a navigation names another window’s tab', () => {
+      localStorage.setItem('palmux-settings', JSON.stringify({ mobileMode: 'on' }));
+      bootMain([term('0')]);
+      send({ type: 'sessions', tabs: [term('1', OTHER)] }); // the last tab here closes
+      expect(screen.getByTestId('newtab-page')).toBeTruthy();
+      const socketsBefore = sockets.length;
+      send({ type: 'tabCreated', id: '1' });
+      expect(screen.getByTestId('newtab-page')).toBeTruthy();
+      expect(panes()).toEqual([]);
+      expect(sockets).toHaveLength(socketsBefore);
+    });
+
+    // A legacy `/<id>` used to be shown before the list could say who holds the tab: the pane
+    // attached as a fresh terminal and evicted the other window's.
+    it('mounts no pane for a legacy /<id> that names a tab another window holds', () => {
+      history.replaceState(null, '', '/1');
+      render(<App />);
+      send({ type: 'sessions', tabs: [term('0'), term('1', OTHER)] });
+      expect(panes().map((p) => p.session)).toEqual(['0']);
+      expect(stripIds()).toEqual(['0']);
+    });
+
+    it('mounts no pane for it on the mobile layer either', () => {
+      localStorage.setItem('palmux-settings', JSON.stringify({ mobileMode: 'on' }));
+      history.replaceState(null, '', '/1');
+      render(<App />);
+      send({ type: 'sessions', tabs: [term('0'), term('1', OTHER)] });
+      expect(panes().map((p) => p.session)).toEqual(['0']);
+    });
+
+    it('opens such a legacy /<id> as a plain boot would, on the tab this window remembers', () => {
+      sessionStorage.setItem('palmux-window-tab', JSON.stringify({ id: '2', kind: 'terminal' }));
+      history.replaceState(null, '', '/1');
+      render(<App />);
+      send({ type: 'sessions', tabs: [term('0'), term('1', OTHER), term('2')] });
+      expect(panes().map((p) => p.session)).toEqual(['2']);
+    });
+  });
+
+  describe('a detached boot', () => {
+    it('lands on the tab it was opened for and takes ?tab= out of the address', () => {
+      bootDetached([term('0'), term('1', WID), term('3', WID)], `/window/${WID}?tab=3`);
+      expect(active()).toBe('3');
+      expect(location.pathname).toBe(`/window/${WID}`);
+      expect(location.search).toBe('');
+    });
+
+    it('keeps its address, not `/`, when it was opened without a tab', () => {
+      bootDetached([term('1', WID)], `/window/${WID}`);
+      expect(location.pathname).toBe(`/window/${WID}`);
+    });
+
+    it('reads its own remembered tab, and the device’s last tab is not its business', () => {
+      localStorage.setItem('palmux-last-tab', JSON.stringify({ id: '3', kind: 'terminal' }));
+      sessionStorage.setItem(
+        `palmux-window-tab:${WID}`,
+        JSON.stringify({ id: '3', kind: 'terminal' }),
+      );
+      bootDetached([term('1', WID), term('3', WID)], `/window/${WID}`);
+      expect(active()).toBe('3');
+      cleanup();
+      sockets.length = 0;
+      sessionStorage.clear();
+      bootDetached([term('1', WID), term('3', WID)], `/window/${WID}`);
+      expect(active()).toBe('1'); // no own value: the first tab, never palmux-last-tab's 3
+    });
+
+    it('never writes palmux-last-tab, and keeps selection and layout under keys of its own', () => {
+      bootDetached([term('1', WID), term('3', WID)]);
+      clickTab('3');
+      expect(localStorage.getItem('palmux-last-tab')).toBeNull();
+      expect(JSON.parse(sessionStorage.getItem(`palmux-window-tab:${WID}`)!)).toEqual({
+        id: '3',
+        kind: 'terminal',
+      });
+      expect(sessionStorage.getItem('palmux-window-tab')).toBeNull();
+      expect(sessionStorage.getItem(`palmux-layout:${WID}`)).not.toBeNull();
+      expect(sessionStorage.getItem('palmux-layout')).toBeNull();
+    });
+
+    // `window.open` may copy the opener's sessionStorage, panes and selection included.
+    it('ignores the main window’s layout and selection that the opener copied', () => {
+      sessionStorage.setItem('palmux-layout', TWO_COLUMNS);
+      sessionStorage.setItem('palmux-window-tab', JSON.stringify({ id: '2', kind: 'terminal' }));
+      bootDetached([term('0'), term('1', WID), term('2')]);
+      expect(strips().map((x) => x.tabs)).toEqual([['1']]);
+      expect(active()).toBe('1');
+    });
+  });
+
+  describe('ids and order stay whole', () => {
+    it('picks a fresh terminal id that skips an id another window holds', () => {
+      bootMain([term('0'), term('1', OTHER)]);
+      fireEvent.pointerDown(stripOf('p0').getByTestId('session-new'), { button: 0 });
+      tapPress(screen.getByTestId('dash-new-terminal'));
+      expect(shownIn('p0')).toBe('2');
+    });
+
+    it('sends the full order from a reorder, with the other window’s tabs in place', () => {
+      bootMain([term('0'), term('1', OTHER), term('2'), term('3', OTHER), term('4')]);
+      const t = dt();
+      fireEvent.dragStart(screen.getByTestId('session-tab-4'), { dataTransfer: t });
+      t.setData(TAB_DND_TYPE, '4');
+      fireEvent.dragOver(screen.getByTestId('session-tab-0'), { dataTransfer: t });
+      fireEvent.drop(screen.getByTestId('session-tabs'), { dataTransfer: t });
+      // Sent as [0,4,2], the server would put 1 and 3 at the end.
+      expect(server().reorders.at(-1)).toEqual(['0', '1', '4', '2', '3']);
+      expect(stripIds()).toEqual(['0', '4', '2']);
+    });
+
+    it('"Close other tabs" closes only the tabs this window shows', () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      bootMain([term('0'), term('1', OTHER), term('2')]);
+      menuOf('0');
+      fireEvent.click(screen.getByTestId('menu-close-others'));
+      expect(server().killed).toEqual(['2']);
+    });
+
+    it('a group’s Close all closes only the members this window shows', () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      history.replaceState(null, '', '/');
+      render(<App />);
+      send({
+        type: 'sessions',
+        tabs: [
+          term('0', undefined, { groupId: 'gaa111' }),
+          term('1', OTHER, { groupId: 'gaa111' }),
+          term('2', undefined, { groupId: 'gaa111' }),
+        ],
+        groups: [{ id: 'gaa111', color: 'blue' }],
+      });
+      fireEvent.contextMenu(screen.getByTestId('group-chip-gaa111'));
+      fireEvent.click(screen.getByTestId('group-menu-close-all'));
+      expect(server().killed).toEqual(['0', '2']);
+    });
+
+    // The order a group join sends is the full one: sent without the hidden tab, the server
+    // would append it at the end and move it out of its place.
+    it('keeps the other window’s tabs in place in the order "Add to group" sends', () => {
+      history.replaceState(null, '', '/');
+      render(<App />);
+      send({
+        type: 'sessions',
+        tabs: [term('0'), term('1', OTHER), term('2', undefined, { groupId: 'gaa111' })],
+        groups: [{ id: 'gaa111', color: 'blue' }],
+      });
+      menuOf('0');
+      fireEvent.click(screen.getByTestId('menu-add-to-gaa111'));
+      expect(server().groupUpdates).toEqual([
+        { id: 'gaa111', addIds: ['0'], order: ['1', '2', '0'] },
+      ]);
+    });
+  });
+
+  describe('opening a tab in a new window', () => {
+    let open: MockInstance<typeof window.open>;
+    beforeEach(() => {
+      open = vi.spyOn(window, 'open').mockReturnValue({} as Window);
+    });
+
+    it('moves the tab: the window it leaves stops showing it, pane and all', () => {
+      bootMain([term('0'), term('1'), term('2')]);
+      supported();
+      clickTab('1');
+      const wid = popOut('1', open);
+      expect(wid).toBeTruthy();
+      expect(open.mock.calls[0]![1]).toBe(`palmux-${wid}`);
+      expect(open.mock.calls[0]![2]).toBe('popup,width=1000,height=640');
+      expect(server().moves).toEqual([{ ids: ['1'], window: wid }]);
+      expect(stripIds()).toEqual(['0', '2']);
+      // The pane leaves in the same render, before the new window could attach.
+      expect(panes().map((p) => p.session)).toEqual(['0']);
+      expect(active()).toBe('0');
+    });
+
+    it('works for every kind', () => {
+      bootMain([term('0'), term('5', undefined, { kind: 'editor' })]);
+      supported();
+      const wid = popOut('5', open);
+      expect(server().moves).toEqual([{ ids: ['5'], window: wid }]);
+      expect(stripIds()).toEqual(['0']);
+    });
+
+    // A frame already on its way when the move is sent still names the old owner.
+    it('holds the move against a broadcast already in flight, until the server agrees', () => {
+      bootMain([term('0'), term('1'), term('2')]);
+      supported();
+      const wid = popOut('1', open)!;
+      broadcast(['0', '1', '2']); // in flight: the old owner
+      expect(stripIds()).toEqual(['0', '2']);
+      send({ type: 'sessions', tabs: [term('0'), term('1', wid), term('2')] }); // the server agrees
+      expect(stripIds()).toEqual(['0', '2']);
+      // The agreement spent the hold: when the window releases the tab, it is back at once.
+      broadcast(['0', '1', '2']);
+      expect(stripIds()).toEqual(['0', '1', '2']);
+    });
+
+    it('shows a tab again after 2 s when the server never moved it', () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      bootMain([term('0'), term('1'), term('2')]);
+      supported();
+      popOut('1', open);
+      broadcast(['0', '1', '2']); // the server refused: the old owner, for good
+      act(() => void vi.advanceTimersByTime(1999));
+      expect(stripIds()).toEqual(['0', '2']);
+      act(() => void vi.advanceTimersByTime(1));
+      expect(stripIds()).toEqual(['0', '1', '2']);
+    });
+
+    it('moves nothing, and says so, when the browser blocks the window', () => {
+      open.mockReturnValue(null);
+      bootMain([term('0'), term('1')]);
+      supported();
+      menuOf('1');
+      fireEvent.click(screen.getByTestId('menu-popout'));
+      expect(screen.getByText('New window blocked — allow popups for this site')).toBeTruthy();
+      expect(server().moves).toEqual([]);
+      expect(stripIds()).toEqual(['0', '1']);
+    });
+
+    // The window opens before the move is sent. Left open, it would hold no tab and no one would
+    // ever move one into it.
+    it('closes the window it opened when the move cannot be sent', () => {
+      const close = vi.fn();
+      open.mockReturnValue({ close } as unknown as Window);
+      bootMain([term('0'), term('1')]);
+      supported();
+      const ws = server() as unknown as { sendMoveToWindow: () => boolean };
+      vi.spyOn(ws, 'sendMoveToWindow').mockReturnValue(false);
+      menuOf('1');
+      fireEvent.click(screen.getByTestId('menu-popout'));
+      expect(open).toHaveBeenCalledTimes(1);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(screen.getByText('Not connected — try again')).toBeTruthy();
+      expect(stripIds()).toEqual(['0', '1']);
+    });
+
+    // The server only knows a terminal once its pane attaches.
+    it('will not open a terminal no broadcast lists yet', () => {
+      bootMain([term('0'), term('1')]);
+      supported();
+      fireEvent.pointerDown(stripOf('p0').getByTestId('session-new'), { button: 0 });
+      tapPress(screen.getByTestId('dash-new-terminal'));
+      expect(shownIn('p0')).toBe('2');
+      menuOf('2');
+      fireEvent.click(screen.getByTestId('menu-popout'));
+      expect(screen.getByText('Wait for the terminal to start')).toBeTruthy();
+      expect(open).not.toHaveBeenCalled();
+      expect(server().moves).toEqual([]);
+      expect(stripIds()).toContain('2');
+    });
+
+    describe('an editor with unsaved text', () => {
+      const dirtyEditor = () => {
+        bootMain([term('0'), term('5', undefined, { kind: 'editor', url: '/home/u/notes.md' })]);
+        supported();
+        act(() => paneHost.onDirtyChange?.('5', true));
+      };
+
+      it('asks first, and Cancel moves nothing and opens nothing', () => {
+        const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+        dirtyEditor();
+        menuOf('5');
+        fireEvent.click(screen.getByTestId('menu-popout'));
+        expect(confirm).toHaveBeenCalledWith(
+          '1 editor tab has unsaved changes. Move and discard them?',
+        );
+        expect(open).not.toHaveBeenCalled();
+        expect(server().moves).toEqual([]);
+        expect(stripIds()).toEqual(['0', '5']);
+      });
+
+      it('moves on OK, and the moved tab leaves the dirty record, so Reload no longer counts it', () => {
+        const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+        dirtyEditor();
+        expect(stripSpy.renders.at(-1)!['dirty']).toEqual({ '5': true });
+        const wid = popOut('5', open);
+        expect(server().moves).toEqual([{ ids: ['5'], window: wid }]);
+        expect(confirm).toHaveBeenCalledTimes(1);
+        expect(stripSpy.renders.at(-1)!['dirty']).toEqual({});
+      });
+
+      it('asks nothing for a clean editor', () => {
+        const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+        bootMain([term('0'), term('5', undefined, { kind: 'editor' })]);
+        supported();
+        popOut('5', open);
+        expect(confirm).not.toHaveBeenCalled();
+        expect(server().moves).toHaveLength(1);
+      });
+    });
+  });
+
+  // A tab dragged from ANOTHER window. The receiver has no local drag, so it learns of the drag from
+  // a capture `dragover` on the window and reads the id on the drop. Nothing here is the browser's:
+  // the events are built by hand and carry the fields the app reads.
+  describe('a tab dragged between windows', () => {
+    const foreign = (id: string, dirty = false) => ({
+      types: dirty ? [TAB_DND_TYPE, TAB_DIRTY_DND_TYPE] : [TAB_DND_TYPE],
+      setData: () => {},
+      getData: () => id,
+      effectAllowed: '',
+      dropEffect: '',
+    });
+    const fire = (
+      type: 'dragover' | 'drop' | 'dragleave' | 'dragend',
+      el: Element,
+      dataTransfer: unknown,
+      extra: Record<string, unknown> = {},
+    ) => {
+      const ev = new Event(type, { bubbles: true, cancelable: true });
+      Object.assign(ev, { dataTransfer, clientX: 0, clientY: 0, relatedTarget: null, ...extra });
+      fireEvent(el, ev);
+    };
+    /** A drag from another window passes over the window. */
+    const hover = (id: string, dirty = false) =>
+      fire('dragover', document.body, foreign(id, dirty), { clientX: 500, clientY: 300 });
+    const overlays = () => screen.queryAllByTestId('group-drop-overlay');
+    /** Release the drag on the `index`th overlay, in `region` of its 300x300 body. */
+    const dropForeign = (id: string, index: number, region: keyof typeof REGION_AT) => {
+      const t = foreign(id);
+      const overlay = overlays()[index]!;
+      overlay.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 300, height: 300 }) as DOMRect;
+      const [x, y] = REGION_AT[region];
+      dragAt('dragover', overlay, t, x, y);
+      dragAt('drop', overlay, t, x, y);
+    };
+    const fromElsewhere = () => bootMain([term('0'), term('1'), term('2', OTHER)]);
+
+    afterEach(() => vi.useRealTimers());
+
+    describe('over the window', () => {
+      it('mounts the overlays and lights the strip under the pointer, though no local drag exists', () => {
+        fromElsewhere();
+        expect(overlays()).toHaveLength(0);
+        hover('2');
+        expect(overlays()).toHaveLength(1);
+        // The strip lights where the pointer is over it, as for another pane's tab.
+        const strip = stripOf('p0').getByTestId('session-tabs');
+        expect(strip).not.toHaveClass('drop-into');
+        dragAt('dragover', strip, foreign('2'));
+        expect(strip).toHaveClass('drop-into');
+      });
+
+      it('mounts an overlay on every pane', () => {
+        fromElsewhere();
+        dropOnPane('1', 0, 'right'); // p0 = [0], p1 = [1]
+        hover('2');
+        expect(overlays()).toHaveLength(2);
+      });
+
+      it('ignores a drag that carries no tab', () => {
+        fromElsewhere();
+        fire('dragover', document.body, { ...foreign('2'), types: ['Files'] });
+        expect(overlays()).toHaveLength(0);
+      });
+
+      // The clear is by the clock: the browser tells a window nothing when a drag it was watching is
+      // released over another window, so each `dragover` buys 1000 ms, and an abandoned drag goes.
+      it('goes 1000 ms after the last dragover, and each dragover restarts the count', () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        fromElsewhere();
+        hover('2');
+        act(() => void vi.advanceTimersByTime(999));
+        expect(overlays()).toHaveLength(1);
+        hover('2');
+        act(() => void vi.advanceTimersByTime(999));
+        expect(overlays()).toHaveLength(1);
+        act(() => void vi.advanceTimersByTime(1));
+        expect(overlays()).toHaveLength(0);
+        expect(stripOf('p0').getByTestId('session-tabs')).not.toHaveClass('drop-into');
+      });
+
+      // Measured on Chrome 156 (X11): a STILL pointer is reported by one `dragover` every ~352 ms.
+      // A 300 ms clock unmounted the overlay between two repeats, the next repeat found nothing
+      // there to cancel it, and a release in that gap was lost.
+      it('stays through a still hold between dragover repeats, and a release then moves the tab', () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        fromElsewhere();
+        for (let i = 0; i < 5; i++) {
+          hover('2');
+          act(() => void vi.advanceTimersByTime(351));
+          expect(overlays()).toHaveLength(1);
+        }
+        hover('2');
+        act(() => void vi.advanceTimersByTime(400)); // released with no further dragover
+        expect(overlays()).toHaveLength(1);
+        const overlay = overlays()[0]!;
+        overlay.getBoundingClientRect = () =>
+          ({ left: 0, top: 0, width: 300, height: 300 }) as DOMRect;
+        dragAt('drop', overlay, foreign('2'), ...REGION_AT.centre);
+        expect(server().moves).toEqual([{ ids: ['2'], window: null }]);
+      });
+
+      it('goes when the drag leaves the viewport, and stays while the pointer is inside it', () => {
+        fromElsewhere();
+        hover('2');
+        // Browsers report a null `relatedTarget` between elements too: only the pointer says it left.
+        fire('dragleave', document.body, foreign('2'), { clientX: 500, clientY: 300 });
+        expect(overlays()).toHaveLength(1);
+        fire('dragleave', document.body, foreign('2'), { clientX: -1, clientY: 300 });
+        expect(overlays()).toHaveLength(0);
+        hover('2');
+        fire('dragleave', document.body, foreign('2'), {
+          clientX: window.innerWidth + 1,
+          clientY: 300,
+        });
+        expect(overlays()).toHaveLength(0);
+      });
+
+      it('goes one tick after a drop, so the overlay under the drop can still read it', () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        fromElsewhere();
+        hover('2');
+        fire('drop', document.body, foreign('2')); // claimed by nothing
+        expect(overlays()).toHaveLength(1);
+        act(() => void vi.advanceTimersByTime(0));
+        expect(overlays()).toHaveLength(0);
+      });
+    });
+
+    describe('dropped on a pane', () => {
+      it('an edge sends moveToWindow here and splits, and the broadcast that lists the tab splits nothing more', () => {
+        fromElsewhere();
+        hover('2');
+        dropForeign('2', 0, 'bottom');
+        expect(server().moves).toEqual([{ ids: ['2'], window: null }]);
+        // Held ahead of the server: the tab is here at once, in a pane of its own.
+        expect(strips()).toEqual([
+          { pane: 'p0', tabs: ['0', '1'], focused: false },
+          { pane: 'p1', tabs: ['2'], focused: true },
+        ]);
+        send({ type: 'sessions', tabs: [term('0'), term('1'), term('2')] });
+        expect(strips()).toEqual([
+          { pane: 'p0', tabs: ['0', '1'], focused: false },
+          { pane: 'p1', tabs: ['2'], focused: true },
+        ]);
+        expect(panes().map((p) => p.session)).toEqual(['0', '2']);
+      });
+
+      it('the centre joins that pane and shows the tab', () => {
+        fromElsewhere();
+        dropOnPane('1', 0, 'right'); // p0 = [0], p1 = [1]
+        hover('2');
+        dropForeign('2', 1, 'centre');
+        expect(server().moves).toEqual([{ ids: ['2'], window: null }]);
+        expect(strips()).toEqual([
+          { pane: 'p0', tabs: ['0'], focused: false },
+          { pane: 'p1', tabs: ['1', '2'], focused: true },
+        ]);
+        expect(shownIn('p1')).toBe('2');
+      });
+
+      // The pane a drop parks is for THAT move, and is spent in the render the hold first lists the
+      // tab. A move that runs out unconfirmed leaves nothing parked: the tab reaching this window
+      // later by any other path joins the focused pane and is not shown.
+      it('forgets where a move the server never made was to land', () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        fromElsewhere();
+        dropOnPane('1', 0, 'right'); // p0 = [0], p1 = [1]
+        clickTab('0'); // focus p0
+        hover('2');
+        dropForeign('2', 1, 'centre');
+        expect(server().moves).toEqual([{ ids: ['2'], window: null }]);
+        act(() => void vi.advanceTimersByTime(2000)); // nobody moved it
+        expect(strips().map((x) => x.tabs)).toEqual([['0'], ['1']]);
+        clickTab('0'); // the focused pane is not the one the drop was on
+        send({ type: 'sessions', tabs: [term('0'), term('1'), term('2')] });
+        expect(strips()).toEqual([
+          { pane: 'p0', tabs: ['0', '2'], focused: true },
+          { pane: 'p1', tabs: ['1'], focused: false },
+        ]);
+        expect(shownIn('p0')).toBe('0');
+        expect(shownIn('p1')).toBe('1');
+      });
+
+      it('a detached window takes it for itself', () => {
+        bootDetached([term('1', WID), term('5')]);
+        hover('5');
+        dropForeign('5', 0, 'centre');
+        expect(server().moves).toEqual([{ ids: ['5'], window: WID }]);
+      });
+
+      // The tab is not listed here until the server moves it, which a pane of its own would race.
+      it('an id no list has is ignored, and takes no pane', () => {
+        fromElsewhere();
+        hover('9');
+        dropForeign('9', 0, 'right');
+        expect(server().moves).toEqual([]);
+        expect(strips().map((x) => x.tabs)).toEqual([['0', '1']]);
+        expect(panes()).toHaveLength(1);
+      });
+
+      it('a tab this window already shows is an ordinary local drop, and sends nothing', () => {
+        fromElsewhere();
+        hover('1');
+        dropForeign('1', 0, 'right');
+        expect(server().moves).toEqual([]);
+        expect(strips().map((x) => x.tabs)).toEqual([['0'], ['1']]);
+      });
+    });
+
+    describe('dropped on a strip', () => {
+      it('moves the tab here and shows it in that pane', () => {
+        fromElsewhere();
+        dropOnPane('1', 0, 'right'); // p0 = [0], p1 = [1]
+        hover('2');
+        const strip = stripOf('p1').getByTestId('session-tabs');
+        const t = foreign('2');
+        dragAt('dragover', strip, t);
+        expect(strip).toHaveClass('drop-into');
+        expect(document.querySelectorAll('.drop-before, .drop-after')).toHaveLength(0);
+        fireEvent.drop(strip, { dataTransfer: t });
+        expect(server().moves).toEqual([{ ids: ['2'], window: null }]);
+        expect(strips().map((x) => x.tabs)).toEqual([['0'], ['1', '2']]);
+        expect(shownIn('p1')).toBe('2');
+        expect(server().reorders).toEqual([]);
+      });
+    });
+
+    describe('on the New-tab page', () => {
+      const emptied = () => bootMain([term('0', OTHER)]);
+
+      it('takes one centre overlay over the page, and a drop anywhere on it moves the tab into the one pane', () => {
+        emptied();
+        expect(screen.getByTestId('newtab-page')).toBeTruthy();
+        hover('0');
+        expect(overlays()).toHaveLength(1);
+        dropForeign('0', 0, 'left'); // an edge of a page is still the centre: there is nothing to split
+        expect(server().moves).toEqual([{ ids: ['0'], window: null }]);
+        expect(screen.queryByTestId('newtab-page')).toBeNull();
+        expect(strips()).toEqual([{ pane: 'p0', tabs: ['0'], focused: true }]);
+        expect(panes()).toEqual([{ slot: 'p0', session: '0', focused: false }]);
+      });
+
+      it('shows its preview over the whole page', () => {
+        emptied();
+        hover('0');
+        const overlay = overlays()[0]!;
+        overlay.getBoundingClientRect = () =>
+          ({ left: 0, top: 0, width: 300, height: 300 }) as DOMRect;
+        dragAt('dragover', overlay, foreign('0'), 20, 150);
+        expect(screen.getByTestId('group-drop-preview')).toHaveAttribute('data-region', 'centre');
+      });
+
+      it('mounts nothing for a drag that carries unsaved text', () => {
+        emptied();
+        hover('0', true);
+        expect(overlays()).toHaveLength(0);
+      });
+    });
+
+    describe('carrying unsaved text', () => {
+      const SAVE_FIRST = 'Save the file before moving it to another window';
+      beforeEach(() => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] }));
+
+      it('is no target: no overlay, no lit strip', () => {
+        fromElsewhere();
+        hover('2', true);
+        expect(overlays()).toHaveLength(0);
+        expect(stripOf('p0').getByTestId('session-tabs')).not.toHaveClass('drop-into');
+        expect(screen.getByText(SAVE_FIRST)).toBeTruthy();
+      });
+
+      it('says so once while it hovers, and again on the next entry into the window', () => {
+        fromElsewhere();
+        // A dragover every 50 ms for 2.5 s: well past the toast's own 1.4 s.
+        for (let i = 0; i < 50; i++) {
+          hover('2', true);
+          act(() => void vi.advanceTimersByTime(50));
+          if (i === 0) expect(screen.queryByText(SAVE_FIRST)).toBeTruthy();
+        }
+        expect(screen.queryByText(SAVE_FIRST)).toBeNull(); // not shown a second time
+        act(() => void vi.advanceTimersByTime(1000)); // the pointer left
+        hover('2', true);
+        expect(screen.getByText(SAVE_FIRST)).toBeTruthy();
+      });
+
+      // A still pointer is reported every ~352 ms. A clock shorter than that ended the "entry"
+      // between two repeats, so the toast came back on every one of them.
+      it('says so once through a still hold, reported every 352 ms', () => {
+        fromElsewhere();
+        hover('2', true);
+        expect(screen.getByText(SAVE_FIRST)).toBeTruthy();
+        for (let i = 0; i < 6; i++) {
+          act(() => void vi.advanceTimersByTime(352)); // 2.1 s in all, past the toast's own 1.4 s
+          hover('2', true);
+        }
+        expect(screen.queryByText(SAVE_FIRST)).toBeNull();
+      });
+    });
+
+    // The window the drag came FROM only hears `dragend`, with what the receiver answered.
+    describe('leaving this window', () => {
+      const dragStart = (id: string) => {
+        const t = dt();
+        fireEvent.dragStart(screen.getByTestId(`session-tab-${id}`), { dataTransfer: t });
+        t.setData(TAB_DND_TYPE, id);
+      };
+      const endWith = (dropEffect: string) =>
+        fire('dragend', document.body, { ...dt(), dropEffect });
+      const threeTabs = () => bootMain([term('0'), term('1'), term('2')]);
+
+      it('drops the tab on a `move` dragend that no drop here explains, and sends nothing', () => {
+        threeTabs();
+        dragStart('1');
+        endWith('move');
+        expect(stripIds()).toEqual(['0', '2']);
+        expect(panes().map((p) => p.session)).toEqual(['0']);
+        expect(server().moves).toEqual([]);
+      });
+
+      it('shows it again after 2 s when the server never moved it', () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        threeTabs();
+        dragStart('1');
+        endWith('move');
+        broadcast(['0', '1', '2']); // nobody took it
+        act(() => void vi.advanceTimersByTime(1999));
+        expect(stripIds()).toEqual(['0', '2']);
+        act(() => void vi.advanceTimersByTime(1));
+        expect(stripIds()).toEqual(['0', '1', '2']);
+      });
+
+      it.each(['none', 'copy', ''])('keeps the tab on a `%s` dragend', (dropEffect) => {
+        threeTabs();
+        dragStart('1');
+        endWith(dropEffect);
+        expect(stripIds()).toEqual(['0', '1', '2']);
+      });
+
+      // Any drop in this window is a local one, whoever took it and whatever it did.
+      it('keeps the tab when a drop landed in this window first', () => {
+        threeTabs();
+        dragStart('1');
+        fireEvent.drop(document.body, { dataTransfer: dt() });
+        endWith('move');
+        expect(stripIds()).toEqual(['0', '1', '2']);
+      });
+
+      it('forgets an earlier local drop when the next drag starts', () => {
+        threeTabs();
+        dragStart('1');
+        fireEvent.drop(document.body, { dataTransfer: dt() });
+        endWith('none');
+        dragStart('2');
+        endWith('move');
+        expect(stripIds()).toEqual(['0', '1']);
+      });
+
+      it('keeps a dirty editor: only a window that refuses it could have answered `move`', () => {
+        bootMain([term('0'), term('5', undefined, { kind: 'editor', url: '/home/u/notes.md' })]);
+        act(() => paneHost.onDirtyChange?.('5', true));
+        dragStart('5');
+        endWith('move');
+        expect(stripIds()).toEqual(['0', '5']);
+      });
+
+      it('keeps a terminal no broadcast lists yet', () => {
+        bootMain([term('0'), term('1')]);
+        fireEvent.pointerDown(stripOf('p0').getByTestId('session-new'), { button: 0 });
+        tapPress(screen.getByTestId('dash-new-terminal'));
+        expect(shownIn('p0')).toBe('2');
+        dragStart('2');
+        endWith('move');
+        // Held, it would hide the terminal the moment the server lists it.
+        broadcast(['0', '1', '2']);
+        expect(stripIds()).toEqual(['0', '1', '2']);
+      });
+    });
+
+    describe('a local drag', () => {
+      it('never shows the external overlays or lights a strip on its own', () => {
+        fromElsewhere();
+        const t = dt();
+        fireEvent.dragStart(screen.getByTestId('session-tab-1'), { dataTransfer: t });
+        t.setData(TAB_DND_TYPE, '1');
+        dragAt('dragover', document.body, t, 500, 300);
+        expect(stripOf('p0').getByTestId('session-tabs')).not.toHaveClass('drop-into');
+        // One overlay, for the local drag: p0 holds the tab, and the edges are live.
+        expect(overlays()).toHaveLength(1);
+        expect(server().moves).toEqual([]);
+      });
+
+      it('splits as before and sends nothing to the server', () => {
+        fromElsewhere();
+        dropOnPane('1', 0, 'right');
+        expect(strips().map((x) => x.tabs)).toEqual([['0'], ['1']]);
+        expect(server().moves).toEqual([]);
+      });
+
+      // A foreign drag stays live for 1000 ms after its last dragover. A drag of this window's own
+      // that starts inside that tail must not read as foreign, or its strip resolves no boundary.
+      it('started while a foreign drag is still fading out, is an ordinary reorder', () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        fromElsewhere();
+        hover('2');
+        act(() => void vi.advanceTimersByTime(100));
+        const t = dt();
+        fireEvent.dragStart(screen.getByTestId('session-tab-0'), { dataTransfer: t });
+        t.setData(TAB_DND_TYPE, '0');
+        // Nor does its own pane read it as foreign: a pane's centre takes no tab it already holds.
+        const overlay = overlays()[0]!;
+        overlay.getBoundingClientRect = () =>
+          ({ left: 0, top: 0, width: 300, height: 300 }) as DOMRect;
+        dragAt('dragover', overlay, t, ...REGION_AT.centre);
+        expect(screen.queryByTestId('group-drop-preview')).toBeNull();
+        const strip = stripOf('p0').getByTestId('session-tabs');
+        fireEvent.dragOver(screen.getByTestId('session-tab-1'), { dataTransfer: t });
+        expect(strip).not.toHaveClass('drop-into');
+        expect(document.querySelectorAll('.drop-before, .drop-after')).toHaveLength(1);
+        fireEvent.drop(strip, { dataTransfer: t });
+        expect(server().reorders).toEqual([['1', '0', '2']]);
+        expect(stripIds()).toEqual(['1', '0']);
+        expect(server().moves).toEqual([]);
+      });
+    });
+  });
+
+  describe('the item in the menu', () => {
+    it('is offered only once the server has said it supports detached windows', () => {
+      bootMain([term('0'), term('1')]);
+      menuOf('1');
+      expect(screen.queryByTestId('menu-popout')).toBeNull();
+      supported();
+      expect(screen.getByTestId('menu-popout')).toBeTruthy();
+      // The LAST `ready` decides: a rollback to an older server takes it away again.
+      supported(false);
+      expect(screen.queryByTestId('menu-popout')).toBeNull();
+    });
+
+    it('is not offered on the mobile layer, where the sheet has none either', () => {
+      localStorage.setItem('palmux-settings', JSON.stringify({ mobileMode: 'on' }));
+      bootMain([term('0'), term('1')]);
+      supported();
+      expect(screen.queryByTestId('menu-popout')).toBeNull();
+      act(() => drawer().onTabMenu('1'));
+      expect(screen.getByTestId('tab-sheet')).toBeTruthy();
+      expect(screen.queryByText(/open in new window/i)).toBeNull();
+    });
+
+    it('offers "Move to main window" in a detached window only', () => {
+      bootMain([term('0'), term('1')]);
+      supported();
+      menuOf('1');
+      expect(screen.getByTestId('menu-popout')).toBeTruthy();
+      expect(screen.queryByTestId('menu-move-main')).toBeNull();
+      cleanup();
+      sockets.length = 0;
+      bootDetached([term('1', WID), term('2', WID)]);
+      supported();
+      menuOf('1');
+      expect(screen.getByTestId('menu-move-main')).toBeTruthy();
+      expect(screen.getByTestId('menu-popout')).toBeTruthy(); // still: another new window
+    });
+
+    it('returns the tab to the main window, and the detached window stops showing it', () => {
+      bootDetached([term('1', WID), term('2', WID)]);
+      menuOf('1');
+      fireEvent.click(screen.getByTestId('menu-move-main'));
+      expect(server().moves).toEqual([{ ids: ['1'], window: null }]);
+      expect(stripIds()).toEqual(['2']);
+      expect(screen.queryByTestId('tab-menu')).toBeNull();
+    });
+
+    it('asks first for an editor with unsaved text, and Cancel keeps it here', () => {
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+      bootDetached([term('1', WID), term('5', WID, { kind: 'editor' })]);
+      act(() => paneHost.onDirtyChange?.('5', true));
+      menuOf('5');
+      fireEvent.click(screen.getByTestId('menu-move-main'));
+      expect(confirm).toHaveBeenCalledWith(
+        '1 editor tab has unsaved changes. Move and discard them?',
+      );
+      expect(server().moves).toEqual([]);
+      expect(stripIds()).toEqual(['1', '5']);
+    });
+  });
+
+  describe('a tab created here', () => {
+    it('is created in this detached window', () => {
+      bootDetached([term('1', WID)]);
+      act(() => void paneHost.review!.openFile('/home/u/new.md'));
+      expect(server().created).toEqual([{ kind: 'editor', url: '/home/u/new.md', window: WID }]);
+    });
+
+    it('names no window in the main window', () => {
+      bootMain([term('0')]);
+      act(() => void paneHost.review!.openFile('/home/u/new.md'));
+      expect(server().created).toEqual([{ kind: 'editor', url: '/home/u/new.md' }]);
+    });
+  });
+
+  describe('opening a file another window holds', () => {
+    const notes = (window?: string) =>
+      term('5', window, { kind: 'editor', url: '/home/u/notes.md' });
+
+    it('says so and changes nothing: this window cannot see the other one’s unsaved text', () => {
+      bootMain([term('0'), notes(OTHER)]);
+      act(() => void paneHost.review!.openFile('/home/u/notes.md'));
+      expect(screen.getByText('notes.md is open in another window')).toBeTruthy();
+      expect(server().created).toEqual([]);
+      expect(server().moves).toEqual([]);
+      expect(stripIds()).toEqual(['0']);
+    });
+
+    it('still selects the tab when this window holds it', () => {
+      bootMain([term('0'), notes()]);
+      act(() => void paneHost.review!.openFile('/home/u/notes.md'));
+      expect(shownIn('p0')).toBe('5');
+      expect(server().created).toEqual([]);
+    });
+  });
+
+  describe('opening a review another window holds', () => {
+    const APP_REPO = '/home/u/work/app';
+    const reply = (body: unknown) =>
+      Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+    beforeEach(() => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn((url: string) => {
+          const u = new URL(url, 'http://palmux');
+          return reply(
+            u.pathname === '/scm/status'
+              ? {
+                  top: APP_REPO,
+                  branch: 'main',
+                  unborn: false,
+                  merge: [],
+                  staged: [],
+                  changes: [{ path: 'c.ts', kind: 'ordinary', status: 'M', fp: 'fp-c' }],
+                  truncated: false,
+                  tookMs: 10,
+                  commentsRev: 0,
+                  attrEpoch: 'e0',
+                }
+              : null,
+          );
+        }),
+      );
+      localStorage.setItem(
+        'palmux-settings',
+        JSON.stringify({ mobileMode: 'off', scmRepos: [APP_REPO], scmActiveRepo: APP_REPO }),
+      );
+    });
+    afterEach(() => vi.unstubAllGlobals());
+    const review = (window?: string) =>
+      term('4', window, { kind: 'review', url: `changes:${APP_REPO}` });
+    const openRow = async () => {
+      fireEvent.click(screen.getByTestId('dock-rail-scm'));
+      fireEvent.click(await screen.findByTestId('scm-row-changes:c.ts'));
+    };
+
+    // A detached window has no dock to list Source Control rows in, so it cannot open a review: the
+    // move INTO a detached window is no longer reachable from its UI, and only the main window asks.
+    it('moves it into the main window when a detached window holds it', async () => {
+      bootMain([term('0'), review(OTHER)]);
+      await openRow();
+      expect(server().moves).toEqual([{ ids: ['4'], window: null }]);
+      expect(server().created).toEqual([]);
+      expect(shownIn('p0')).toBe('4');
+    });
+  });
+
+  // ── Reclaim, legacy and self-close ─────────────────────────────────────────────
+  // Ownership lives in the server's memory and dies with a restart or a long blip, so a detached
+  // window takes back the tabs its layout holds on the first `sessions` after each connect.
+  describe('reclaiming its tabs', () => {
+    /** A detached window as the browser boots it: the socket opens, then the server lists the tabs. */
+    const bootOnline = (tabs: Array<Record<string, unknown>>, path = `/window/${WID}`) => {
+      history.replaceState(null, '', path);
+      render(<App />);
+      connect();
+      send({ type: 'sessions', tabs });
+    };
+
+    it('takes back, after a server restart, the tabs its layout held', () => {
+      bootOnline([term('0'), term('1', WID), term('3', WID)]);
+      clickTab('3');
+      expect(server().moves).toEqual([]);
+      // The restart: the server forgot every owner, and the window reconnects.
+      connect();
+      send({ type: 'sessions', tabs: [term('0'), term('1'), term('3')] });
+      expect(server().moves).toEqual([{ ids: ['1', '3'], window: WID }]);
+      // Held while the server agrees: the window never shows an empty frame in between.
+      expect(stripIds()).toEqual(['1', '3']);
+      expect(active()).toBe('3');
+    });
+
+    it('claims, on its first connect, the tab it was opened for', () => {
+      bootOnline([term('0'), term('1')], `/window/${WID}?tab=1`);
+      expect(server().moves).toEqual([{ ids: ['1'], window: WID }]);
+      expect(stripIds()).toEqual(['1']);
+      expect(active()).toBe('1');
+      expect(location.pathname).toBe(`/window/${WID}`);
+      expect(location.search).toBe('');
+      // The server agrees: nothing is claimed twice.
+      send({ type: 'sessions', tabs: [term('0'), term('1', WID)] });
+      expect(server().moves).toHaveLength(1);
+      expect(stripIds()).toEqual(['1']);
+    });
+
+    it('takes nothing another window holds, and drops it from its layout', () => {
+      bootOnline([term('1', WID), term('5', WID)]);
+      expect(stripIds()).toEqual(['1', '5']);
+      connect();
+      send({ type: 'sessions', tabs: [term('1'), term('5', OTHER)] });
+      expect(server().moves).toEqual([{ ids: ['1'], window: WID }]);
+      expect(stripIds()).toEqual(['1']);
+    });
+
+    it('does not pull back a tab it sent to the main window, on a reconnect', () => {
+      bootOnline([term('1', WID), term('2', WID)], `/window/${WID}?tab=1`);
+      menuOf('1');
+      fireEvent.click(screen.getByTestId('menu-move-main'));
+      expect(server().moves).toEqual([{ ids: ['1'], window: null }]);
+      send({ type: 'sessions', tabs: [term('1'), term('2', WID)] }); // the server agrees
+      connect();
+      send({ type: 'sessions', tabs: [term('1'), term('2', WID)] });
+      expect(server().moves).toEqual([{ ids: ['1'], window: null }]);
+      expect(stripIds()).toEqual(['2']);
+    });
+
+    // The tab it was opened for is claimed ONCE: a later reconnect finds it in main's hands only
+    // because the user sent it there (or never, if the first claim was refused).
+    it('claims the tab it was opened for on the first connect only', () => {
+      bootOnline([term('0'), term('1', OTHER)], `/window/${WID}?tab=1`);
+      expect(server().moves).toEqual([]);
+      connect();
+      send({ type: 'sessions', tabs: [term('0'), term('1')] }); // released since
+      expect(server().moves).toEqual([]);
+    });
+
+    // A reclaim moves a tab INTO this window, where its editor already is: nothing unmounts, so
+    // there is nothing to confirm, and the unsaved flag that Reload and Close read must stay.
+    it('a reclaim of a dirty editor never asks, and keeps what it holds unsaved', () => {
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+      bootOnline([term('1', WID), term('5', WID, { kind: 'editor', url: '/home/u/notes.md' })]);
+      act(() => paneHost.onDirtyChange?.('5', true));
+      connect();
+      send({
+        type: 'sessions',
+        tabs: [term('1'), term('5', undefined, { kind: 'editor', url: '/home/u/notes.md' })],
+      });
+      expect(confirm).not.toHaveBeenCalled();
+      expect(server().moves).toEqual([{ ids: ['1', '5'], window: WID }]);
+      expect(stripIds()).toEqual(['1', '5']);
+      expect(stripSpy.renders.at(-1)!['dirty']).toEqual({ '5': true });
+    });
+
+    it('does nothing in a main window', () => {
+      bootMain([term('0'), term('1')]);
+      connect();
+      send({ type: 'sessions', tabs: [term('0'), term('1')] });
+      expect(server().moves).toEqual([]);
+    });
+
+    describe('from a retired pop-out address', () => {
+      it('becomes a detached window that claims the tab itself, and takes its address', () => {
+        bootOnline([term('2'), term('3')], '/popout/3');
+        const wid = /^\/window\/(w[0-9a-z]{10})$/.exec(location.pathname)?.[1];
+        expect(wid).toBeTruthy();
+        expect(server().url).toMatch(new RegExp(`/ws\\?control=1&window=${wid}$`));
+        expect(server().moves).toEqual([{ ids: ['3'], window: wid }]);
+        expect(stripIds()).toEqual(['3']);
+        expect(active()).toBe('3');
+        expect(screen.getByTestId('term-pane-p0')).toHaveAttribute('data-window', wid);
+        expect(location.search).toBe('');
+      });
+
+      it('knows the other retired form, /<id>?popout=1, the same way', () => {
+        bootOnline([term('2'), term('3')], '/3?popout=1');
+        expect(location.pathname).toMatch(/^\/window\/w[0-9a-z]{10}$/);
+        expect(server().moves).toMatchObject([{ ids: ['3'] }]);
+        expect(active()).toBe('3');
+      });
+
+      // The tab may be another window's by now: the legacy address claims what is free, nothing else.
+      it('claims nothing another window holds, and shows an empty window the New-tab page', () => {
+        bootOnline([term('2'), term('3', OTHER)], '/popout/3');
+        expect(server().moves).toEqual([]);
+        expect(panes()).toEqual([]);
+        expect(screen.getByTestId('newtab-page')).toBeTruthy();
+      });
+    });
+
+    describe('on a server without detached windows', () => {
+      it('says so, shows the New-tab page, claims nothing and never closes itself', () => {
+        const close = vi.spyOn(window, 'close').mockImplementation(() => {});
+        history.replaceState(null, '', `/window/${WID}?tab=1`);
+        render(<App />);
+        connect();
+        supported(false);
+        send({ type: 'sessions', tabs: [term('0'), term('1')] });
+        expect(screen.getByText('This server does not support detached windows')).toBeTruthy();
+        expect(screen.getByTestId('newtab-page')).toBeTruthy();
+        expect(server().moves).toEqual([]);
+        expect(panes()).toEqual([]);
+        expect(close).not.toHaveBeenCalled();
+        expect(server().closings).toBe(0);
+      });
+
+      it('says nothing on a server that supports them', () => {
+        bootOnline([term('0'), term('1')], `/window/${WID}?tab=1`);
+        supported();
+        expect(screen.queryByText('This server does not support detached windows')).toBeNull();
+      });
+
+      // An open against a server that cannot hold the tab is not the first open that counts: the
+      // window claims the tab it was opened for on the first connect to a server that can.
+      it('claims the tab it was opened for once a reconnect finds a server that has them', () => {
+        history.replaceState(null, '', `/window/${WID}?tab=1`);
+        render(<App />);
+        connect();
+        supported(false);
+        send({ type: 'sessions', tabs: [term('0'), term('1')] });
+        expect(server().moves).toEqual([]);
+        // The server is upgraded and the window reconnects.
+        connect();
+        supported();
+        send({ type: 'sessions', tabs: [term('0'), term('1')] });
+        expect(server().moves).toEqual([{ ids: ['1'], window: WID }]);
+        // It opens on that tab, as a first connect to such a server would, and leaves the page.
+        send({ type: 'sessions', tabs: [term('0'), term('1', WID)] });
+        expect(stripIds()).toEqual(['1']);
+        expect(active()).toBe('1');
+        expect(screen.queryByTestId('newtab-page')).toBeNull();
+      });
+    });
+
+    // A reconnect never moves the selection: the tab a claim brings back joins the strip.
+    it('keeps the tab it shows when a reconnect takes back another', () => {
+      bootOnline([term('1', WID), term('3', WID)]);
+      clickTab('1');
+      expect(active()).toBe('1');
+      connect();
+      send({ type: 'sessions', tabs: [term('1', WID), term('3')] });
+      expect(server().moves).toEqual([{ ids: ['3'], window: WID }]);
+      send({ type: 'sessions', tabs: [term('1', WID), term('3', WID)] });
+      expect(stripIds()).toEqual(['1', '3']);
+      expect(active()).toBe('1');
+    });
+
+    // Nor does it take a window off the New-tab page it is on: a tab its strip held there comes
+    // back to the strip, still not selected.
+    it('stays on the New-tab page when a later reconnect takes back a tab its strip held', () => {
+      bootOnline([term('0'), term('1', OTHER)]);
+      expect(screen.getByTestId('newtab-page')).toBeTruthy();
+      send({ type: 'sessions', tabs: [term('0'), term('1', OTHER), term('2', WID)] });
+      expect(stripIds()).toEqual(['2']);
+      expect(screen.getByTestId('newtab-page')).toBeTruthy();
+      // The server restarts and forgets every owner.
+      connect();
+      send({ type: 'sessions', tabs: [term('0'), term('1'), term('2')] });
+      expect(server().moves).toEqual([{ ids: ['2'], window: WID }]);
+      send({ type: 'sessions', tabs: [term('0'), term('1'), term('2', WID)] });
+      expect(stripIds()).toEqual(['2']);
+      expect(screen.getByTestId('newtab-page')).toBeTruthy();
+      expect(panes()).toEqual([]);
+    });
+  });
+
+  describe('closing itself', () => {
+    let close: MockInstance<typeof window.close>;
+    beforeEach(() => {
+      close = vi.spyOn(window, 'close').mockImplementation(() => {});
+    });
+    const bootOnline = (tabs: Array<Record<string, unknown>>, path = `/window/${WID}`) => {
+      history.replaceState(null, '', path);
+      render(<App />);
+      connect();
+      send({ type: 'sessions', tabs });
+      supported();
+    };
+
+    it('announces and closes when its last tab leaves', () => {
+      bootOnline([term('0'), term('1', WID)], `/window/${WID}?tab=1`);
+      const order: string[] = [];
+      const ws = server() as unknown as { sendWindowClosing: () => boolean };
+      vi.spyOn(ws, 'sendWindowClosing').mockImplementation(() => !!order.push('closing'));
+      close.mockImplementation(() => void order.push('close'));
+      // The tab went to the main window (from here, or by a drag into it).
+      send({ type: 'sessions', tabs: [term('0'), term('1')] });
+      expect(order).toEqual(['closing', 'close']);
+    });
+
+    it('closes when the user moves the last tab out', () => {
+      bootOnline([term('0'), term('1', WID)], `/window/${WID}?tab=1`);
+      menuOf('1');
+      fireEvent.click(screen.getByTestId('menu-move-main'));
+      expect(server().closings).toBe(1);
+      expect(close).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not close while a tab is left', () => {
+      bootOnline([term('0'), term('1', WID), term('2', WID)], `/window/${WID}?tab=1`);
+      send({ type: 'sessions', tabs: [term('0'), term('1'), term('2', WID)] });
+      expect(close).not.toHaveBeenCalled();
+      expect(server().closings).toBe(0);
+    });
+
+    // A window opened by hand with nothing to show is a window the user can still use.
+    it('does not close a window that never held a tab', () => {
+      bootOnline([term('0')]);
+      expect(close).not.toHaveBeenCalled();
+      expect(screen.getByTestId('newtab-page')).toBeTruthy();
+    });
+
+    it('does not close on a server that has not said it supports detached windows', () => {
+      history.replaceState(null, '', `/window/${WID}?tab=1`);
+      render(<App />);
+      connect();
+      send({ type: 'sessions', tabs: [term('0'), term('1', WID)] });
+      send({ type: 'sessions', tabs: [term('0'), term('1')] });
+      expect(close).not.toHaveBeenCalled();
+      expect(server().closings).toBe(0);
+    });
+
+    it('does not close while it reclaims, and closes when the reclaim clears', () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      bootOnline([term('1', WID)]);
+      connect();
+      send({ type: 'sessions', tabs: [term('1')] }); // a restart: the claim goes out
+      expect(server().moves).toEqual([{ ids: ['1'], window: WID }]);
+      // The server never answers: the hold on the tab runs out, and the window shows nothing, yet
+      // the claim is still in flight.
+      act(() => void vi.advanceTimersByTime(2000));
+      expect(stripIds()).toEqual([]);
+      expect(close).not.toHaveBeenCalled();
+      // The next broadcast ends the claim whether or not it was granted: nothing is left.
+      send({ type: 'sessions', tabs: [term('1')] });
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(server().closings).toBe(1);
+    });
+
+    // A terminal this window just created is in no list until its pane attaches.
+    it('does not close while a terminal it just created is pending', () => {
+      bootOnline([term('0'), term('1', WID)], `/window/${WID}?tab=1`);
+      fireEvent.pointerDown(stripOf('p0').getByTestId('session-new'), { button: 0 });
+      tapPress(screen.getByTestId('dash-new-terminal'));
+      expect(shownIn('p0')).toBe('2');
+      menuOf('1');
+      fireEvent.click(screen.getByTestId('menu-move-main'));
+      expect(stripIds()).toEqual(['2']);
+      expect(close).not.toHaveBeenCalled();
+      send({ type: 'sessions', tabs: [term('0'), term('1'), term('2', WID)] });
+      expect(stripIds()).toEqual(['2']);
+      expect(close).not.toHaveBeenCalled();
+    });
+
+    // The address was opened by hand, so the browser refuses `window.close()`: the window stays.
+    it('shows the New-tab page when the browser refuses to close it', async () => {
+      bootOnline([term('0'), term('1', WID)], `/window/${WID}?tab=1`);
+      send({ type: 'sessions', tabs: [term('0'), term('1')] });
+      expect(close).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(screen.getByTestId('newtab-page')).toBeTruthy());
+      expect(panes()).toEqual([]);
+    });
+
+    // Each broadcast hands an empty window a new empty list: asking again every time would send a
+    // `windowClosing` per title change for as long as the window stays open.
+    it('asks the browser once, not on every broadcast that follows a refusal', () => {
+      bootOnline([term('0'), term('1', WID)], `/window/${WID}?tab=1`);
+      send({ type: 'sessions', tabs: [term('0'), term('1')] });
+      send({ type: 'sessions', tabs: [term('0', undefined, { title: 'a' }), term('1')] });
+      send({ type: 'sessions', tabs: [term('0', undefined, { title: 'b' }), term('1')] });
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(server().closings).toBe(1);
+      // A tab dragged in and out again is a new last tab.
+      send({ type: 'sessions', tabs: [term('0'), term('1', WID)] });
+      send({ type: 'sessions', tabs: [term('0'), term('1')] });
+      expect(close).toHaveBeenCalledTimes(2);
+    });
+
+    it('never closes a main window', () => {
+      bootMain([term('0')]);
+      supported();
+      send({ type: 'sessions', tabs: [] });
+      expect(close).not.toHaveBeenCalled();
+      expect(server().closings).toBe(0);
+      expect(screen.getByTestId('newtab-page')).toBeTruthy();
+    });
+
+    describe('when the page is hidden', () => {
+      it('tells the server a detached window is going, so its tabs return in seconds', () => {
+        bootOnline([term('1', WID)], `/window/${WID}?tab=1`);
+        fireEvent(window, new Event('pagehide'));
+        expect(server().closings).toBe(1);
+        expect(close).not.toHaveBeenCalled();
+      });
+
+      it('says nothing from a main window', () => {
+        bootMain([term('0')]);
+        fireEvent(window, new Event('pagehide'));
+        expect(server().closings).toBe(0);
+      });
+    });
+  });
+
+  // ── Chrome, shortcuts and the + dialog ──────────────────────────────────────────
+  describe('chrome', () => {
+    it('draws the editor-groups window without the dock, the titlebar or any bar', () => {
+      localStorage.setItem('palmux-settings', JSON.stringify({ mobileMode: 'on' }));
+      bootDetached([
+        term('1', WID),
+        term('4', WID, { kind: 'review', url: 'changes:/home/u/app' }),
+      ]);
+      clickTab('4');
+      const app = document.querySelector('.app')!;
+      expect(app).toHaveClass('detached');
+      expect(app).not.toHaveClass('popout');
+      expect(app).not.toHaveClass('mobile');
+      expect(screen.queryByTestId('dock')).toBeNull();
+      expect(screen.queryByTestId('dock-rail')).toBeNull();
+      expect(screen.queryByTestId('app-menu-button')).toBeNull();
+      expect(document.querySelector('.wco-titlebar')).toBeNull();
+      expect(screen.queryByTestId('drawer')).toBeNull();
+      expect(screen.queryByTestId('tab-sheet')).toBeNull();
+      expect(screen.queryByTestId('review-bar')).toBeNull();
+      expect(document.getElementById('extra-keys-bar')).toBeNull();
+      // The pop-out's own bar and its return button are gone for good.
+      expect(document.querySelector('.popout-bar')).toBeNull();
+      expect(screen.queryByTestId('popout-return')).toBeNull();
+      // Strips, as in the main window.
+      expect(strips().map((x) => x.tabs)).toEqual([['1', '4']]);
+    });
+
+    it('leaves the main window as it was', () => {
+      bootMain([term('0')]);
+      expect(document.querySelector('.app')).not.toHaveClass('detached');
+      expect(document.querySelector('.wco-titlebar')).not.toBeNull();
+      expect(screen.getByTestId('dock-rail')).toBeTruthy();
+    });
+
+    it('splits inside the window, as the main window does', () => {
+      bootDetached([term('1', WID), term('3', WID)]);
+      splitVia('3');
+      expect(strips().map((x) => x.tabs)).toEqual([['1'], ['3']]);
+    });
+  });
+
+  describe('the + in a detached window', () => {
+    const plus = () => fireEvent.pointerDown(stripOf('p0').getByTestId('session-new'), { button: 0 });
+
+    it('opens the New-tab chooser in a dialog, because the window has no dock', () => {
+      bootDetached([term('1', WID)]);
+      expect(screen.queryByTestId('newtab-dialog')).toBeNull();
+      plus();
+      const dialog = screen.getByTestId('newtab-dialog');
+      expect(within(dialog).getByTestId('dash-new-terminal')).toBeTruthy();
+      expect(screen.queryByTestId('dock')).toBeNull();
+      expect(localStorage.getItem('palmux-dock-view')).toBeNull();
+    });
+
+    it('creates a terminal in this window: the dialog closes and the pane attaches with its id', () => {
+      bootDetached([term('0'), term('1', WID)]);
+      plus();
+      expect(screen.getByTestId('newtab-dialog')).toBeTruthy();
+      tapPress(screen.getByTestId('dash-new-terminal'));
+      expect(screen.queryByTestId('newtab-dialog')).toBeNull();
+      expect(shownIn('p0')).toBe('2'); // 0 is main's, 1 is ours: the next free id
+      expect(screen.getByTestId('term-pane-p0')).toHaveAttribute('data-session', '2');
+      expect(screen.getByTestId('term-pane-p0')).toHaveAttribute('data-window', WID);
+    });
+
+    it('creates the other kinds in this window too, and closes the dialog', () => {
+      bootDetached([term('1', WID)]);
+      plus();
+      expect(screen.getByTestId('newtab-dialog')).toBeTruthy();
+      tapPress(screen.getByTestId('dash-new-editor'));
+      expect(screen.queryByTestId('newtab-dialog')).toBeNull();
+      expect(server().created).toEqual([{ kind: 'editor', window: WID }]);
+    });
+
+    it('closes on Cancel and on Escape, creating nothing', () => {
+      bootDetached([term('1', WID)]);
+      plus();
+      fireEvent.click(screen.getByTestId('newtab-dialog-cancel'));
+      expect(screen.queryByTestId('newtab-dialog')).toBeNull();
+      plus();
+      expect(screen.getByTestId('newtab-dialog')).toBeTruthy();
+      fireEvent.keyDown(document, { key: 'Escape' });
+      expect(screen.queryByTestId('newtab-dialog')).toBeNull();
+      expect(server().created).toEqual([]);
+      expect(strips().map((x) => x.tabs)).toEqual([['1']]);
+    });
+
+    // Closing is the one thing the dialog asks for, so it has one control for it, not a Cancel and
+    // a Close side by side.
+    it('has one action, Close, and it closes the dialog', () => {
+      bootDetached([term('1', WID)]);
+      plus();
+      const dialog = screen.getByTestId('newtab-dialog');
+      expect(within(dialog).queryByTestId('newtab-dialog-confirm')).toBeNull();
+      const close = within(dialog).getByTestId('newtab-dialog-cancel');
+      expect(close).toHaveTextContent('Close');
+      fireEvent.click(close);
+      expect(screen.queryByTestId('newtab-dialog')).toBeNull();
+      expect(server().created).toEqual([]);
+    });
+
+    it('is what the New-tab chord opens, too', () => {
+      bootDetached([term('1', WID)]);
+      fireEvent.keyDown(window, { key: 't', ctrlKey: true, shiftKey: true });
+      expect(screen.getByTestId('newtab-dialog')).toBeTruthy();
+      expect(localStorage.getItem('palmux-dock-view')).toBeNull();
+    });
+
+    it('is still the dock’s view in the main window, where there is a dock', () => {
+      bootMain([term('0')]);
+      fireEvent.pointerDown(stripOf('p0').getByTestId('session-new'), { button: 0 });
+      expect(screen.queryByTestId('newtab-dialog')).toBeNull();
+      expect(screen.getByTestId('dock')).toHaveAttribute('data-view', 'newtab');
+    });
+  });
+
+  describe('dock shortcuts in a detached window', () => {
+    const flush = () => act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+
+    it('do nothing: the Settings chord opens nothing and writes no dock view', () => {
+      bootDetached([term('1', WID)]);
+      fireEvent.keyDown(window, { key: ',', ctrlKey: true });
+      expect(screen.queryByTestId('dock')).toBeNull();
+      expect(screen.queryByTestId('newtab-dialog')).toBeNull();
+      expect(localStorage.getItem('palmux-dock-view')).toBeNull();
+    });
+
+    it('do nothing: the Source Control chord opens nothing either', () => {
+      bootDetached([term('1', WID)]);
+      fireEvent.keyDown(window, { key: 'g', ctrlKey: true, altKey: true });
+      expect(screen.queryByTestId('dock')).toBeNull();
+      expect(localStorage.getItem('palmux-dock-view')).toBeNull();
+    });
+
+    it('are not offered by the command palette, and the rest still is', async () => {
+      bootDetached([term('1', WID)]);
+      fireEvent.keyDown(window, { key: 'p', ctrlKey: true, shiftKey: true });
+      await flush();
+      expect(screen.getByTestId('palette-item-newTab')).toBeTruthy();
+      expect(screen.getByTestId('palette-item-tips')).toBeTruthy();
+      expect(screen.queryByTestId('palette-item-settings')).toBeNull();
+      expect(screen.queryByTestId('palette-item-openSourceControl')).toBeNull();
+    });
+
+    it('are offered by the main window’s palette', async () => {
+      bootMain([term('0')]);
+      fireEvent.keyDown(window, { key: 'p', ctrlKey: true, shiftKey: true });
+      await flush();
+      expect(screen.getByTestId('palette-item-settings')).toBeTruthy();
+      expect(screen.getByTestId('palette-item-openSourceControl')).toBeTruthy();
+    });
+
+    it('leave the main window’s dock view alone', () => {
+      localStorage.setItem('palmux-dock-view', 'files');
+      bootDetached([term('1', WID)]);
+      fireEvent.keyDown(window, { key: ',', ctrlKey: true });
+      expect(localStorage.getItem('palmux-dock-view')).toBe('files');
+    });
+  });
+
+  describe('the dictation history in a detached window', () => {
+    beforeEach(() => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(() => Promise.resolve({ ok: false, status: 503 })),
+      );
+    });
+    afterEach(() => vi.unstubAllGlobals());
+
+    // The toast's way back to a kept recording leads to the history panel: there is no dock view.
+    it('is the panel a failed transcription’s toast opens', async () => {
+      bootDetached([term('1', WID)]);
+      act(() => dictationSpy.params!.onError('Transcription failed — recording kept', true));
+      fireEvent.click(screen.getByTestId('toast-action'));
+      expect(screen.getByRole('dialog', { name: 'Dictation history' })).toBeTruthy();
+      expect(screen.queryByTestId('dock')).toBeNull();
+      expect(localStorage.getItem('palmux-dock-view')).toBeNull();
+      await act(async () => {}); // the history's fetch settles
     });
   });
 });
