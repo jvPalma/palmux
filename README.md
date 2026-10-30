@@ -5,6 +5,8 @@ the host running the server. No multiplexer required — and when you do run `tm
 
 <a href="docs/media/palmux-1.2.0.mp4"><img src="docs/media/palmux-1.2.0-poster.jpg" alt="palmux 1.2.0 tour: three panes with btop, git and a diff review with a comment" width="100%"></a>
 
+
+https://github.com/user-attachments/assets/a4a1cf45-205c-413e-bc26-0e6b648fce5f
 <p align="center"><a href="docs/media/palmux-1.2.0.mp4"><b>▶ Watch the 45-second tour of 1.2.0</b></a></p>
 
 ## What it is
