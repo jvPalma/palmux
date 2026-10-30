@@ -26,6 +26,7 @@ import { cell0FromClient } from './touch';
 import { openLink } from './useTerminal';
 import { useMobileGestures } from '../mobile/useMobileGestures';
 import { WsClient } from '../lib/ws';
+import { downloadFromServer } from './download';
 import { wsUrlFor } from '../session/session-url';
 import type { PaneApi, SplitRegistry } from '../session/SplitFocusContext';
 
@@ -53,7 +54,7 @@ interface TerminalPaneProps {
   /** App-level block (a panel/chooser is up) — drop terminal input while set. */
   isBlocked: () => boolean;
   onAutoCopy: () => void;
-  onUploadError: (msg: string) => void;
+  onTransferError: (msg: string) => void;
   /** Tap/click focuses this slot. */
   onFocusRequest: (slot: string) => void;
   /** Read-and-clear the tmux session a freshly chosen terminal should open in.
@@ -85,7 +86,7 @@ export const TerminalPane = ({
   maxUploadBytes,
   isBlocked,
   onAutoCopy,
-  onUploadError,
+  onTransferError,
   onFocusRequest,
   takeSpawnTmux,
   window: windowId,
@@ -104,6 +105,8 @@ export const TerminalPane = ({
   isBlockedRef.current = isBlocked;
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+  const onTransferErrorRef = useRef(onTransferError);
+  onTransferErrorRef.current = onTransferError;
   const [exited, setExited] = useState(false);
   const [detached, setDetached] = useState(false);
   const [reconnectNonce, setReconnectNonce] = useState(0);
@@ -237,7 +240,7 @@ export const TerminalPane = ({
     isBlocked,
     getFocused,
     onUploaded,
-    onError: onUploadError,
+    onError: onTransferError,
   });
   uploadPasteRef.current = (file) => void uploadFile(file);
 
@@ -370,6 +373,15 @@ export const TerminalPane = ({
         // move's hold, which a broadcast this window never heard can cause.
         if (msg.moved) exitTimer = setTimeout(() => setDetached(true), MOVED_TAKEOVER_MS);
         else setDetached(true);
+      } else if (msg.type === 'download') {
+        // `palmux download` ran in this terminal. One at a time, so the browser saves the
+        // files in the order they were typed.
+        void (async () => {
+          for (const path of msg.paths) {
+            const error = await downloadFromServer(path);
+            if (error) onTransferErrorRef.current(`${error}: ${path}`);
+          }
+        })();
       }
       // sessions / settings / extraKeys / fonts / ready / tabCreated arrive here
       // too (broadcasts go to every socket) but are the control socket's job.

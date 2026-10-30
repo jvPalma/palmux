@@ -1076,7 +1076,7 @@ export function App() {
       .catch(() => showToast('Copy failed — see console'));
   }, [showToast, registry]);
   const onAutoCopy = useCallback(() => showToast('Copied'), [showToast]);
-  const onUploadError = useCallback((msg: string) => showToast(msg), [showToast]);
+  const onTransferError = useCallback((msg: string) => showToast(msg), [showToast]);
 
   // Every "the words are still there" message needs a way to REACH them, and
   // the history lives in two different hosts: a dock view on desktop, a panel
@@ -1245,7 +1245,7 @@ export function App() {
   // deliberately plain — paths are usually copied straight out of the terminal.
   const doDownload = useCallback(() => {
     const p = window.prompt(
-      'Download from server — absolute path, glob, or directory\n(e.g. /home/user/notes/report.md or /home/user/notes/*.md)',
+      'Download from server — absolute or ~/ path, glob, or directory\n(e.g. ~/notes/report.md or /home/user/notes/*.md)',
     );
     // `trim()` only DETECTS a blank entry. The path goes out exactly as typed: a name
     // may end in a space, and trimming downloaded its sibling. A leading space is not
@@ -3099,7 +3099,7 @@ export function App() {
               maxUploadBytes={maxUploadBytes}
               paneBlocked={paneBlocked}
               onAutoCopy={onAutoCopy}
-              onUploadError={onUploadError}
+              onTransferError={onTransferError}
               onFocusRequest={focusLeafById}
               takeSpawnTmux={takeSpawnTmux}
               terminalGestures={terminalGestures}

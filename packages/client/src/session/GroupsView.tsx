@@ -83,7 +83,7 @@ interface GroupsViewProps {
   maxUploadBytes: number;
   paneBlocked: () => boolean;
   onAutoCopy: () => void;
-  onUploadError: (msg: string) => void;
+  onTransferError: (msg: string) => void;
   onFocusRequest: (slot: string) => void;
   takeSpawnTmux: (id: string) => string | null | undefined;
   terminalGestures: MobileGestures;
@@ -128,7 +128,7 @@ export const GroupsView = (props: GroupsViewProps) => {
     maxUploadBytes,
     paneBlocked,
     onAutoCopy,
-    onUploadError,
+    onTransferError,
     onFocusRequest,
     takeSpawnTmux,
     terminalGestures,
@@ -254,7 +254,7 @@ export const GroupsView = (props: GroupsViewProps) => {
                 maxUploadBytes={maxUploadBytes}
                 isBlocked={paneBlocked}
                 onAutoCopy={onAutoCopy}
-                onUploadError={onUploadError}
+                onTransferError={onTransferError}
                 onFocusRequest={onFocusRequest}
                 takeSpawnTmux={takeSpawnTmux}
                 window={windowId ?? undefined}

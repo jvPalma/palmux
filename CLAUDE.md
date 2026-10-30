@@ -2831,6 +2831,8 @@ user-facing interaction.
   PTY (the shell can already read anything). Caps: 500 files / 256 MB per zip. The pattern is used
   exactly as given (`x` and `x ` are two files; it used to be trimmed and served the sibling), with
   `isAbsolute` on the raw string; a blank pattern is a 400, as is a relative or leading-space one.
+  The one rewrite is a leading `~` or `~/`, which becomes the server's `os.homedir()` ($HOME), as a
+  shell reads it, because paths are copied out of the terminal; `~user` is NOT expanded (still a 400).
 - **Inline images** (`@xterm/addon-image` + `terminal/image-support.ts`, `settings.inlineImages`,
   DEFAULT ON): real pixels in the terminal — **SIXEL** and **iTerm2 IIP**, drawn onto the addon's own
   `xterm-image-layer` canvas above the WebGL one (verified live: `timg -ps` renders in colour with

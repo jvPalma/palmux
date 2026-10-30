@@ -5,7 +5,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { inflateRawSync } from 'node:zlib';
 import type { FastifyInstance } from 'fastify';
 import { DEFAULT_APP_CONFIG, type AppConfig } from './app-config';
@@ -247,6 +247,43 @@ describe('resolveDownload uses the pattern exactly as given', () => {
     } finally {
       process.chdir(before);
     }
+  });
+
+  // `~` is the server's $HOME, the way a shell reads it: a path copied out of the
+  // terminal often starts with it. Only `~` and `~/` expand; `~user` is not ours to guess.
+  describe('a leading ~', () => {
+    const withHome = async <T>(home: string, fn: () => Promise<T>): Promise<T> => {
+      const before = process.env['HOME'];
+      process.env['HOME'] = home;
+      try {
+        return await fn();
+      } finally {
+        process.env['HOME'] = before;
+      }
+    };
+
+    it('expands ~/ to $HOME for a file', async () => {
+      const res = await withHome(dir, () => resolveDownload('~/a.md'));
+      expect(res).toMatchObject({ kind: 'file', path: join(dir, 'a.md'), name: 'a.md' });
+    });
+
+    it('expands ~/ inside a glob', async () => {
+      const res = await withHome(dir, () => resolveDownload('~/*.md'));
+      expect(res).toMatchObject({ kind: 'zip', base: dir });
+      if (res.kind === 'zip') expect(res.files.sort()).toEqual([join(dir, 'a.md'), join(dir, 'b.md')]);
+    });
+
+    it('expands a bare ~ to $HOME as a directory', async () => {
+      const res = await withHome(dir, () => resolveDownload('~'));
+      expect(res).toMatchObject({ kind: 'zip', base: dirname(dir), zipName: `${basename(dir)}.zip` });
+    });
+
+    it('does not expand ~user or a ~ that is not at the start', async () => {
+      await withHome(dir, async () => {
+        expect(await resolveDownload('~other/a.md')).toMatchObject({ kind: 'error', status: 400 });
+        expect(await resolveDownload(' ~/a.md')).toMatchObject({ kind: 'error', status: 400 });
+      });
+    });
   });
 
   it('keeps its blank contract: a blank pattern is a 400', async () => {

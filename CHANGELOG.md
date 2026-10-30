@@ -55,6 +55,8 @@ fresh code inspection and a browser end-to-end pass before it went live.
   New-tab page. Every main window, on every device, hides tabs a detached window holds.
 - **Code font size.** Settings › Appearance › Code font size sets the review's and the editor's
   size on this device, apart from the terminal's. The review also has a − and + stepper for it.
+- **Download from `~/`.** The Download prompt and `GET /download` accept a path or glob that
+  starts with `~/` (or a bare `~`), read as the server's `$HOME`.
 
 ### Changed
 

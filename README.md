@@ -503,7 +503,7 @@ turns on the on-screen affordances:
   Claude Code) or press Enter. Capped by `maxUploadBytes` (50 MB default).
 - **File download** — the ⬇ button (top bar on desktop, drawer footer on mobile) pulls files
   OFF the server: give it an absolute path for a single file, a glob (`/home/user/notes/*.md`),
-  or a directory — globs and directories arrive as one `.zip` (built in-process, no extra
+  or a directory (a leading `~/` is the server's `$HOME`) — globs and directories arrive as one `.zip` (built in-process, no extra
   tools). Also works as a plain URL: `GET /download?path=<path-or-glob>` (cookie-gated like
   everything else — same trust boundary as the shell itself, which can already read any file).
   Caps: 500 files / 256 MB per zip.

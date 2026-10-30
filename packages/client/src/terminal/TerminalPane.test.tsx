@@ -89,8 +89,12 @@ vi.mock('./useFileUpload', () => ({
   }),
 }));
 vi.mock('../mobile/useMobileGestures', () => ({ useMobileGestures: () => {} }));
+const { downloadFromServer } = vi.hoisted(() => ({
+  downloadFromServer: vi.fn<(pattern: string) => Promise<string | null>>(),
+}));
+vi.mock('./download', () => ({ downloadFromServer }));
 
-const pane = (sessionId: string) => (
+const pane = (sessionId: string, onTransferError: (msg: string) => void = () => {}) => (
   <TerminalPane
     slot="p0"
     sessionId={sessionId}
@@ -102,7 +106,7 @@ const pane = (sessionId: string) => (
     maxUploadBytes={1024}
     isBlocked={() => false}
     onAutoCopy={() => {}}
-    onUploadError={() => {}}
+    onTransferError={onTransferError}
     onFocusRequest={() => {}}
     gestures={{ getFontSize: () => 14, setFontSize: () => {}, focusKeyboard: () => {} }}
   />
@@ -160,5 +164,33 @@ describe('TerminalPane eviction', () => {
     expect(overlay()).not.toBeNull();
     rerender(pane('4'));
     expect(overlay()).toBeNull();
+  });
+});
+
+// `palmux download` in this terminal: the server sends the checked paths on this pane's socket.
+describe('TerminalPane download', () => {
+  beforeEach(() => {
+    sockets.length = 0;
+    downloadFromServer.mockReset();
+  });
+
+  it('downloads each path in order, one after the other, and toasts a failure', async () => {
+    const order: string[] = [];
+    let release: () => void = () => {};
+    downloadFromServer.mockImplementation((p) => {
+      order.push(p);
+      if (p === '/a.mp4') return new Promise((r) => (release = () => r(null)));
+      return Promise.resolve(p === '/b.mp4' ? 'not found' : null);
+    });
+    const errors: string[] = [];
+    render(pane('3', (m) => errors.push(m)));
+    await act(async () => {
+      socketFor('3').message({ type: 'download', paths: ['/a.mp4', '/b.mp4', '/c'] });
+    });
+    // The second waits for the first, so the browser sees them in the order typed.
+    expect(order).toEqual(['/a.mp4']);
+    await act(async () => release());
+    expect(order).toEqual(['/a.mp4', '/b.mp4', '/c']);
+    expect(errors).toEqual(['not found: /b.mp4']);
   });
 });

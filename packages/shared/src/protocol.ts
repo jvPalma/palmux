@@ -168,6 +168,17 @@ export interface DetachedMessage {
   moved?: true;
 }
 
+/**
+ * Download these server paths in this browser window: the `palmux download` CLI,
+ * sent on the data socket of the terminal the command ran in. Each path is already
+ * absolute (or `~/`) and was checked by `resolveDownload`; the client fetches each
+ * from `GET /download`, as the rail's Download does.
+ */
+export interface DownloadMessage {
+  type: 'download';
+  paths: string[];
+}
+
 /** Outcome of an `importTheme`, reported back to the client that asked. */
 export interface ThemeImportedMessage {
   type: 'themeImported';
@@ -277,6 +288,7 @@ export type ServerMessage =
   | ExtraKeysMessage
   | ExitMessage
   | DetachedMessage
+  | DownloadMessage
   | ThemeImportedMessage
   | FontsMessage
   | ThemesMessage
@@ -550,6 +562,11 @@ export function parseServerMessage(data: string): ServerMessage | null {
       };
     case 'detached':
       return raw['moved'] === true ? { type: 'detached', moved: true } : { type: 'detached' };
+    case 'download': {
+      if (!Array.isArray(raw['paths'])) return null;
+      const paths = raw['paths'].filter((p): p is string => typeof p === 'string' && p !== '');
+      return paths.length ? { type: 'download', paths } : null;
+    }
     case 'themeImported': {
       const out: ThemeImportedMessage = { type: 'themeImported', ok: raw['ok'] === true };
       if (typeof raw['id'] === 'string') out.id = raw['id'];

@@ -9,6 +9,7 @@
 // exactly as for the terminal itself.
 
 import { glob, readdir, readFile, realpath, stat } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, normalize, relative, sep } from 'node:path';
 import { crc32, deflateRawSync } from 'node:zlib';
 import { formatByteSize } from '@palmux/shared';
@@ -36,6 +37,9 @@ const err = (status: 400 | 404 | 413, message: string): DownloadResolution => ({
   status,
   message,
 });
+
+const expandHome = (p: string): string =>
+  p === '~' || p.startsWith('~/') ? homedir() + p.slice(1) : p;
 
 /** The static directory prefix of a glob (segments before the first magic one). */
 export function globBase(pattern: string): string {
@@ -70,10 +74,11 @@ export async function resolveDownload(
 ): Promise<DownloadResolution> {
   // Used exactly as given: `x` and `x ` are two files, and trimming the pattern
   // served the first for a request for the second. `trim()` only DETECTS a blank.
-  // A leading space is not absolute and is refused, never repaired.
-  const p = pattern;
+  // A leading space is not absolute and is refused, never repaired. A leading `~`
+  // or `~/` is the server's $HOME, as a shell reads it; `~user` is not expanded.
+  const p = expandHome(pattern);
   if (!p.trim() || !isAbsolute(p)) {
-    return err(400, 'path must be absolute (e.g. /home/user/notes/*.md)');
+    return err(400, 'path must be absolute or start with ~/ (e.g. ~/notes/*.md)');
   }
 
   let files: string[];

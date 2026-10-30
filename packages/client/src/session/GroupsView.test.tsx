@@ -115,7 +115,7 @@ const props = (layout: PaneLayout | null, tabs: TabMeta[], over: Partial<Props> 
     maxUploadBytes: 1,
     paneBlocked: () => false,
     onAutoCopy: noop,
-    onUploadError: noop,
+    onTransferError: noop,
     onFocusRequest: noop,
     takeSpawnTmux: () => undefined,
     terminalGestures: {} as never,

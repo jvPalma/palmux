@@ -1,0 +1,8 @@
+#!/usr/bin/env sh
+# The `palmux` command: `palmux download <path>...` and `palmux help`. Link it onto your
+# PATH (`ln -s "$PWD/scripts/palmux" ~/.local/bin/palmux`); it resolves the checkout
+# through the link, and runs the TypeScript source with the checkout's own tsx.
+set -eu
+REPO="$(cd -- "$(dirname -- "$(readlink -f -- "$0")")/.." && pwd)"
+exec "${PALMUX_NODE:-node}" "$REPO/node_modules/tsx/dist/cli.mjs" \
+  "$REPO/packages/server/src/palmux-cli-main.ts" "$@"

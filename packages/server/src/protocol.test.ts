@@ -205,6 +205,16 @@ describe('parseServerMessage', () => {
     ).toEqual({ type: 'scmComments', repo: '/work/palmux', rev: 0 });
   });
 
+  it('round-trips a download message and keeps only non-empty string paths', () => {
+    const msg: ServerMessage = { type: 'download', paths: ['/a/b.mp4', '/c/*.md'] };
+    expect(parseServerMessage(encodeServerMessage(msg))).toEqual(msg);
+    expect(
+      parseServerMessage(JSON.stringify({ type: 'download', paths: ['/a', 7, '', '/b'] })),
+    ).toEqual({ type: 'download', paths: ['/a', '/b'] });
+    expect(parseServerMessage(JSON.stringify({ type: 'download', paths: '/a' }))).toBeNull();
+    expect(parseServerMessage(JSON.stringify({ type: 'download', paths: [] }))).toBeNull();
+  });
+
   it('drops an scmComments frame without a usable repo or rev', () => {
     expect(frame({ rev: 1 })).toBeNull();
     expect(frame({ repo: '/work/palmux' })).toBeNull();

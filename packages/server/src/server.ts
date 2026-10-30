@@ -47,6 +47,8 @@ declare module 'fastify' {
     closeSockets(): void;
     /** Tell every client a project's review comments reached `rev` (see scm-comments.ts). */
     broadcastScmComments(repo: string, rev: number): void;
+    /** Send a text frame to the data socket attached to terminal `id`. False = none is attached. */
+    sendToTerminal(id: string, msg: string): boolean;
   }
 }
 import {
@@ -120,6 +122,7 @@ import { getStatus } from './scm-status';
 import { resolveImageFile } from './image-file';
 import { themedManifest } from './manifest';
 import { registerConfigFileRoutes } from './config-file';
+import { registerCliRoutes } from './cli-api';
 import { registerPortsRoutes } from './ports';
 import { discoverFonts } from './fonts';
 import { isTmuxSessionName, listTmuxSessions, tmuxAttachCommand } from './tmux';
@@ -302,6 +305,8 @@ export interface SessionRegistry {
   tabsOfWindow(wid: string): string[];
   /** The detached window holding `id`; undefined for the main window or an unknown id. */
   windowOf(id: string): string | undefined;
+  /** The live terminal whose shell is on `tty` (`pts/16`, as `ttyOf` names it); the `palmux` CLI's join key. */
+  terminalOnTty(tty: string): string | undefined;
   /** Fired when the tab list or any tab's metadata changes. */
   onListChanged(cb: () => void): void;
   /** Fired on every title change; the subscriber coalesces. */
@@ -744,6 +749,19 @@ export function createSessionRegistry(
     },
     tabsOfWindow: (wid) => orderedIds().filter((id) => tabs.get(id)?.window === wid),
     windowOf: (id) => tabs.get(id)?.window,
+    terminalOnTty(tty) {
+      for (const [id, r] of tabs) {
+        if (r.kind !== 'terminal' || !r.pty?.alive) continue;
+        // The spawn-time capture can lose the race with the child's dup2 of its tty, so
+        // a record without one reads it now (and keeps it, for the exit path too).
+        if (r.tty === undefined) {
+          const now = ttyOf(r.pty.pid);
+          if (now) r.tty = now;
+        }
+        if (r.tty === tty) return id;
+      }
+      return undefined;
+    },
     groups: () => {
       const out: TabGroup[] = [];
       const seen = new Set<string>();
@@ -1450,6 +1468,7 @@ export async function createServer(
   // PUT re-runs the boot parser and refuses anything it would ignore, so a
   // saved setting is a setting that will actually load (see config-file.ts).
   await registerConfigFileRoutes(app);
+  registerCliRoutes(app, { registry, maxDownloadBytes: cfg.maxDownloadBytes });
 
   // GET /ports — TCP ports this user is listening on, for the loopback pane
   // picker (see ports.ts).
@@ -1794,6 +1813,16 @@ function attachWebSocket(
     broadcast(encodeServerMessage({ type: 'scmComments', repo, rev }));
   });
 
+  // The data socket each terminal's PTY is attached to (last attach wins, as in `PtySession`).
+  // The `palmux` CLI reaches the browser window it ran in through it.
+  const terminalSockets = new Map<string, WebSocket>();
+  app.decorate('sendToTerminal', (id: string, msg: string) => {
+    const ws = terminalSockets.get(id);
+    if (!ws || ws.readyState !== ws.OPEN) return false;
+    ws.send(msg);
+    return true;
+  });
+
   app.decorate('broadcastUpdating', (stage: UpdatingMessage['stage'], version?: string) => {
     broadcast(
       encodeServerMessage({
@@ -1968,6 +1997,7 @@ function attachWebSocket(
         maxUploadBytes: cfg.maxUploadBytes,
         webApps: cfg.webApps,
         windows,
+        terminalSockets,
       });
       ws.on('close', () => {
         connections.delete(ws);
@@ -1985,6 +2015,7 @@ interface ConnectionDeps {
   killTab: (id: string) => void;
   maxUploadBytes: number;
   webApps: WebAppLink[];
+  terminalSockets: Map<string, WebSocket>;
   windows: {
     /** Tabs were moved to `window` (null = the main window). */
     moved(window: string | null): void;
@@ -2108,6 +2139,10 @@ function handleConnection(
         ws.close();
       },
     );
+    deps.terminalSockets.set(sessionId, ws);
+    ws.on('close', () => {
+      if (deps.terminalSockets.get(sessionId) === ws) deps.terminalSockets.delete(sessionId);
+    });
   }
 
   ws.on('message', (raw: Buffer, isBinary: boolean) => {
