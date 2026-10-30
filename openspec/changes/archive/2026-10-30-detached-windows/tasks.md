@@ -396,5 +396,5 @@ server on :44040. Use the isolated smoke server (`~/.cache/claudex-nomcp/scr-smo
   timer 300 → 1000 ms (a still pointer repeats `dragover` every ~352 ms), `dragenter` accepted like `dragover`,
   and ownership-aware eviction (`detached.moved`, design D8), because the source's `dragend` hold proved
   unreliable (the pill is often unmounted first, and `dropEffect` read `none` on most accepted drops).
-- [ ] 6.4 Ask the owner for the production server restart, which costs every live terminal. Only after an explicit
+- [x] 6.4 Ask the owner for the production server restart, which costs every live terminal. Only after an explicit
   OK, build the client (`yarn workspace @palmux/client build`) and restart. Both land together.
