@@ -1642,6 +1642,10 @@ body {
   color: var(--t-subtext);
 }
 
+.drawer-session.preview .drawer-session-title {
+  font-style: italic;
+}
+
 .drawer-session-title {
   flex: 1 1 auto;
   min-width: 0;
@@ -2126,6 +2130,10 @@ body {
 .ctab-icon {
   flex: 0 0 auto;
   font-size: var(--fs-1);
+}
+
+.ctab.preview .ctab-title {
+  font-style: italic;
 }
 
 .ctab-title {

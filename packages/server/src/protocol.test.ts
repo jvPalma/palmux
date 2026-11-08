@@ -293,6 +293,55 @@ describe('parseClientMessage', () => {
     expect(parseClientMessage(encodeClientMessage(msg))).toEqual(msg);
   });
 
+  it('keeps preview flags only in their valid form', () => {
+    const create = (preview: unknown) =>
+      parseClientMessage(JSON.stringify({ type: 'createTab', kind: 'review', url: 'changes:/a', preview }));
+    expect(create(true)).toEqual({ type: 'createTab', kind: 'review', url: 'changes:/a', preview: true });
+    expect(create('yes')).toEqual({ type: 'createTab', kind: 'review', url: 'changes:/a' });
+    expect(create(false)).toEqual({ type: 'createTab', kind: 'review', url: 'changes:/a' });
+    const update = (preview: unknown) =>
+      parseClientMessage(JSON.stringify({ type: 'updateTab', id: '1', preview }));
+    expect(update(false)).toEqual({ type: 'updateTab', id: '1', preview: false });
+    expect(update(true)).toEqual({ type: 'updateTab', id: '1' });
+  });
+
+  it('accepts replaceTab only with a string id, an editor or review kind and a string url', () => {
+    const msg: ClientMessage = { type: 'replaceTab', id: '4', kind: 'editor', url: '/a/b.ts' };
+    expect(parseClientMessage(encodeClientMessage(msg))).toEqual(msg);
+    const bad = (f: Record<string, unknown>) =>
+      parseClientMessage(JSON.stringify({ type: 'replaceTab', id: '4', kind: 'review', url: 'x', ...f }));
+    expect(bad({})).not.toBeNull();
+    expect(bad({ kind: 'web' })).toBeNull();
+    expect(bad({ id: 4 })).toBeNull();
+    expect(bad({ url: 5 })).toBeNull();
+  });
+
+  it('parses preview, replaces and previewTabs on the server side', () => {
+    const sessions = (tab: Record<string, unknown>) =>
+      parseServerMessage(
+        JSON.stringify({ type: 'sessions', ids: ['1'], titles: {}, tabs: [{ id: '1', kind: 'editor', ...tab }] }),
+      );
+    const tabOf = (m: ServerMessage | null) => (m?.type === 'sessions' ? m.tabs?.[0] : undefined);
+    expect(tabOf(sessions({ preview: true, replaces: '4' }))).toEqual({
+      id: '1',
+      kind: 'editor',
+      preview: true,
+      replaces: '4',
+    });
+    expect(tabOf(sessions({ preview: 'yes', replaces: 4 }))).toEqual({ id: '1', kind: 'editor' });
+    expect(tabOf(sessions({ preview: false }))).toEqual({ id: '1', kind: 'editor' });
+    const ready = parseServerMessage(JSON.stringify({ type: 'ready', cols: 1, rows: 1, previewTabs: true }));
+    expect(ready).toMatchObject({ previewTabs: true });
+  });
+
+  it('keeps scmBatchWrites only when it is true', () => {
+    const ready = (extra: Record<string, unknown>) =>
+      parseServerMessage(JSON.stringify({ type: 'ready', cols: 1, rows: 1, ...extra }));
+    expect(ready({ scmBatchWrites: true })).toMatchObject({ scmBatchWrites: true });
+    expect(ready({ scmBatchWrites: 'yes' })).not.toHaveProperty('scmBatchWrites');
+    expect(ready({})).not.toHaveProperty('scmBatchWrites');
+  });
+
   it('returns null for createTab with an unknown kind (forgiving drop, not a crash)', () => {
     expect(parseClientMessage(JSON.stringify({ type: 'createTab', kind: 'popup' }))).toBeNull();
     expect(parseClientMessage(JSON.stringify({ type: 'createTab' }))).toBeNull();

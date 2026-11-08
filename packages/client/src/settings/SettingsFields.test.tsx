@@ -71,6 +71,15 @@ describe('SettingsFields', () => {
     expect(onChange).toHaveBeenCalledTimes(1);
   });
 
+  it('shows and toggles Editor word wrap', () => {
+    const onChange = vi.fn();
+    render(<SettingsFields settings={DEFAULTS} onChange={onChange} />);
+    const sw = screen.getByTestId('set-editor-wrap');
+    expect(sw.getAttribute('aria-checked')).toBe('true');
+    fireEvent.click(sw);
+    expect(onChange).toHaveBeenCalledWith({ editorWrap: false });
+  });
+
   it('calls onChange with only the native touch selection field when toggled', () => {
     const onChange = vi.fn();
     render(<SettingsFields settings={DEFAULTS} onChange={onChange} />);

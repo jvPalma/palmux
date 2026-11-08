@@ -458,4 +458,23 @@ describe('a group row press’s own click, landing on what the dismissal uncover
       vi.useRealTimers();
     }
   });
+
+  it('offers Keep open only for a preview; tapping pins and dismisses', () => {
+    renderSheet();
+    expect(screen.queryByTestId('tab-sheet-keep-open')).toBeNull();
+    document.body.innerHTML = '';
+    const onPin = vi.fn();
+    const props = {
+      tab: { id: '8', kind: 'editor', url: '/a/b.md', preview: true } as TabMeta,
+      onRename: vi.fn(),
+      onRecolor: vi.fn(),
+      onCloseTab: vi.fn(),
+      onDismiss: vi.fn(),
+      onPin,
+    };
+    render(<TabSheet {...props} />);
+    fireEvent.pointerDown(screen.getByTestId('tab-sheet-keep-open'));
+    expect(onPin).toHaveBeenCalledWith('8');
+    expect(props.onDismiss).toHaveBeenCalled();
+  });
 });

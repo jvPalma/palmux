@@ -37,10 +37,17 @@ export interface CollapsibleProps {
   storageKey?: string | undefined;
   defaultOpen?: boolean | undefined;
   /**
-   * `xs` is a step below Button's small one (`--ctl-h` less `--sp-3`: 24px on a phone), for a
-   * header that heads rows as short as itself. Only a dense list opts in; `md` is `--ctl-h`.
+   * `sm` is Button's small step (`--ctl-h` less `--sp-1`: 24px on a desktop) and `xs` one below
+   * it (`--ctl-h` less `--sp-3`: 24px on a phone), for a header that heads rows as short as
+   * itself. Only a dense list opts in; `md` is `--ctl-h`.
    */
-  size?: 'xs' | 'md' | undefined;
+  size?: 'xs' | 'sm' | 'md' | undefined;
+  /**
+   * Controls at the end of the header row (an Open review button). Rendered BESIDE the trigger, never
+   * inside it: the trigger is a `<button>`, a button may not nest in one, and a press on an action
+   * must not toggle the section.
+   */
+  actions?: ReactNode;
   className?: string | undefined;
   'data-testid'?: string | undefined;
 }
@@ -72,6 +79,7 @@ export function Collapsible({
   storageKey,
   defaultOpen = true,
   size = 'md',
+  actions,
   className,
   'data-testid': testId = 'ui-collapsible',
 }: CollapsibleProps) {
@@ -85,6 +93,19 @@ export function Collapsible({
     [storageKey],
   );
 
+  const trigger = (
+    <RadixCollapsible.Trigger
+      className={`ui-collapsible-trigger${size === 'md' ? '' : ` ui-collapsible-trigger-${size}`}`}
+      data-testid={`${testId}-trigger`}
+    >
+      {/* The span keeps its class so the rotate rule in ui.css still applies. */}
+      <span className="ui-collapsible-chevron" aria-hidden="true">
+        <Icon name="chevron-right" size={12} />
+      </span>
+      {title}
+    </RadixCollapsible.Trigger>
+  );
+
   return (
     <RadixCollapsible.Root
       open={open}
@@ -92,16 +113,16 @@ export function Collapsible({
       className={['ui-collapsible', className].filter(Boolean).join(' ')}
       data-testid={testId}
     >
-      <RadixCollapsible.Trigger
-        className={`ui-collapsible-trigger${size === 'xs' ? ' ui-collapsible-trigger-xs' : ''}`}
-        data-testid={`${testId}-trigger`}
-      >
-        {/* The span keeps its class so the rotate rule in ui.css still applies. */}
-        <span className="ui-collapsible-chevron" aria-hidden="true">
-          <Icon name="chevron-right" size={12} />
-        </span>
-        {title}
-      </RadixCollapsible.Trigger>
+      {actions === undefined ? (
+        trigger
+      ) : (
+        <div className="ui-collapsible-head">
+          {trigger}
+          <div className="ui-collapsible-actions" data-testid={`${testId}-actions`}>
+            {actions}
+          </div>
+        </div>
+      )}
       <RadixCollapsible.Content
         forceMount
         className="ui-collapsible-content"

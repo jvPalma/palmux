@@ -8,34 +8,47 @@ stage file by file on a desktop or a phone, one file or the whole change set at 
 
 ### Requirement: A review opens in the content area
 
-Choosing a file in the Source Control view SHALL open a review pane for that project's group (Staged
-Changes or Changes) in the content area, never inside the dock, and scroll it to that file. One project
-and group SHALL have at most one review pane: choosing another file of the same group SHALL focus that
-pane and scroll to the file instead of opening a second one. On mobile, choosing a file SHALL close the
-drawer.
+Choosing a file in the Source Control view SHALL open a single-file review of that file (see "A single file can be
+reviewed in its own tab") as a preview open, in the content area, never inside the dock. Each group header SHALL
+offer Open review, which opens the continuous review pane for that project's group (Staged Changes or Changes) in
+the content area. One project and group SHALL have at most one continuous review pane: opening it again SHALL focus
+that pane instead of opening a second one. On mobile, choosing a file or Open review SHALL close the drawer. Against
+a server that does not announce `previewTabs`, choosing a file SHALL open the group's continuous review and scroll it
+to that file, as before.
 
 #### Scenario: Opening two files of one group
 
 - **WHEN** the user chooses `a.ts` and then `b.ts` under Changes
-- **THEN** one review pane exists, and it shows `b.ts` at the top of the view
+- **THEN** one preview review tab exists, and it shows only `b.ts`
+
+#### Scenario: Opening the whole group
+
+- **WHEN** the user presses Open review on the Changes header
+- **THEN** the continuous review of Changes opens, listing every file of the group
 
 #### Scenario: Two windows open the same group at once
 
-- **WHEN** a desktop and a phone open a file of the same project's Changes within the same second
-- **THEN** exactly one review tab for that group exists afterwards, and both windows show it
+- **WHEN** a desktop and a phone press Open review on the same project's Changes within the same second
+- **THEN** exactly one continuous review tab for that group exists afterwards, and both windows show it
 
 #### Scenario: Staged and unstaged versions
 
-- **WHEN** the user chooses `a.ts` under Staged Changes and then under Changes
+- **WHEN** the user presses Open review under Staged Changes and then under Changes
 - **THEN** two review panes exist, one comparing the index with `HEAD` and one comparing the work tree
   with the index
 
+#### Scenario: An older server
+
+- **WHEN** the server does not announce `previewTabs` and the user chooses `b.ts` under Changes
+- **THEN** the continuous review of Changes opens scrolled to `b.ts`
+
 ### Requirement: The review shows the whole group as one list
 
-A review pane SHALL show every file of its group in one scrolling list, each file under a header with
+A continuous review pane SHALL show every file of its group in one scrolling list, each file under a header with
 its path, its status and its added and removed line counts. A file header SHALL collapse and expand that
 file. Only the files near the visible part of the list SHALL be fetched and rendered, so a group of
-hundreds of files opens as fast as a group of one.
+hundreds of files opens as fast as a group of one. A single-file review (see "A single file can be reviewed in its
+own tab") SHALL show only its one file, under the same header, and SHALL NOT list the group's other files.
 
 #### Scenario: A large change set
 
@@ -47,6 +60,11 @@ hundreds of files opens as fast as a group of one.
 
 - **WHEN** the user collapses a file's header
 - **THEN** that file's lines are hidden and the next file's header follows directly
+
+#### Scenario: A single-file review lists one file
+
+- **WHEN** a single-file review of `src/a.ts` is open under Changes, a group of 53 files
+- **THEN** only `src/a.ts`'s header and rows are drawn, and only `src/a.ts` is fetched
 
 ### Requirement: Side-by-side and unified layouts
 
@@ -183,7 +201,9 @@ text; the newer version replaces the older one as a whole.
 The review SHALL offer next change, previous change, next file and previous file, and a way back to the
 file list. On desktop each SHALL have a keybinding. On mobile, while a review is the active tab, a review
 bar SHALL take the extra-keys bar's place, holding the file list, previous file and next file as up and
-down arrows, and Reviewed or Unstage, all within thumb reach, and no terminal key.
+down arrows, and Reviewed or Unstage, all within thumb reach, and no terminal key. In a continuous review, next and
+previous file SHALL scroll the list; in a single-file review they SHALL load the neighbouring file of the group in
+the same tab (see "A single-file review moves through its group").
 
 #### Scenario: Next change crosses a file
 
@@ -195,6 +215,12 @@ down arrows, and Reviewed or Unstage, all within thumb reach, and no terminal ke
 - **WHEN** a review is the active tab on mobile and the user taps the bar's down arrow
 - **THEN** the view moves to the next file, the extra-keys bar is not shown, and no key is sent to any
   terminal
+
+#### Scenario: The review bar in a single-file review
+
+- **WHEN** a single-file review of the second of five files is the active tab on mobile and the user taps the bar's
+  down arrow
+- **THEN** the same tab shows the third file and no tab is created
 
 ### Requirement: The review bar keeps the bar's swipes
 
@@ -220,10 +246,11 @@ the review was opened, or to the first terminal when that tab is gone.
 ### Requirement: Reviewing a file stages it and moves on
 
 In a Changes review, each file SHALL offer Reviewed. Reviewed SHALL stage exactly the version of the file
-the review showed and then move to the next file. If the file changed on disk after it was shown, the
+the review showed and then move to the next file: a continuous review scrolls to it, a single-file review loads it
+in the same tab. If the file changed on disk after it was shown, the
 newer change SHALL stay under Changes rather than be staged unseen. A toast SHALL offer Undo for 6
 seconds, and Undo SHALL put the file's index entry back exactly as it was, including a partially staged
-version.
+version. Reviewed SHALL NOT pin a single-file review preview.
 
 #### Scenario: Review and move on
 
@@ -256,6 +283,11 @@ version.
 - **WHEN** part of `a.ts` was already staged, the user taps Reviewed, then Undo
 - **THEN** the index holds the earlier partially staged version again
 
+#### Scenario: Reviewed keeps a preview a preview
+
+- **WHEN** a single-file review preview shows `a.ts` and the user taps Reviewed
+- **THEN** the same tab, still a preview, shows the next file
+
 ### Requirement: A staged file can be unstaged
 
 In a Staged Changes review, each file SHALL offer Unstage, which returns its index entry to the `HEAD`
@@ -271,8 +303,10 @@ same 6-second Undo.
 
 While a review pane is visible, a change on disk to one of its files SHALL update that file's diff within
 2 seconds, keeping the same code in view: the line at the top of the view is found again by its text
-and context, not by its number. If that line was deleted, the nearest surviving line takes its place. A
-file that leaves the group SHALL be removed, and a file that joins it SHALL be added in path order.
+and context, not by its number. If that line was deleted, the nearest surviving line takes its place. In a
+continuous review a file that leaves the group SHALL be removed, and a file that joins it SHALL be added in path
+order. A single-file review SHALL follow only its own file, and when that file leaves the group it SHALL show "No
+longer changed" instead of being removed.
 
 #### Scenario: Editing the file being read
 
@@ -283,6 +317,11 @@ file that leaves the group SHALL be removed, and a file that joins it SHALL be a
 
 - **WHEN** the user reads line 100 of `a.ts` and ten lines are inserted at line 5
 - **THEN** the same code stays in view, now numbered 110
+
+#### Scenario: A file joins the group while a single-file review is open
+
+- **WHEN** a single-file review of `a.ts` is visible and `z.ts` becomes changed
+- **THEN** the review still shows only `a.ts`, and its position in the bar counts one more file
 
 ### Requirement: The review never edits or discards
 
@@ -339,3 +378,98 @@ small expand controls and the hunk header, instead of two rows; a file header SH
 
 - **WHEN** the same review is shown on a desktop
 - **THEN** each hunk has a gap row and a hunk header row as before, with the kit's buttons
+
+### Requirement: A single file can be reviewed in its own tab
+
+A single-file review SHALL be a `review` tab whose url names the group, the project and one path. It SHALL show only
+that file, with the continuous review's rows, comments, Reviewed or Unstage, and keybindings, and its current-file bar
+SHALL show the file's position in the group as `n / N`, the format the bar already uses. One url SHALL have at most one tab, as for a continuous review.
+
+#### Scenario: One file only
+
+- **WHEN** the user chooses `src/a.ts` under Changes, a group of 53 files
+- **THEN** the tab shows the diff of `src/a.ts` only, and its bar reads `src/a.ts` with `3/53`
+
+#### Scenario: The same file twice
+
+- **WHEN** `src/a.ts` under Changes is open as a pinned single-file review and the user chooses it again
+- **THEN** that tab is shown and no second tab is created
+
+### Requirement: A single-file review moves through its group
+
+In a single-file review, next file and previous file, and Reviewed or Unstage moving on, SHALL load the neighbouring
+file of the group in the same tab by changing its url, whether the tab is a preview or pinned. When Reviewed or Unstage
+leaves no file after it, the tab SHALL show "No more files in `<group>`" with Open review. A file that leaves the group
+by any other route SHALL show "No longer changed" with Open review. The tab SHALL NOT close by itself.
+
+#### Scenario: Reviewed loads the next file
+
+- **WHEN** a single-file review shows `a.ts`, the second of five files, and the user taps Reviewed
+- **THEN** `a.ts` is staged and the same tab shows the third file
+
+#### Scenario: Reviewed on the last file
+
+- **WHEN** a single-file review shows the last file of Changes and the user taps Reviewed
+- **THEN** the file is staged and the tab shows "No more files in Changes" and an Open review button
+
+#### Scenario: Next file at the end
+
+- **WHEN** a single-file review shows the last file of Changes and the user presses next file
+- **THEN** the tab keeps the file and a toast reads "No more files in Changes"
+
+#### Scenario: The file was committed elsewhere
+
+- **WHEN** a single-file review shows `a.ts` and the user commits `a.ts` from a terminal
+- **THEN** the tab shows "No longer changed" with Open review, and stays open
+
+#### Scenario: Next change crosses into the next file
+
+- **WHEN** the current change is the last one of the file and the user presses next change
+- **THEN** the same tab shows the next file of the group at its first change
+
+### Requirement: The current file's header stays on screen
+
+On a desktop, the bar above the review's list SHALL act as the header of the file at the top of the view,
+at every scroll position. It SHALL show that file's path, state, added and removed line counts, position in
+the group ("n / N"), the same Reviewed (Changes) or Unstage (Staged) action as the file's own header, and
+Open file. On a phone the bar SHALL stay a label with the path and position only, because the review bar
+already carries Reviewed.
+
+#### Scenario: Scrolling deep into a long file
+
+- **WHEN** the user scrolls 400 lines into a long file under review on a desktop
+- **THEN** the bar above the list names that file and offers Reviewed and Open file, while the file's own
+  header has scrolled away
+
+#### Scenario: The file at the top changes
+
+- **WHEN** scrolling brings the next file's first line to the top of the view
+- **THEN** the bar names that file, with its state, counts and position
+
+#### Scenario: Reviewed from the bar
+
+- **WHEN** the user taps Reviewed in the bar
+- **THEN** the file is staged as if Reviewed were tapped on its own header, the 6-second Undo toast appears,
+  and the review moves to the next file
+
+#### Scenario: The phone keeps its label
+
+- **WHEN** a review is shown on a 390x844 phone
+- **THEN** the bar shows only the path and the position, at its current height, and the review bar keeps
+  Reviewed
+
+### Requirement: Both file headers share one write
+
+The bar's Reviewed or Unstage and the file's own header SHALL use one write queue, so a write started from
+either shows as running on both and cannot run twice. While the file's snapshot is not loaded, the bar's
+Reviewed SHALL be disabled with the same reason the file's own header gives.
+
+#### Scenario: One queue for both headers
+
+- **WHEN** the user taps Reviewed in the bar while the file's own header is on screen
+- **THEN** both buttons show the write as running, and a second tap on either does nothing until it ends
+
+#### Scenario: The snapshot is not loaded yet
+
+- **WHEN** the file at the top is still a placeholder
+- **THEN** the bar's Reviewed is disabled and says the file is still loading

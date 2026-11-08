@@ -1,6 +1,7 @@
 // ── The index writes still inside their Undo window ───────────────────────────
 //
-// Each Reviewed or Unstage answers with a receipt and offers Undo for 6 seconds. The
+// Each Reviewed, Unstage, list stage or discard answers with a receipt and offers
+// Undo for 6 seconds. The
 // app has ONE toast, and a second write used to replace the first one's: its Undo
 // was silently gone while the file it staged was still staged. So the writes of the
 // last 6 seconds are kept here, the toast names all of them, and its one Undo takes
@@ -10,6 +11,8 @@
 // Staged, or two projects) share the window's one toast, so they share this list.
 // It holds receipt ids and names only; the receipts themselves are the server's.
 
+import type { ScmSkip } from '@palmux/shared';
+
 /** How long a write stays undoable from the toast that offered it. */
 export const UNDO_WINDOW_MS = 6000;
 
@@ -17,9 +20,15 @@ export interface LoggedWrite {
   /** The project the write was made in: a receipt is restored in the project that issued it. */
   repo: string;
   receiptId: string;
-  action: 'stage' | 'unstage';
+  action: 'stage' | 'unstage' | 'discard';
   /** The file's name, for the toast. */
   name: string;
+  /** Files the write changed; absent means one. A folder write names its count. */
+  count?: number;
+  /** 'list' when the write came from the Source Control list and not from a review. */
+  via?: 'list';
+  /** Paths the write left alone, for the toast to say so. */
+  skipped?: ScmSkip[];
   /** When it was made, in `Date.now()` milliseconds. */
   at: number;
 }

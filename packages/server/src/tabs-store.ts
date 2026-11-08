@@ -19,6 +19,8 @@ export interface PersistedTab {
   url?: string;
   /** Tab-group membership (additive — an old server ignores it). */
   groupId?: string;
+  /** Preview tab (review, or url-bearing editor). Additive — an old server ignores it. */
+  preview?: true;
 }
 
 /** Group metadata, persisted in a SIDECAR (groups.json) so tabs.json keeps its
@@ -60,6 +62,11 @@ function parsePersistedTabs(raw: unknown): PersistedTab[] {
       ...(typeof rec['color'] === 'string' && rec['color'] ? { color: rec['color'] } : {}),
       ...(typeof rec['url'] === 'string' && rec['url'] ? { url: rec['url'] } : {}),
       ...(isGroupId(rec['groupId']) ? { groupId: rec['groupId'] } : {}),
+      ...(rec['preview'] === true &&
+      (rec['kind'] === 'review' ||
+        (rec['kind'] === 'editor' && typeof rec['url'] === 'string' && rec['url'] !== ''))
+        ? { preview: true as const }
+        : {}),
     });
   }
   return out;

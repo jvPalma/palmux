@@ -595,6 +595,56 @@ describe('context menu', () => {
   });
 });
 
+describe('preview tabs', () => {
+  const PREVIEW: TabMeta[] = [
+    { id: '0', kind: 'terminal', title: 'vim' },
+    { id: '5', kind: 'editor', url: '/a/notes.md', preview: true },
+  ];
+
+  it('marks a preview with the class, title and label; a pinned pill gets none', () => {
+    renderTabs({ tabs: PREVIEW, allTabs: PREVIEW });
+    const pill = screen.getByTestId('session-tab-5');
+    expect(pill).toHaveClass('preview');
+    expect(pill).toHaveAttribute('title', 'notes.md — preview (double-click to keep open)');
+    expect(pill).toHaveAttribute('aria-label', 'notes.md, preview');
+    const pinned = screen.getByTestId('session-tab-0');
+    expect(pinned).not.toHaveClass('preview');
+    expect(pinned).not.toHaveAttribute('title');
+    expect(pinned).not.toHaveAttribute('aria-label');
+  });
+
+  it('double-click on a preview pins it and opens no rename field', () => {
+    const onPin = vi.fn();
+    const p = renderTabs({ tabs: PREVIEW, allTabs: PREVIEW, onPin });
+    fireEvent.doubleClick(screen.getByTestId('session-tab-5'));
+    expect(onPin).toHaveBeenCalledWith('5');
+    expect(screen.queryByTestId('tab-rename-input')).toBeNull();
+    expect(p.onRename).not.toHaveBeenCalled();
+  });
+
+  it('double-click on a pinned pill still renames', () => {
+    const onPin = vi.fn();
+    renderTabs({ tabs: PREVIEW, allTabs: PREVIEW, onPin });
+    fireEvent.doubleClick(screen.getByTestId('session-tab-0'));
+    expect(onPin).not.toHaveBeenCalled();
+    expect(screen.getByTestId('tab-rename-input')).toBeTruthy();
+  });
+
+  it('Keep open is the first menu item, only for a preview, and pins', () => {
+    const onPin = vi.fn();
+    renderTabs({ tabs: PREVIEW, allTabs: PREVIEW, onPin });
+    fireEvent.contextMenu(screen.getByTestId('session-tab-0'));
+    expect(screen.queryByTestId('menu-keep-open')).toBeNull();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.contextMenu(screen.getByTestId('session-tab-5'));
+    const menu = screen.getByTestId('tab-menu');
+    expect(menu.children[0]).toBe(screen.getByTestId('menu-keep-open'));
+    expect(menu.children[1]).toBe(screen.getByTestId('menu-rename'));
+    fireEvent.click(screen.getByTestId('menu-keep-open'));
+    expect(onPin).toHaveBeenCalledWith('5');
+  });
+});
+
 // ── The tab menu's structure: three groups, a hairline between each ───────────
 //
 // EDIT (rename), LAYOUT (split, group, colour, pop out) and CLOSE — in that

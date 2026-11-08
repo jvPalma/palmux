@@ -59,7 +59,15 @@ interface EditorPaneProps {
    * report "saved" over a write the server refused. `null` clears it.
    */
   onSaveError?: ((message: string | null) => void) | undefined;
+  /**
+   * A save landed (2xx, autosave included), or Ctrl+S was pressed on a clean
+   * buffer. A host that previews the tab pins it on this.
+   */
+  onSaved?: (() => void) | undefined;
 }
+
+/** `clean`: nothing to write. `started`: a PUT began. `queued`: one is in flight, re-run after it. */
+type SaveResult = 'clean' | 'started' | 'queued';
 
 export const EditorPane = ({
   tabId,
@@ -68,17 +76,20 @@ export const EditorPane = ({
   onMenu,
   filePath,
   onSaveError,
+  onSaved,
 }: EditorPaneProps) => {
   const hostRef = useRef<HTMLDivElement>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [failure, setFailure] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
-  const saveRef = useRef<() => void>(() => {});
+  const saveRef = useRef<() => SaveResult>(() => 'queued');
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const onDirtyRef = useRef(onDirtyChange);
   onDirtyRef.current = onDirtyChange;
   const onSaveErrorRef = useRef(onSaveError);
   onSaveErrorRef.current = onSaveError;
+  const onSavedRef = useRef(onSaved);
+  onSavedRef.current = onSaved;
 
   const src = filePath
     ? `/file?path=${encodeURIComponent(filePath)}`
@@ -129,6 +140,7 @@ export const EditorPane = ({
           automaticLayout: true, // handles pane show/hide + window resizes
           minimap: { enabled: false },
           fontSize: editorFontSize(loadSettings()),
+          wordWrap: loadSettings().editorWrap ? 'on' : 'off',
           fontFamily: editorFontFamily(),
           padding: { top: 8 },
           // Gutter chrome is affordable on a desktop pane and not on a 390px
@@ -161,13 +173,13 @@ export const EditorPane = ({
           onDirtyRef.current(tabId, isDirty);
         };
 
-        const save = () => {
+        const save = (): SaveResult => {
           if (saving) {
             saveAgain = true; // don't drop this edit; flush after the in-flight PUT
-            return;
+            return 'queued';
           }
           const version = model.getAlternativeVersionId();
-          if (version === savedVersion) return;
+          if (version === savedVersion) return 'clean';
           saving = true;
           saveAgain = false;
           void fetch(src, {
@@ -180,6 +192,7 @@ export const EditorPane = ({
                 savedVersion = version;
                 markDirty();
                 onSaveErrorRef.current?.(null);
+                onSavedRef.current?.();
                 return;
               }
               // A refused write is the one failure the user cannot infer: the
@@ -197,6 +210,7 @@ export const EditorPane = ({
               // tick — re-running on failure here would hot-loop the server.
               if (saveAgain) save();
             });
+          return 'started';
         };
         saveRef.current = save;
 
@@ -205,7 +219,9 @@ export const EditorPane = ({
           clearTimeout(autosave);
           autosave = setTimeout(save, AUTOSAVE_MS);
         });
-        editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, save);
+        editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+          if (save() === 'clean') onSavedRef.current?.();
+        });
         setState('ready');
       } catch (e) {
         if (!disposed) {
@@ -240,6 +256,7 @@ export const EditorPane = ({
         editorRef.current?.updateOptions({
           fontSize: editorFontSize(settings),
           fontFamily: settings.fontFamily,
+          wordWrap: settings.editorWrap ? 'on' : 'off',
         });
       }),
     [],
@@ -252,7 +269,7 @@ export const EditorPane = ({
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's' && !e.shiftKey && !e.altKey) {
         e.preventDefault();
-        saveRef.current();
+        if (saveRef.current() === 'clean') onSavedRef.current?.();
       }
     };
     window.addEventListener('keydown', onKey, { capture: true });

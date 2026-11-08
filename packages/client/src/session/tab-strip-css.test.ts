@@ -306,6 +306,10 @@ describe('window-controls-overlay', () => {
 
   // `.topbar-brand` (the label of the retired pop-out bar) is not a topbar rule, and the lookahead
   // lets it through; groups-css.test.ts is what keeps it out of the sheet.
+  it('italicises a preview title and declares nothing else', () => {
+    expect(bodyOf('.ctab.preview .ctab-title').replace(/\s+/g, '')).toBe('font-style:italic;');
+  });
+
   it('leaves no `.topbar` rule behind', () => {
     expect(css).not.toMatch(/\.topbar(?![\w-])/);
   });

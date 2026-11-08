@@ -227,6 +227,9 @@ export const ConfigEditor = ({ mode, onMode, onDirtyChange }: ConfigEditorProps)
           // the narrow case — including on a desktop, which a mobile-mode check
           // would have missed.
           ...editorLayoutOptions(hostRef.current.getBoundingClientRect().width),
+          // The layout options stopped carrying wrap (it is the per-device
+          // `editorWrap` now, for file tabs); config.json keeps wrapping.
+          wordWrap: 'on',
         });
         instance = editor;
         editorRef.current = editor;

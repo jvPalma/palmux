@@ -11,11 +11,18 @@ import { forwardRef } from 'react';
 import type { ButtonHTMLAttributes } from 'react';
 import type { ButtonSize, ButtonVariant } from './Button';
 
+/**
+ * The Button steps plus `xs`, `--ctl-h` less `--sp-3` (24px on a phone): the height of
+ * an extra-small Collapsible trigger, so a button in its actions slot does not make
+ * the header taller.
+ */
+export type IconButtonSize = ButtonSize | 'xs';
+
 export interface IconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   /** Accessible name (`aria-label`) — icon-only controls have no text. */
   label: string;
   variant?: ButtonVariant | undefined;
-  size?: ButtonSize | undefined;
+  size?: IconButtonSize | undefined;
   'data-testid'?: string | undefined;
 }
 
@@ -26,7 +33,8 @@ const VARIANT_CLASS: Record<ButtonVariant, string> = {
   danger: 'ui-icon-btn-danger',
 };
 
-const SIZE_CLASS: Record<ButtonSize, string> = {
+const SIZE_CLASS: Record<IconButtonSize, string> = {
+  xs: 'ui-icon-btn-xs',
   sm: 'ui-icon-btn-sm',
   md: '',
 };

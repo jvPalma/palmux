@@ -19,6 +19,7 @@ import {
   leaves,
   moveTab,
   parseLayout,
+  keepReplaces,
   reconcile,
   rectCss,
   removeLeaf,
@@ -937,6 +938,118 @@ describe('reconcile', () => {
     const once = reconcile(two(), metas('1', '2', '7'), ['1', '2', '3', '4'], none);
     expect(reconcile(once, metas('1', '2', '7'), ['1', '2', '3', '4'], none)).toBe(once);
     expect(reconcile(once, metas('1', '2', '7'), ['1', '2', '7'], none)).toBe(once);
+  });
+
+  describe('a tab that replaces another in place', () => {
+    const pane = (active = '4') =>
+      layoutOf(
+        row(1, {
+          type: 'leaf',
+          id: 'p0',
+          tabs: [ref('2'), ref('4', 'editor'), ref('6')],
+          active,
+          size: 1,
+        }),
+        'p0',
+        1,
+      );
+    const swapped: TabMeta[] = [
+      meta('2'),
+      { id: '9', kind: 'review', preview: true, replaces: '4' },
+      meta('6'),
+    ];
+
+    it('A replaced preview keeps its place: 9 takes 4’s slot and stays active in one call', () => {
+      const next = reconcile(pane(), swapped, ['2', '4', '6'], none);
+      expect(leafById(next, 'p0').tabs).toEqual([ref('2'), ref('9', 'review'), ref('6')]);
+      expect(leafById(next, 'p0').active).toBe('9');
+      expect(reconcile(next, swapped, ['2', '9', '6'], none)).toBe(next);
+    });
+
+    it('a pane that showed another tab keeps showing it', () => {
+      const next = reconcile(pane('6'), swapped, ['2', '4', '6'], none);
+      expect(tabIds(leafById(next, 'p0'))).toEqual(['2', '9', '6']);
+      expect(leafById(next, 'p0').active).toBe('6');
+    });
+
+    it('when N is held already, the ordinary rules apply', () => {
+      const l = layoutOf(
+        row(
+          1,
+          { type: 'leaf', id: 'p0', tabs: [ref('2'), ref('4', 'editor')], active: '4', size: 0.5 },
+          { type: 'leaf', id: 'p1', tabs: [ref('9', 'review'), ref('6')], active: '6', size: 0.5 },
+        ),
+        'p0',
+        2,
+      );
+      const next = reconcile(l, swapped, ['2', '4', '9', '6'], none);
+      expect(tabIds(leafById(next, 'p0'))).toEqual(['2']);
+      expect(leafById(next, 'p0').active).toBe('2');
+      expect(tabIds(leafById(next, 'p1'))).toEqual(['9', '6']);
+    });
+
+    it('when P is still listed, the ordinary rules apply', () => {
+      const both: TabMeta[] = [meta('2'), meta('4', 'editor'), ...swapped.slice(1)];
+      const next = reconcile(pane(), both, ['2', '4', '6'], none);
+      expect(tabIds(leafById(next, 'p0'))).toEqual(['2', '4', '6', '9']);
+      expect(leafById(next, 'p0').active).toBe('4');
+    });
+
+    it('A replaced tab this window does not hold: P in no leaf, N joins the focused pane inactive', () => {
+      const l = layoutOf(row(1, leaf('p0', ['2', '6'], 1, '2')), 'p0', 1);
+      const next = reconcile(l, swapped, ['2', '4', '6'], none);
+      expect(tabIds(leafById(next, 'p0'))).toEqual(['2', '6', '9']);
+      expect(leafById(next, 'p0').active).toBe('2');
+    });
+  });
+
+  // The server drops the hint on the next change to the tab (a pin), and two broadcasts handled
+  // before one render show reconcile only the second.
+  describe('keepReplaces', () => {
+    const pane = () =>
+      layoutOf(
+        row(1, {
+          type: 'leaf',
+          id: 'p0',
+          tabs: [ref('2'), ref('4', 'editor'), ref('6')],
+          active: '4',
+          size: 1,
+        }),
+        'p0',
+        1,
+      );
+    const swapped: TabMeta[] = [
+      meta('2'),
+      { id: '9', kind: 'review', preview: true, replaces: '4' },
+      meta('6'),
+    ];
+    const pinned: TabMeta[] = [meta('2'), { id: '9', kind: 'review' }, meta('6')];
+
+    it('carries the hint onto a list that dropped it while the swap is unrendered', () => {
+      const kept = keepReplaces(pinned, swapped, pane());
+      expect(kept[1]).toEqual({ id: '9', kind: 'review', replaces: '4' });
+      const next = reconcile(pane(), kept, ['2', '4', '6'], none);
+      expect(leafById(next, 'p0').tabs).toEqual([ref('2'), ref('9', 'review'), ref('6')]);
+      expect(leafById(next, 'p0').active).toBe('9');
+    });
+
+    it('carries nothing once the layout holds the new tab', () => {
+      const rendered = reconcile(pane(), swapped, ['2', '4', '6'], none);
+      expect(keepReplaces(pinned, swapped, rendered)).toBe(pinned);
+    });
+
+    it('carries nothing when the old id is listed again, or the id is another kind now', () => {
+      const recycled: TabMeta[] = [...pinned, meta('4')];
+      expect(keepReplaces(recycled, swapped, pane())).toBe(recycled);
+      const other: TabMeta[] = [meta('2'), meta('9'), meta('6')];
+      expect(keepReplaces(other, swapped, pane())).toBe(other);
+    });
+
+    it('carries nothing for a tab this window never held, or before there is a layout', () => {
+      const elsewhere = layoutOf(row(1, leaf('p0', ['2', '6'], 1, '2')), 'p0', 1);
+      expect(keepReplaces(pinned, swapped, elsewhere)).toBe(pinned);
+      expect(keepReplaces(pinned, swapped, null)).toBe(pinned);
+    });
   });
 
   it('never creates a tab and never errors on a layout it cannot match', () => {

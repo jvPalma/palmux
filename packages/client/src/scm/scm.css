@@ -17,11 +17,12 @@
 
 .scm-view {
   /* The three numbers a row is made of, so the rows, a long group's height cap and the
-     phone's compact variant (below) state each once. A row is one control height, a tree
-     level is one step of the scale, and the gap is what sits between a row's parts. */
-  --scm-row-h: var(--ctl-h);
-  --scm-indent: var(--sp-3);
-  --scm-gap: var(--sp-2);
+     phone's compact variant (below) state each once. A row is one step under the control
+     height (24px on a desktop, as on a phone), a tree level is one step of the scale, and
+     the gap is what sits between a row's parts. */
+  --scm-row-h: calc(var(--ctl-h) - var(--sp-1));
+  --scm-indent: var(--sp-2);
+  --scm-gap: var(--sp-1);
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
@@ -31,14 +32,14 @@
 }
 
 /* On a phone the list is COMPACT (owner, 2026-10-26, twice): a row is 24px (`--ctl-h` less
-   `--sp-3`, well under the extra-keys bar's key), a level indents by
-   8px instead of 12px, the parts of a row sit 4px apart, and rows follow one another with no
-   gap, so a deep tree keeps its file names and a screen holds about half again as many rows.
-   The text is already the body size. The desktop keeps the kit's control height: a pointer
-   does not need the room. A row's height stays a step off `--ctl-h`, never a bare pixel
-   count, so it follows the device class. A group header is the kit's Collapsible trigger,
-   which no rule here may size, so the view puts it on the kit's extra-small step on a phone
-   (`size="xs"`), the same 24px. */
+   `--sp-3`, well under the extra-keys bar's key), a level indents by 8px, the parts of a row
+   sit 4px apart, and rows follow one another with no gap, so a deep tree keeps its file names
+   and a screen holds about half again as many rows. The desktop is the same geometry from
+   its own `--ctl-h` (28px less `--sp-1`: 24px), so both device classes draw one list. A row's
+   height stays a step off `--ctl-h`, never a bare pixel count, so it follows the device
+   class. A group header is the kit's Collapsible trigger, which no rule here may size, so the
+   view puts it on the kit's small step on a desktop (`size="sm"`) and extra-small step on a
+   phone (`size="xs"`), the same 24px. */
 :root[data-mobile='true'] .scm-view {
   --scm-row-h: calc(var(--ctl-h) - var(--sp-3));
   --scm-indent: var(--sp-2);
@@ -354,4 +355,55 @@
   .scm-twisty {
     transition-duration: 0.001ms;
   }
+}
+
+/* ── Row actions ────────────────────────────────────────────────────────────
+   A row is a wrapper holding the main button and its actions as siblings (a button
+   cannot hold buttons). The wrapper is the row's own height, so a row with actions
+   is exactly as tall as one without, and the virtual list's measure does not move.
+   The main button takes the room the actions leave, so its name truncates before
+   them. The actions show under the pointer and while focus is anywhere in the row,
+   which is what lets Tab reach them; a phone never shows them and uses the menu. */
+
+.scm-item {
+  display: flex;
+  align-items: center;
+  height: var(--scm-row-h);
+}
+
+.scm-item > .scm-row,
+.scm-item > .scm-folder {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.scm-actions {
+  display: none;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0;
+}
+
+.scm-item:hover > .scm-actions,
+.scm-item:focus-within > .scm-actions {
+  display: flex;
+}
+
+:root[data-mobile='true'] .scm-item > .scm-actions {
+  display: none;
+}
+
+/* Discard is set apart from the others by a hairline. */
+.scm-actions-sep {
+  flex: 0 0 auto;
+  width: 1px;
+  height: var(--sp-3);
+  margin: 0 var(--sp-1);
+  background: var(--t-surface);
+}
+
+/* The kit's danger colour, derived from the theme's warning hue (`--t-accent-alt`). */
+.scm-actions [data-danger='true']:not(:disabled):hover {
+  background: var(--ui-danger-tint);
+  color: var(--ui-danger);
 }

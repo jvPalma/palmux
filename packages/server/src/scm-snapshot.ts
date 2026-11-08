@@ -17,7 +17,7 @@
 // served, never whatever is on disk by then.
 
 import { createHash, randomBytes } from 'node:crypto';
-import { constants, existsSync } from 'node:fs';
+import { constants, existsSync, type Stats } from 'node:fs';
 import { lstat, mkdtemp, open, readlink, rm, writeFile, type FileHandle } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -260,7 +260,8 @@ export function gatherStats(buf: Buffer): TextStats {
   return stats;
 }
 
-function statsAreBinary(stats: TextStats): boolean {
+/** git's `convert_is_binary`, for the check-in side here and the checkout side in scm-eol.ts. */
+export function statsAreBinary(stats: TextStats): boolean {
   return stats.lonecr > 0 || stats.nul > 0 || stats.printable >> 7 < stats.nonprintable;
 }
 
@@ -422,15 +423,47 @@ function isConvertedByGit(context: Readonly<AttrContext>): boolean {
 
 // ── The work tree side ────────────────────────────────────────────────────────
 
+/** The `fstat` of a work tree file: what the discard compares to tell an untouched file from a rewritten one. */
+export interface WorkStat {
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+  ino: number;
+  mode: number;
+}
+
 export type WorkRead =
   | { ok: true; kind: 'absent' }
-  | { ok: true; kind: 'file'; bytes: Buffer; exec: boolean }
+  | { ok: true; kind: 'file'; bytes: Buffer; exec: boolean; stat: WorkStat }
   /** Over the size limit: nothing is read, but the stamp still moves when the file does. */
-  | { ok: true; kind: 'big'; stamp: string; exec: boolean }
+  | { ok: true; kind: 'big'; stamp: string; exec: boolean; stat: WorkStat }
   | { ok: true; kind: 'link'; bytes: Buffer }
   | ScmFailure;
 
+/**
+ * What a `statOnly` or `classify` read adds. `special` is anything a write must not
+ * touch that is neither a link nor a regular file: a socket, a FIFO, a device, a
+ * directory where the file is, or a file where one of its folders is. The last
+ * two matter because `checkout-index -f` deletes whatever stands in its way.
+ */
+export type WorkProbe =
+  | WorkRead
+  | { ok: true; kind: 'stat'; exec: boolean; stat: WorkStat }
+  | { ok: true; kind: 'special' }
+  | { ok: true; kind: 'link-in-path' };
+
+export interface WorkReadOptions {
+  /** Bytes read before the file counts as `big`; `SIDE_LIMIT_BYTES` by default. */
+  limit?: number;
+  /** Answer the stat of a regular file without reading it. */
+  statOnly?: boolean;
+  /** Answer `special` and `link-in-path` instead of the 400 and 403 a snapshot gives. */
+  classify?: boolean;
+}
+
 const ABSENT: WorkRead = { ok: true, kind: 'absent' };
+const SPECIAL: WorkProbe = { ok: true, kind: 'special' };
+const LINK_IN_PATH: WorkProbe = { ok: true, kind: 'link-in-path' };
 
 function fsFailure(e: unknown, what: string): ScmFailure {
   const code = (e as NodeJS.ErrnoException).code;
@@ -438,25 +471,120 @@ function fsFailure(e: unknown, what: string): ScmFailure {
   return scmFail(500, `${what}: ${String(code ?? e)}`);
 }
 
-async function classifyDirFailure(at: string, e: unknown): Promise<WorkRead> {
-  const code = (e as NodeJS.ErrnoException).code;
-  if (code === 'ENOENT') return ABSENT;
-  if (code === 'ENOTDIR' || code === 'ELOOP') {
-    // Opening a symlink as a directory fails like opening a file as one; only
-    // an lstat through the validated parent tells them apart.
-    try {
-      if ((await lstat(at)).isSymbolicLink()) {
-        return scmFail(403, 'path passes through a symbolic link');
-      }
-    } catch {
-      return ABSENT;
-    }
-    return ABSENT;
-  }
-  return fsFailure(e, 'work tree');
+function toWorkStat(st: Stats): WorkStat {
+  return { size: st.size, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs, ino: st.ino, mode: st.mode };
 }
 
-async function readFileBytes(file: FileHandle): Promise<Buffer | null> {
+/** `<name>` inside the directory `dir` already holds, never re-walked from a path. */
+export function procPath(dir: FileHandle, name: string): string {
+  return `${walkHooks.procFdDir}/${dir.fd}/${name}`;
+}
+
+export async function closeAll(handles: readonly FileHandle[]): Promise<void> {
+  await Promise.all(handles.map((h) => h.close().catch(() => {})));
+}
+
+/** The work tree top as a directory descriptor, or the refusal when `/proc` cannot be used. */
+export async function openTop(top: string): Promise<{ ok: true; dir: FileHandle } | ScmFailure> {
+  const fdDir = walkHooks.procFdDir;
+  if (process.platform !== 'linux' || !existsSync(fdDir)) {
+    return scmFail(501, 'this server cannot read the work tree safely', 'unsupported');
+  }
+  try {
+    return { ok: true, dir: await open(top, constants.O_RDONLY | constants.O_DIRECTORY) };
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'ENOENT'
+      ? scmFail(404, 'repository directory does not exist')
+      : fsFailure(e, 'work tree');
+  }
+}
+
+export type ChildDir =
+  | { ok: true; kind: 'dir'; dir: FileHandle }
+  /** Missing, a symbolic link, or something that is not a directory. */
+  | { ok: true; kind: 'absent' | 'link-in-path' | 'not-dir' }
+  | ScmFailure;
+
+/** One step of the walk: `name` inside `parent`, opened `O_NOFOLLOW` as a directory. */
+export async function openChildDir(parent: FileHandle, name: string, depth: number): Promise<ChildDir> {
+  await walkHooks.onStep?.({ kind: 'dir', name, depth });
+  const at = procPath(parent, name);
+  try {
+    return {
+      ok: true,
+      kind: 'dir',
+      dir: await open(at, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW),
+    };
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return { ok: true, kind: 'absent' };
+    if (code === 'ENOTDIR' || code === 'ELOOP') {
+      // Opening a symlink as a directory fails like opening a file as one; only
+      // an lstat through the validated parent tells them apart.
+      try {
+        return { ok: true, kind: (await lstat(at)).isSymbolicLink() ? 'link-in-path' : 'not-dir' };
+      } catch {
+        return { ok: true, kind: 'absent' };
+      }
+    }
+    return fsFailure(e, 'work tree');
+  }
+}
+
+export type ParentWalk =
+  /** `dirs[0]` is the top, `dirs[i]` the folder named by component i - 1; the caller closes them. */
+  | { ok: true; kind: 'dirs'; dirs: FileHandle[]; name: string }
+  | { ok: true; kind: 'absent' | 'link-in-path' | 'not-dir' }
+  | ScmFailure;
+
+/**
+ * Opens every folder on the way to `path`, each relative to the descriptor of the
+ * one before and `O_NOFOLLOW`, and keeps them all: a write needs the parent to
+ * name the file through, and an emptied folder's own parent to remove it. On any
+ * answer but `dirs` nothing stays open.
+ */
+export async function openParent(top: string, path: string): Promise<ParentWalk> {
+  const parts = path.split('/');
+  const opened = await openTop(top);
+  if (!opened.ok) return opened;
+  const dirs: FileHandle[] = [opened.dir];
+  try {
+    for (let depth = 0; depth < parts.length - 1; depth++) {
+      const child = await openChildDir(dirs[depth] as FileHandle, parts[depth] as string, depth);
+      if (!child.ok || child.kind !== 'dir') {
+        await closeAll(dirs);
+        return child;
+      }
+      dirs.push(child.dir);
+    }
+  } catch (e) {
+    await closeAll(dirs);
+    return fsFailure(e, 'work tree');
+  }
+  return { ok: true, kind: 'dirs', dirs, name: parts[parts.length - 1] as string };
+}
+
+export type EntryStat =
+  | { ok: true; kind: 'absent' }
+  | { ok: true; kind: 'file' | 'dir' | 'link' | 'special'; stat: WorkStat }
+  | ScmFailure;
+
+/** An `lstat` of `name` inside the folder `parent` holds: the last step of the walk, never followed. */
+export async function statAt(parent: FileHandle, name: string, depth: number): Promise<EntryStat> {
+  await walkHooks.onStep?.({ kind: 'file', name, depth });
+  let st: Stats;
+  try {
+    st = await lstat(procPath(parent, name));
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return { ok: true, kind: 'absent' };
+    return fsFailure(e, 'work tree');
+  }
+  const kind = st.isFile() ? 'file' : st.isDirectory() ? 'dir' : st.isSymbolicLink() ? 'link' : 'special';
+  return { ok: true, kind, stat: toWorkStat(st) };
+}
+
+async function readFileBytes(file: FileHandle, limit: number): Promise<Buffer | null> {
   const chunks: Buffer[] = [];
   let total = 0;
   for (;;) {
@@ -464,7 +592,7 @@ async function readFileBytes(file: FileHandle): Promise<Buffer | null> {
     const { bytesRead } = await file.read(chunk, 0, chunk.length, null);
     if (bytesRead === 0) break;
     total += bytesRead;
-    if (total > SIDE_LIMIT_BYTES) return null;
+    if (total > limit) return null;
     chunks.push(chunk.subarray(0, bytesRead));
   }
   return Buffer.concat(chunks, total);
@@ -473,41 +601,39 @@ async function readFileBytes(file: FileHandle): Promise<Buffer | null> {
 /**
  * Reads `path` under `top` once, component by component, each open relative to
  * the descriptor of the one before and `O_NOFOLLOW`. Fails closed where `/proc`
- * is not available.
+ * is not available. Without options this is the snapshot's read.
  */
-export async function readWorkTree(top: string, path: string): Promise<WorkRead> {
-  const fdDir = walkHooks.procFdDir;
-  if (process.platform !== 'linux' || !existsSync(fdDir)) {
-    return scmFail(501, 'this server cannot read the work tree safely', 'unsupported');
+export function readWorkTree(
+  top: string,
+  path: string,
+  opts?: { limit?: number; statOnly?: false; classify?: false },
+): Promise<WorkRead>;
+export function readWorkTree(top: string, path: string, opts: WorkReadOptions): Promise<WorkProbe>;
+export async function readWorkTree(
+  top: string,
+  path: string,
+  opts: WorkReadOptions = {},
+): Promise<WorkProbe> {
+  const limit = opts.limit ?? SIDE_LIMIT_BYTES;
+  const classify = opts.classify === true;
+  const walk = await openParent(top, path);
+  if (!walk.ok) return walk;
+  switch (walk.kind) {
+    case 'absent':
+      return ABSENT;
+    case 'link-in-path':
+      return classify ? LINK_IN_PATH : scmFail(403, 'path passes through a symbolic link');
+    case 'not-dir':
+      return classify ? SPECIAL : ABSENT;
+    case 'dirs':
+      break;
   }
-  const parts = path.split('/');
-  const handles: FileHandle[] = [];
+  const handles = [...walk.dirs];
+  const dir = handles[handles.length - 1] as FileHandle;
   try {
-    let dir: FileHandle;
-    try {
-      dir = await open(top, constants.O_RDONLY | constants.O_DIRECTORY);
-    } catch (e) {
-      return (e as NodeJS.ErrnoException).code === 'ENOENT'
-        ? scmFail(404, 'repository directory does not exist')
-        : fsFailure(e, 'work tree');
-    }
-    handles.push(dir);
-
-    for (let depth = 0; depth < parts.length - 1; depth++) {
-      const name = parts[depth] as string;
-      await walkHooks.onStep?.({ kind: 'dir', name, depth });
-      const at = `${fdDir}/${dir.fd}/${name}`;
-      try {
-        dir = await open(at, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-      } catch (e) {
-        return await classifyDirFailure(at, e);
-      }
-      handles.push(dir);
-    }
-
-    const name = parts[parts.length - 1] as string;
-    await walkHooks.onStep?.({ kind: 'file', name, depth: parts.length - 1 });
-    const at = `${fdDir}/${dir.fd}/${name}`;
+    const name = walk.name;
+    await walkHooks.onStep?.({ kind: 'file', name, depth: handles.length - 1 });
+    const at = procPath(dir, name);
     let file: FileHandle;
     try {
       // O_NONBLOCK: opening a FIFO must not wait for a writer.
@@ -529,23 +655,26 @@ export async function readWorkTree(top: string, path: string): Promise<WorkRead>
     handles.push(file);
 
     const st = await file.stat();
-    // A directory where a tracked file was: the file is gone.
-    if (st.isDirectory()) return ABSENT;
-    if (!st.isFile()) return scmFail(400, 'path is not a regular file');
+    // A directory where a tracked file was: the file is gone, but a write would delete the directory.
+    if (st.isDirectory()) return classify ? SPECIAL : ABSENT;
+    if (!st.isFile()) return classify ? SPECIAL : scmFail(400, 'path is not a regular file');
     const exec = (st.mode & 0o100) !== 0;
+    const stat = toWorkStat(st);
+    if (opts.statOnly) return { ok: true, kind: 'stat', exec, stat };
     const big: WorkRead = {
       ok: true,
       kind: 'big',
       stamp: `${st.size}:${st.mtimeMs}:${st.ctimeMs}`,
       exec,
+      stat,
     };
-    if (st.size > SIDE_LIMIT_BYTES) return big;
-    const bytes = await readFileBytes(file);
-    return bytes === null ? big : { ok: true, kind: 'file', bytes, exec };
+    if (st.size > limit) return big;
+    const bytes = await readFileBytes(file, limit);
+    return bytes === null ? big : { ok: true, kind: 'file', bytes, exec, stat };
   } catch (e) {
     return fsFailure(e, 'work tree');
   } finally {
-    await Promise.all(handles.map((h) => h.close().catch(() => {})));
+    await closeAll(handles);
   }
 }
 

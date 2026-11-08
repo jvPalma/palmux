@@ -23,6 +23,8 @@ interface TabSheetProps {
   onRemoveFromGroup?: ((id: string) => void) | undefined;
   /** Close (kill) the tab; the App owns kind-specific confirmation. */
   onCloseTab: (id: string) => void;
+  /** Keep a preview tab open (pin it). */
+  onPin?: ((id: string) => void) | undefined;
   onDismiss: () => void;
 }
 
@@ -37,6 +39,7 @@ export const TabSheet = ({
   onAddToGroup,
   onRemoveFromGroup,
   onCloseTab,
+  onPin,
   onDismiss,
 }: TabSheetProps) => {
   const [name, setName] = useState(tab.name ?? '');
@@ -54,6 +57,18 @@ export const TabSheet = ({
         <div className="sheet-title">
           <Icon name={kindIcon(tab.kind)} /> {displayTitle(tab)}
         </div>
+        {tab.preview && (
+          <button
+            className="sheet-btn"
+            data-testid="tab-sheet-keep-open"
+            {...pressClick(() => {
+              onPin?.(tab.id);
+              onDismiss();
+            })}
+          >
+            <Icon name="pin" size={14} /> Keep open
+          </button>
+        )}
         <input
           className="sheet-input"
           data-testid="sheet-rename"

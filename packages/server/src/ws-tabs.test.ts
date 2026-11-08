@@ -90,6 +90,55 @@ describe('WS tab bridge', () => {
     expect(registry.kindOf('1')).toBe('web');
   });
 
+  it('threads preview through createTab, updateTab and replaceTab over a socket', async () => {
+    const mk = await collect('session=0', 400, (ws) => {
+      ws.send(JSON.stringify({ type: 'createTab', kind: 'editor', url: '/tmp/p1.ts', preview: true }));
+    });
+    const a = (mk.messages.find((m) => m.type === 'tabCreated') as { id: string }).id;
+    expect(registry.tabs().find((t) => t.id === a)).toMatchObject({ preview: true });
+
+    const rp = await collect('session=0', 400, (ws) => {
+      ws.send(JSON.stringify({ type: 'replaceTab', id: a, kind: 'review', url: 'changes:/tmp/prev' }));
+    });
+    const types = rp.messages.map((m) => m.type);
+    const sessionsAt = types.lastIndexOf('sessions');
+    const createdAt = types.indexOf('tabCreated');
+    expect(createdAt).toBeGreaterThan(sessionsAt);
+    expect(types.filter((t) => t === 'tabCreated')).toHaveLength(1);
+    const n = (rp.messages[createdAt] as { id: string }).id;
+    expect(n).not.toBe(a);
+    expect(registry.has(a)).toBe(false);
+    const last = rp.messages[sessionsAt];
+    expect(last?.type === 'sessions' && last.tabs?.find((t) => t.id === n)).toMatchObject({
+      kind: 'review',
+      preview: true,
+      replaces: a,
+    });
+
+    await collect('session=0', 300, (ws) => {
+      ws.send(JSON.stringify({ type: 'updateTab', id: n, preview: false }));
+    });
+    expect(registry.tabs().find((t) => t.id === n)).not.toHaveProperty('preview');
+  });
+
+  it('canonicalises a per-file review url and answers the holder on a repeat', async () => {
+    const url = 'changes-file:%2Ftmp%2Fa%2F..%2Fpf:x.ts';
+    const first = await collect('session=0', 300, (ws) => {
+      ws.send(JSON.stringify({ type: 'createTab', kind: 'review', url }));
+    });
+    const id = (first.messages.find((m) => m.type === 'tabCreated') as { id: string }).id;
+    expect(registry.tabs().find((t) => t.id === id)?.url).toBe('changes-file:%2Ftmp%2Fpf:x.ts');
+    const again = await collect('session=0', 300, (ws) => {
+      ws.send(JSON.stringify({ type: 'createTab', kind: 'review', url }));
+    });
+    expect(again.messages.find((m) => m.type === 'tabCreated')).toEqual({ type: 'tabCreated', id });
+  });
+
+  it('announces previewTabs in ready', async () => {
+    const { messages } = await collect('control=1', 200);
+    expect(messages.find((m) => m.type === 'ready')).toMatchObject({ previewTabs: true });
+  });
+
   it('does NOT ack a rejected createTab (web without a valid url)', async () => {
     const { messages } = await collect('session=0', 300, (ws) => {
       ws.send(JSON.stringify({ type: 'createTab', kind: 'web', url: 'javascript:1' }));

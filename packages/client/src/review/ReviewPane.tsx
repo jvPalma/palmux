@@ -40,6 +40,7 @@ import {
   parseReviewUrl,
   SCM_ALGORITHMS,
   SCM_COMMENT_LIMITS,
+  SCM_STATUS_LABEL,
   type ColorProfile,
   type ScmComment,
   type ScmEntry,
@@ -112,7 +113,12 @@ import {
   type WriteDeps,
   type WriteOutcome,
 } from './review-writes';
-import { ReviewRow, type ReviewRowProps, type ReviewWrites } from './ReviewRow';
+import {
+  ReviewButton,
+  ReviewRow,
+  type ReviewRowProps,
+  type ReviewWrites,
+} from './ReviewRow';
 import { commentsStore, useComments } from './use-comments';
 import { forgetWrites, recordWrite, type LoggedWrite } from './write-log';
 import {
@@ -143,6 +149,8 @@ const NO_DRAFTS: readonly DraftTarget[] = [];
 const NO_COMMENTS: readonly ScmComment[] = [];
 const NO_PATHS: ReadonlySet<string> = new Set();
 
+/** The group as the user reads it: "No more files in Changes". */
+const groupName = (group: ScmGroup): string => (group === 'staged' ? 'Staged' : 'Changes');
 const PAUSED_MESSAGE = 'This project is paused. Make it active to comment or stage.';
 
 /** The hidden textarea that carries the soft keyboard (App.tsx). */
@@ -243,12 +251,14 @@ interface ReviewViewProps {
   url: string;
   repo: string;
   group: ScmGroup;
+  /** Set for a single-file review: the one path this review lists. */
+  file?: string | undefined;
   tab: TabMeta;
   visible: boolean;
   focused: boolean;
 }
 
-const ReviewView = ({ tabId, url, repo, group, tab, visible, focused }: ReviewViewProps) => {
+const ReviewView = ({ tabId, url, repo, group, file, tab, visible, focused }: ReviewViewProps) => {
   const host = useReviewHost();
   const removed = !host.repos.includes(repo);
   const live = useScmStatus(repo, visible && !removed);
@@ -260,11 +270,25 @@ const ReviewView = ({ tabId, url, repo, group, tab, visible, focused }: ReviewVi
   const status = (live.active ? live.status : null) ?? retained.current;
   const paused = !removed && !live.active;
 
-  const entries = useMemo<ScmEntry[]>(() => {
+  const allEntries = useMemo<ScmEntry[]>(() => {
     if (!status) return [];
     // Conflicted files lead the Changes review, as Merge Changes leads the view.
     return group === 'staged' ? status.staged : [...status.merge, ...status.changes];
   }, [status, group]);
+  // A single-file review lists its one file; the group's list still gives the
+  // neighbours and the position.
+  const single = file !== undefined;
+  const entries = useMemo<ScmEntry[]>(
+    () => (file === undefined ? allEntries : allEntries.filter((entry) => entry.path === file)),
+    [allEntries, file],
+  );
+  const allEntriesRef = useRef(allEntries);
+  allEntriesRef.current = allEntries;
+  // The file an end state was reached on; it applies to that file's url only.
+  const [endedFor, setEndedFor] = useState<string | null>(null);
+  const ended = single && endedFor === file;
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
   const attrEpoch = status?.attrEpoch ?? '';
 
   // ── Width, layout, wrapping ───────────────────────────────────────────────
@@ -279,6 +303,10 @@ const ReviewView = ({ tabId, url, repo, group, tab, visible, focused }: ReviewVi
   visibleRef.current = visible;
   const wrapRef = useRef(wrap);
   wrapRef.current = wrap;
+  const layoutRef = useRef(layout);
+  layoutRef.current = layout;
+  const prefsRef = useRef(host.setPreferences);
+  prefsRef.current = host.setPreferences;
   const listElement = useCallback(
     () => bodyRef.current?.querySelector<HTMLElement>('[role="list"]') ?? null,
     [],
@@ -486,6 +514,9 @@ const ReviewView = ({ tabId, url, repo, group, tab, visible, focused }: ReviewVi
   const [scrollRequest, setScrollRequest] = useState(0);
   const navTarget = useRef<{ key: string; path: string } | null>(null);
   const landedRef = useRef<NavView['landed']>(undefined);
+  // Set when next change stepped out of a single-file review: land on the first change
+  // of the file that opens, once it has loaded.
+  const wantFirstChange = useRef<string | null>(null);
   const requestJump = useCallback((key: string, path: string) => {
     navTarget.current = { key, path };
     setScrollRequest((count) => count + 1);
@@ -588,9 +619,16 @@ const ReviewView = ({ tabId, url, repo, group, tab, visible, focused }: ReviewVi
   // but only for a draft that took it from there. Kept here, not in the editor,
   // which unmounts whenever its row scrolls out of the list.
   const keyboardHeld = useRef(new Map<string, boolean>());
+  const pinAsked = useRef(false);
+  if (!tab.preview) pinAsked.current = false;
   const openDraft = useCallback(
     (target: DraftTarget, text: string) => {
       const key = draftKey(target);
+      // A comment is work worth keeping: a preview tab is pinned, once.
+      if (tabRef.current.preview && !pinAsked.current) {
+        pinAsked.current = true;
+        hostRef.current.pinTab(tabId);
+      }
       freshDraft.current = key;
       // Once per draft: opening one again finds focus in its own textarea.
       if (!keyboardHeld.current.has(key)) {
@@ -598,7 +636,7 @@ const ReviewView = ({ tabId, url, repo, group, tab, visible, focused }: ReviewVi
       }
       commentsStore.setDraft(repo, target, text);
     },
-    [repo],
+    [repo, tabId],
   );
   const startComment = useCallback(() => {
     const held = selectionRef.current;
@@ -749,7 +787,8 @@ const ReviewView = ({ tabId, url, repo, group, tab, visible, focused }: ReviewVi
   );
   const reviewFile = useCallback(
     async (path: string): Promise<void> => {
-      const all = model.getEntries();
+      // A single-file review's model holds its one file; the neighbours are the group's.
+      const all = single ? allEntriesRef.current : model.getEntries();
       const at = all.findIndex((entry) => entry.path === path);
       const entry = all[at];
       if (!entry || busyRef.current.has(path)) return;
@@ -801,9 +840,13 @@ const ReviewView = ({ tabId, url, repo, group, tab, visible, focused }: ReviewVi
       });
       // Then the next file, which was the next one in the list before this one left it.
       const next = all[at + 1];
-      if (next) requestJump(`${next.path}|file`, next.path);
+      if (single) {
+        // Reviewed moves the tab on and keeps a preview a preview: no pin.
+        if (next) hostRef.current.showFile(tabId, next.path);
+        else setEndedFor(path);
+      } else if (next) requestJump(`${next.path}|file`, next.path);
     },
-    [model, repo, group, writable, writeDeps, undo, setBusyPath, requestJump],
+    [model, repo, group, writable, writeDeps, undo, setBusyPath, requestJump, single, tabId],
   );
   const writes = useMemo<ReviewWrites>(
     () => ({
@@ -837,10 +880,26 @@ const ReviewView = ({ tabId, url, repo, group, tab, visible, focused }: ReviewVi
     [model],
   );
   const moveChange = useCallback(
-    async (dir: 1 | -1): Promise<void> => {
+    async (dir: 1 | -1, stay = false): Promise<void> => {
+      // The one file must be in before its last change can be told from "not loaded yet".
+      if (single && file !== undefined && needsLoad(file)) {
+        const loaded = await model.load(file);
+        if (!loaded || model.getSnapshot(file) === undefined) unloadable.current.add(file);
+      }
       for (;;) {
         const target = findChange(navView(), dir, needsLoad);
-        if (!target) return;
+        if (!target) {
+          // Past the file's last change: the next file of the group, at its first change.
+          if (single && dir === 1 && !stay) {
+            const all = allEntriesRef.current;
+            const next = all[all.findIndex((entry) => entry.path === file) + 1];
+            if (next) {
+              wantFirstChange.current = next.path;
+              hostRef.current.showFile(tabId, next.path);
+            } else hostRef.current.notify(`No more files in ${groupName(group)}`);
+          }
+          return;
+        }
         if (target.kind === 'row') {
           requestJump(target.key, target.path);
           return;
@@ -853,16 +912,37 @@ const ReviewView = ({ tabId, url, repo, group, tab, visible, focused }: ReviewVi
         }
       }
     },
-    [model, navView, needsLoad, requestJump],
+    [model, navView, needsLoad, requestJump, single, file, group, tabId],
   );
   const moveFile = useCallback(
     (dir: 1 | -1): void => {
+      if (single) {
+        const all = allEntriesRef.current;
+        const at = all.findIndex((entry) => entry.path === file);
+        if (at < 0) return;
+        const view = navView();
+        if (dir === -1 && findFile(view, -1) !== null) {
+          // From inside the file, previous goes to its start first.
+          const row = view.rows[view.fileStart[0] ?? 0];
+          if (row) requestJump(row.key, row.path);
+          return;
+        }
+        const neighbour = all[at + dir];
+        if (neighbour) hostRef.current.showFile(tabId, neighbour.path);
+        else
+          hostRef.current.notify(
+            dir === 1
+              ? `No more files in ${groupName(group)}`
+              : `First file in ${groupName(group)}`,
+          );
+        return;
+      }
       const view = navView();
-      const file = findFile(view, dir);
-      const row = file === null ? undefined : view.rows[view.fileStart[file] ?? 0];
+      const index = findFile(view, dir);
+      const row = index === null ? undefined : view.rows[view.fileStart[index] ?? 0];
       if (row) requestJump(row.key, row.path);
     },
-    [navView, requestJump],
+    [navView, requestJump, single, file, group, tabId],
   );
   const reviewCurrent = useCallback((): void => {
     const file = findCurrentFile(navView());
@@ -886,9 +966,25 @@ const ReviewView = ({ tabId, url, repo, group, tab, visible, focused }: ReviewVi
       nextFile: whenShown(() => keyActions.current.moveFile(1)),
       prevFile: whenShown(() => keyActions.current.moveFile(-1)),
       reviewCurrent: whenShown(() => keyActions.current.reviewCurrent()),
+      toggleWrap: () => {
+        if (layoutRef.current === 'split') return 'split';
+        const next = !wrapRef.current;
+        prefsRef.current({ scmWrap: next });
+        return next ? 'on' : 'off';
+      },
     };
     return registerReview(tabId, api);
   }, [tabId]);
+
+  // Next change stepped into this file: once its rows are in and it has loaded, land
+  // on its first change. The header is where the file opened, so "next" finds it.
+  useEffect(() => {
+    if (!single || file === undefined || wantFirstChange.current !== file) return;
+    if (!visible || pendingScroll.current !== null || syncedEntries.current !== entries) return;
+    if (model.getEntries()[0]?.path !== file || needsLoad(file)) return;
+    wantFirstChange.current = null;
+    void moveChange(1, true);
+  }, [single, file, visible, entries, assembled, model, needsLoad, moveChange]);
 
   const { openFile } = host;
   const rowProps = useMemo<ReviewRowProps>(
@@ -929,7 +1025,7 @@ const ReviewView = ({ tabId, url, repo, group, tab, visible, focused }: ReviewVi
   );
 
   // ── Scrolling ─────────────────────────────────────────────────────────────
-  const showList = !removed && assembled.rows.length > 0;
+  const showList = !removed && !ended && assembled.rows.length > 0;
   // The offset this pane last put the list at. The `scroll` event a write raises is
   // the browser reporting that write, not the reader moving, so it must not replace
   // the anchor: the write may have landed a pixel beside its target, or been clamped,
@@ -977,14 +1073,29 @@ const ReviewView = ({ tabId, url, repo, group, tab, visible, focused }: ReviewVi
 
   // A Source Control row asked for a file: take the request once this pane is shown.
   const pendingScroll = useRef<ReviewScrollTarget | null>(null);
+  // The tab moved to another file of the same group: forget where the last file was
+  // left and land on the new file's header once its rows are in, and drop the end
+  // state, which belonged to that visit (coming back to a file later is a new one).
+  // (A write in flight is left alone; it settles on its own.)
+  const shownFile = useRef(file);
+  if (shownFile.current !== file) {
+    shownFile.current = file;
+    if (endedFor !== null) setEndedFor(null);
+    landedRef.current = undefined;
+    anchorRef.current = null;
+    navTarget.current = null;
+    if (wantFirstChange.current !== file) wantFirstChange.current = null;
+    pendingScroll.current = file === undefined ? null : { path: file };
+  }
   const { takeScrollTarget, openTick } = host;
   useEffect(() => {
-    if (!visible) return;
+    // A single-file url already names its file.
+    if (!visible || single) return;
     const target = takeScrollTarget(url);
     if (!target) return;
     pendingScroll.current = target;
     setScrollRequest((count) => count + 1);
-  }, [visible, takeScrollTarget, openTick, url]);
+  }, [visible, single, takeScrollTarget, openTick, url]);
 
   // After every rebuild (and when the pane is shown again, a hidden scroller having
   // lost its offset) put the anchor back where it was, or take the pending file to
@@ -1110,13 +1221,22 @@ const ReviewView = ({ tabId, url, repo, group, tab, visible, focused }: ReviewVi
     [host.layout, host.algorithm, layout, wrap, setPreferences, codeFontPx, stepCode],
   );
 
-  const files = assembled.fileStart.length;
-  const current = model.getEntries()[Math.min(currentFile, Math.max(0, files - 1))];
+  // The position reads the group's list, so a single-file review counts its neighbours.
+  const files = single ? allEntries.length : assembled.fileStart.length;
+  const position = single
+    ? allEntries.findIndex((entry) => entry.path === file) + 1
+    : Math.min(currentFile, files - 1) + 1;
+  const current = single
+    ? entries[0]
+    : model.getEntries()[Math.min(currentFile, Math.max(0, files - 1))];
+  const gone = single && !removed && status !== null && !allEntries.some((e) => e.path === file);
   const name = nameOf(repo);
 
   let message: string | null = null;
   if (removed) message = `Project removed. Add ${name} back in Source Control to read it again.`;
+  else if (ended) message = `No more files in ${groupName(group)}`;
   else if (!status) message = paused ? 'Nothing loaded yet.' : 'Loading changes…';
+  else if (gone) message = 'No longer changed';
   else if (entries.length === 0) {
     message = group === 'staged' ? 'No staged changes.' : 'No changes.';
   }
@@ -1240,9 +1360,50 @@ const ReviewView = ({ tabId, url, repo, group, tab, visible, focused }: ReviewVi
       {showList && current && (
         <div className="rv-current" data-testid="review-current" title={current.path}>
           <span className="rv-current-path">{current.path}</span>
+          {!compact && (
+            <>
+              <span className="rv-state" data-testid="review-current-state">
+                <span
+                  className="rv-status"
+                  data-status={current.status}
+                  title={SCM_STATUS_LABEL[current.status]}
+                >
+                  {current.status === '?' ? 'U' : current.status}
+                </span>{' '}
+                {SCM_STATUS_LABEL[current.status]}
+              </span>
+              {(current.added !== undefined || current.removed !== undefined) && (
+                <span className="rv-counts" data-testid="review-current-counts">
+                  <span className="rv-count-add">+{current.added ?? 0}</span>
+                  <span className="rv-count-del">−{current.removed ?? 0}</span>
+                </span>
+              )}
+            </>
+          )}
           <span className="rv-current-pos">
-            {Math.min(currentFile, files - 1) + 1} / {files}
+            {position} / {files}
           </span>
+          {!compact && (
+            <>
+              <ReviewButton
+                path={current.path}
+                writes={writes}
+                compact={false}
+                testId={group === 'staged' ? 'review-current-unstage' : 'review-current-reviewed'}
+              />
+              <IconButton
+                label="Open file"
+                size="sm"
+                data-testid="review-current-open"
+                disabled={current.status === 'D'}
+                {...pressMove(() =>
+                  openFile(repo === '/' ? `/${current.path}` : `${repo}/${current.path}`),
+                )}
+              >
+                <Icon name="external" size={14} />
+              </IconButton>
+            </>
+          )}
         </div>
       )}
 
@@ -1278,6 +1439,15 @@ const ReviewView = ({ tabId, url, repo, group, tab, visible, focused }: ReviewVi
           >
             {message}
           </p>
+        )}
+        {!showList && (ended || gone) && (
+          <Button
+            size="sm"
+            data-testid={ended ? 'rv-end-open-review' : 'rv-gone-open-review'}
+            {...pressMove(() => host.openReview({ group, path: file, repo }))}
+          >
+            Open review
+          </Button>
         )}
       </div>
       {selection && selection.phase !== 'drag' && writable && (
@@ -1317,14 +1487,16 @@ export const ReviewPane = ({ tab, visible, focused }: ReviewPaneProps) => {
       </div>
     );
   }
-  // Keyed by the address: a tab id recycled for another review starts clean.
+  // Keyed by the tab and its project, not its file: a single-file review that moves to
+  // another file of the group keeps its loaded snapshots. A recycled tab id starts clean.
   return (
     <ReviewView
-      key={tab.url}
+      key={`${tab.id}|${parsed.group}|${parsed.top}`}
       tabId={tab.id}
       url={tab.url}
       repo={parsed.top}
       group={parsed.group}
+      file={parsed.file}
       tab={tab}
       visible={visible}
       focused={focused}

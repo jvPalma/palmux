@@ -61,6 +61,23 @@ describe('matchAction', () => {
   });
 });
 
+describe('Alt+letter matches the physical key', () => {
+  it('reads Option+Z (key Ω) as Alt+Z', () => {
+    const e = new KeyboardEvent('keydown', { key: 'Ω', code: 'KeyZ', altKey: true });
+    expect(chordFromEvent(e)).toEqual({ key: 'z', alt: true });
+    expect(matchAction(DEFAULT_BINDINGS, e)).toBe('toggleWrap');
+  });
+  it('leaves Ctrl+Alt chords on e.key', () => {
+    const e = new KeyboardEvent('keydown', { key: 'g', code: 'KeyG', altKey: true, ctrlKey: true });
+    expect(chordFromEvent(e)).toEqual({ key: 'g', ctrl: true, alt: true });
+  });
+  it('leaves AltGr characters alone', () => {
+    const e = new KeyboardEvent('keydown', { key: 'Ω', code: 'KeyZ', altKey: true });
+    Object.defineProperty(e, 'getModifierState', { value: (k: string) => k === 'AltGraph' });
+    expect(chordFromEvent(e).key).toBe('ω');
+  });
+});
+
 describe('conflict detection', () => {
   it('finds an action already bound to a chord', () => {
     // settings is Ctrl+, — binding search to it should conflict.

@@ -789,6 +789,13 @@ behind your own authenticating reverse proxy / tunnel for anything beyond local 
 - **A mobile layer that is the point** — Termux-style extra-keys bar with sticky
   modifiers, pinch-zoom, swipe-scroll into `tmux`, native text selection, and a
   soft-keyboard path built around Android IME composition.
+- **Preview tabs** — a file or diff you open from the Explorer or Source Control
+  lands in an italic preview tab that the next one replaces, so browsing leaves one
+  tab. Double-click it, edit or save it, or choose Keep open to keep it.
+- **One file's diff per click** — a Source Control row opens that file's diff and
+  Reviewed moves on to the next file in the same tab; the Open review button on a
+  group header shows the whole group as one continuous diff.
+- **Alt+Z** toggles word wrap in the editor and the diff review.
 - **Inline images** — SIXEL and iTerm2 IIP, drawn over the WebGL canvas.
 - **Themes that leave the browser** — pick one and palmux regenerates your shell
   prompt, `tmux` bar and `git-delta` colours from the same palette.

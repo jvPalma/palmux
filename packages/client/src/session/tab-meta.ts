@@ -90,6 +90,7 @@ function reviewTitle(url: string | undefined): string {
   const parsed = url === undefined ? null : parseReviewUrl(url);
   if (!parsed) return 'review';
   const label = parsed.group === 'staged' ? 'Staged' : 'Changes';
+  if (parsed.file !== undefined) return `${parsed.file.split('/').pop()} (${label})`;
   return `${label} · ${parsed.top.split('/').findLast(Boolean) ?? parsed.top}`;
 }
 

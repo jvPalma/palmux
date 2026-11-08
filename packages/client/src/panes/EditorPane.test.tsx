@@ -10,6 +10,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EditorPane } from './EditorPane';
+import { FileTabPane } from './FileTabPane';
 import {
   DEFAULTS,
   notifySettingsChange,
@@ -249,7 +250,96 @@ describe('EditorPane font size', () => {
     expect(fakeEditor.updateOptions).toHaveBeenLastCalledWith({
       fontSize: 12,
       fontFamily: DEFAULTS.fontFamily,
+      wordWrap: 'on',
     });
+  });
+});
+
+describe('EditorPane word wrap', () => {
+  afterEach(() => localStorage.clear());
+
+  it('creates with wordWrap off when editorWrap is false, and updates live', async () => {
+    saveSettings(sanitize({ ...DEFAULTS, editorWrap: false }));
+    await renderPane();
+    const opts = (fakeMonaco.editor.create.mock.calls[0] as unknown as [unknown, { wordWrap: string }])[1];
+    expect(opts.wordWrap).toBe('off');
+    const next = sanitize({ ...DEFAULTS, editorWrap: true });
+    saveSettings(next);
+    notifySettingsChange(next);
+    expect(fakeEditor.updateOptions).toHaveBeenCalledWith(
+      expect.objectContaining({ wordWrap: 'on' }),
+    );
+  });
+});
+
+describe('EditorPane onSaved', () => {
+  const ctrlS = () =>
+    fireEvent(window, new KeyboardEvent('keydown', { key: 's', ctrlKey: true, cancelable: true }));
+
+  it('fires after a successful save', async () => {
+    const onSaved = vi.fn();
+    render(<EditorPane tabId="6" active onDirtyChange={vi.fn()} onSaved={onSaved} />);
+    await screen.findByText('saved');
+    simulateEdit('changed');
+    ctrlS();
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+  });
+
+  it('fires on Ctrl+S with a clean buffer, without a PUT', async () => {
+    const onSaved = vi.fn();
+    render(<EditorPane tabId="6" active onDirtyChange={vi.fn()} onSaved={onSaved} />);
+    await screen.findByText('saved');
+    ctrlS();
+    expect(onSaved).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.some((c) => c[1]?.method === 'PUT')).toBe(false);
+  });
+
+  it('does not fire on a refused save', async () => {
+    const onSaved = vi.fn();
+    const onSaveError = vi.fn();
+    render(
+      <EditorPane
+        tabId="6"
+        active
+        onDirtyChange={vi.fn()}
+        onSaved={onSaved}
+        onSaveError={onSaveError}
+      />,
+    );
+    await screen.findByText('saved');
+    fetchMock.mockImplementation(async (_url: string, init?: { method?: string }) =>
+      init?.method === 'PUT'
+        ? { ok: false, status: 500, text: async () => '' }
+        : { ok: true, status: 200, text: async () => '' },
+    );
+    simulateEdit('nope');
+    ctrlS();
+    await waitFor(() => expect(onSaveError).toHaveBeenCalledTimes(2));
+    expect(onSaved).not.toHaveBeenCalled();
+  });
+
+  it('does not fire when a visibilitychange flush finds a clean buffer', async () => {
+    const onSaved = vi.fn();
+    render(<EditorPane tabId="6" active onDirtyChange={vi.fn()} onSaved={onSaved} />);
+    await screen.findByText('saved');
+    const spy = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+    spy.mockRestore();
+    expect(onSaved).not.toHaveBeenCalled();
+  });
+
+  it('fires after an autosave 2xx', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const onSaved = vi.fn();
+      render(<EditorPane tabId="6" active onDirtyChange={vi.fn()} onSaved={onSaved} />);
+      await screen.findByText('saved');
+      simulateEdit('typed');
+      await vi.advanceTimersByTimeAsync(10_000);
+      await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -303,6 +393,47 @@ describe('EditorPane over a file path', () => {
       expect.anything(),
       expect.objectContaining({ language: 'plaintext' }),
     );
+  });
+
+  // Every file tab stays mounted, and a hidden one in Edit mode used to answer Ctrl+S too: on a
+  // clean buffer that reported a save, which pinned an unrelated preview.
+  it('Ctrl+S belongs to the focused file tab: a hidden one in Edit mode leaves it alone', async () => {
+    serveFile('on disk');
+    const hidden = vi.fn();
+    const shown = vi.fn();
+    const hiddenTab = (
+      <FileTabPane
+        key="a"
+        path="/p/a.ts"
+        focused={false}
+        onChangePath={vi.fn()}
+        onDirtyChange={vi.fn()}
+        onSaved={hidden}
+      />
+    );
+    const shownTab = (
+      <FileTabPane
+        key="b"
+        path="/p/b.ts"
+        focused
+        onChangePath={vi.fn()}
+        onDirtyChange={vi.fn()}
+        onSaved={shown}
+      />
+    );
+    // One at a time: vitest leaves a second concurrent import of the mocked loader pending.
+    const { rerender } = render(<>{hiddenTab}</>);
+    await waitFor(() => expect(fakeMonaco.editor.create).toHaveBeenCalledTimes(1));
+    rerender(
+      <>
+        {hiddenTab}
+        {shownTab}
+      </>,
+    );
+    await waitFor(() => expect(fakeMonaco.editor.create).toHaveBeenCalledTimes(2));
+    fireEvent(window, new KeyboardEvent('keydown', { key: 's', ctrlKey: true, cancelable: true }));
+    expect(shown).toHaveBeenCalledTimes(1);
+    expect(hidden).not.toHaveBeenCalled();
   });
 
   it('Ctrl+S PUTs the buffer to the file route', async () => {

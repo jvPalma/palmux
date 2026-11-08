@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { JsonObject, TabMeta, WebAppLink } from '@palmux/shared';
+import type { JsonObject, ScmGroup, TabMeta, WebAppLink } from '@palmux/shared';
 import {
   DEFAULT_MAX_UPLOAD_BYTES,
   forgivingOrder,
   normalizeOrder,
+  fileReviewUrl,
   parseReviewUrl,
   reviewUrl,
 } from '@palmux/shared';
@@ -110,6 +111,7 @@ import { layoutKey, useEditorGroups, type Placement } from './session/useEditorG
 import {
   activate,
   focusLeaf,
+  keepReplaces,
   leafOf as leafHolding,
   leaves,
   moveTab,
@@ -150,6 +152,27 @@ import { ReviewBar } from './mobile/ReviewBar';
 
 /** How long a `createTab` for a review url blocks a second one while it is unanswered. */
 const PENDING_REVIEW_MS = 5000;
+
+/** How long a single-file review's move to another file waits for a broadcast to show it. */
+const SHOW_FILE_MS = 2000;
+
+/**
+ * A preview open this window sent and has no answer to yet, per pane (design D3 "The pending entry").
+ * `sent*` is what went out and is what the answer is matched on; `latest*` is what a later open in
+ * the same pane asked for meanwhile, and `pinLatest` a pinned open of that.
+ */
+interface PendingPreview {
+  sentKind: 'editor' | 'review';
+  sentUrl: string;
+  latestKind: 'editor' | 'review';
+  latestUrl: string;
+  pinLatest: boolean;
+  replaces?: string;
+  at: number;
+}
+
+/** What `createTab` takes: the chooser's spec, or a preview open's. */
+type AppCreateSpec = CreateSpec & { preview?: true };
 
 /**
  * How long a move to another window is held against the server's broadcasts. A frame already in
@@ -408,6 +431,9 @@ export function App() {
   // The server announced detached windows in its last `ready`: an older one sends no flag, and a
   // client built ahead of it must not open windows that would show nothing.
   const [capDetached, setCapDetached] = useState(false);
+  // The server announced batch writes in its last `ready`: until then the Source Control list
+  // offers no row actions, because an older server has none of the routes they call.
+  const [capScmBatch, setCapScmBatch] = useState(false);
   // The server's last `ready` said it has no detached windows. A ref beside the state: the first
   // `sessions` handler reads it in the same tick, before any render could show the state.
   const detachedUnsupportedRef = useRef(false);
@@ -1024,6 +1050,101 @@ export function App() {
     (msg: string, action?: ToastAction) => toastRef.current?.show(msg, action),
     [],
   );
+
+  // ── Preview tabs (design D3, D4, D9) ─────────────────────────────────────────
+  // Whether the server knows preview tabs and `replaceTab`: false until the first `ready`, and read
+  // again from every one. While false nothing sends a `preview` field or a `replaceTab`, and every
+  // open is a pinned one, so a newer client on an older server behaves as before.
+  const previewSupportedRef = useRef(false);
+  // Previews this window asked to pin and no broadcast has shown pinned yet: one message per tab,
+  // and the set a `ready` re-sends from, since a pin sent just before a disconnect may be lost.
+  const pinSentRef = useRef(new Set<string>());
+  /** Keep a preview tab open (one-way). Nothing for a pinned tab or one already asked for. */
+  const pinTab = useCallback(
+    (id: string) => {
+      if (!previewSupportedRef.current || pinSentRef.current.has(id)) return;
+      if (!tabsRef.current.some((t) => t.id === id && t.preview)) return;
+      if (wsControlRef.current?.sendUpdateTab({ id, preview: false })) pinSentRef.current.add(id);
+      else showToast('Not connected — try again');
+    },
+    [showToast],
+  );
+  // Preview opens sent and not answered yet, by pane, each dropped with a toast after
+  // `PENDING_REVIEW_MS`. A `tabCreated` whose tab this window has not been listed yet is held for
+  // one more `sessions` (`heldAnswersRef`). An open the user asked to keep, which a later open in
+  // its pane moved aside, waits under `<pane>~<n>` (`keptPreviewSeq`), a key no pane has.
+  const pendingPreviewRef = useRef(new Map<string, PendingPreview>());
+  const keptPreviewSeq = useRef(0);
+  const pendingPreviewTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const heldAnswersRef = useRef<string[]>([]);
+  const dropPendingPreview = useCallback((leafId: string) => {
+    pendingPreviewRef.current.delete(leafId);
+    clearTimeout(pendingPreviewTimers.current.get(leafId));
+    pendingPreviewTimers.current.delete(leafId);
+  }, []);
+  const recordPendingPreview = useCallback(
+    (leafId: string, entry: PendingPreview) => {
+      dropPendingPreview(leafId);
+      pendingPreviewRef.current.set(leafId, entry);
+      pendingPreviewTimers.current.set(
+        leafId,
+        setTimeout(() => {
+          if (pendingPreviewRef.current.get(leafId) !== entry) return;
+          dropPendingPreview(leafId);
+          const name = displayTitle({ id: '', kind: entry.latestKind, url: entry.latestUrl });
+          showToast(`Could not open ${name}`);
+        }, PENDING_REVIEW_MS),
+      );
+    },
+    [dropPendingPreview, showToast],
+  );
+  /**
+   * A `tabCreated` against the pending preview opens, matched by CONTENT (the answered tab's kind and
+   * url equal what an entry sent), never by arrival order: an answer to something else leaves them
+   * alone. On a match, an open made meanwhile follows with one `replaceTab` of the answered tab,
+   * which becomes the pane's new entry, or a pinned open of it pins it. `unlisted` is an answer
+   * whose tab no list has shown yet.
+   */
+  const answerPreview = useCallback(
+    (id: string): 'matched' | 'unlisted' | 'other' => {
+      const tab = tabsRef.current.find((t) => t.id === id);
+      if (!tab) return 'unlisted';
+      for (const [leafId, entry] of pendingPreviewRef.current) {
+        if (tab.kind !== entry.sentKind || tab.url !== entry.sentUrl) continue;
+        dropPendingPreview(leafId);
+        const { latestKind, latestUrl } = entry;
+        if (latestKind !== entry.sentKind || latestUrl !== entry.sentUrl) {
+          if (wsControlRef.current?.sendReplaceTab(id, latestKind, latestUrl)) {
+            recordPendingPreview(leafId, {
+              sentKind: latestKind,
+              sentUrl: latestUrl,
+              latestKind,
+              latestUrl,
+              pinLatest: entry.pinLatest,
+              replaces: id,
+              at: Date.now(),
+            });
+          } else showToast('Not connected — try again');
+        } else if (entry.pinLatest) pinTab(id);
+        return 'matched';
+      }
+      return 'other';
+    },
+    [dropPendingPreview, recordPendingPreview, pinTab, showToast],
+  );
+  // A single-file review moved to another file (`showFile`), by tab: the url it was sent to, until a
+  // broadcast shows the tab there.
+  const showFileWaits = useRef(
+    new Map<string, { url: string; timer: ReturnType<typeof setTimeout> }>(),
+  );
+  useEffect(() => {
+    const timers = pendingPreviewTimers.current;
+    const waits = showFileWaits.current;
+    return () => {
+      for (const timer of timers.values()) clearTimeout(timer);
+      for (const wait of waits.values()) clearTimeout(wait.timer);
+    };
+  }, []);
   // Server build version last seen on `ready`; a change across a reconnect means
   // the server was redeployed and this client is now stale.
   const knownVersionRef = useRef<string>('');
@@ -1317,17 +1438,19 @@ export function App() {
   const sashStartRef = useRef<PaneLayout | null>(null);
   // The layout the last drag frame handed over, to tell it apart from a layout a broadcast made.
   const sashFrameRef = useRef<PaneLayout | null>(null);
+  // True when the layout changed (a move to another pane pins a preview only then).
   const commitLayout = useCallback(
-    (compute: (current: PaneLayout) => PaneLayout) => {
+    (compute: (current: PaneLayout) => PaneLayout): boolean => {
       const current = layoutRef.current;
-      if (!current || sashStartRef.current !== null) return;
+      if (!current || sashStartRef.current !== null) return false;
       const next = compute(current);
-      if (next === current) return;
+      if (next === current) return false;
       // Ahead of the render, as a drag frame does: a second command in the same handler (the
       // collapse guard switches every pane it protects, one after another) must build on this one,
       // not on the layout of the last render, which would put the first pane back.
       layoutRef.current = next;
       commitLayoutValue(next);
+      return true;
     },
     [commitLayoutValue],
   );
@@ -1382,12 +1505,15 @@ export function App() {
         case 'chooserPage':
           setChooserPage(e.value);
           break;
-        case 'split':
-          commitLayout((current) => {
+        case 'split': {
+          // A preview moved into a pane of its own is kept: it is no longer a glance.
+          const moved = commitLayout((current) => {
             const tab = refOfTab(current, e.tabId);
             return tab ? splitPane(current, e.leafId, e.side, tab, tabOrder()) : current;
           });
+          if (moved) pinTab(e.tabId);
           break;
+        }
         case 'splitLone': {
           // The tab is its pane's only one, so there is nothing to move: a NEW terminal opens in
           // the new pane. Its id is picked here and the layout holds it pending until a broadcast
@@ -1403,7 +1529,7 @@ export function App() {
         }
       }
     },
-    [showTab, commitLayout, refOfTab, tabOrder, freshTerminalId, pendingTabs],
+    [showTab, commitLayout, refOfTab, tabOrder, freshTerminalId, pendingTabs, pinTab],
   );
 
   // Translate a navigation gesture/socket event into effects (pure decision) and
@@ -1916,6 +2042,16 @@ export function App() {
         setMaxUploadBytes(msg.maxUploadBytes);
         setWebApps(msg.webApps);
         setCapDetached(msg.detachedWindows === true);
+        setCapScmBatch(msg.scmBatchWrites === true);
+        previewSupportedRef.current = msg.previewTabs === true;
+        // A pin sent just before the socket went down may never have arrived.
+        if (previewSupportedRef.current) {
+          for (const id of pinSentRef.current) {
+            if (tabsRef.current.some((t) => t.id === id && t.preview)) {
+              ws.sendUpdateTab({ id, preview: false });
+            }
+          }
+        }
         // A detached window on a server that predates them (a rollback) would claim nothing and
         // show nothing: it says so and shows the New-tab page instead of an empty frame.
         detachedUnsupportedRef.current = detached && msg.detachedWindows !== true;
@@ -1951,8 +2087,41 @@ export function App() {
         if (answered?.kind === 'review' && answered.url !== undefined) {
           pendingReviewsRef.current.delete(answered.url);
         }
+        if (pendingPreviewRef.current.size > 0 && answerPreview(msg.id) === 'unlisted') {
+          heldAnswersRef.current.push(msg.id);
+        }
         dispatch({ type: 'tabCreated', id: msg.id });
       } else if (msg.type === 'sessions') {
+        // The tab that replaced `id` in place (design D3a), counted only on the broadcast that
+        // first lists it: the server keeps the hint on the record, so a later broadcast can still
+        // name an id since recycled for an unrelated tab. Read before anything moves `tabsRef`.
+        const replacing = (id: string) =>
+          msg.tabs.find((t) => t.replaces === id && !tabsRef.current.some((p) => p.id === t.id));
+        // What the layout renders: the list with a swap's hint kept until a render has used it.
+        const withHints = keepReplaces(msg.tabs, tabsRef.current, layoutRef.current);
+        // A preview this window was editing, swapped by ANOTHER window before its first keystroke's
+        // pin arrived (design D4, the race): the text typed in that round trip is gone. Read against
+        // the list as it was, before anything below moves `tabsRef`. A pinned tab following a link
+        // changes its url too, and is not a preview.
+        for (const old of tabsRef.current) {
+          if (!old.preview || !dirtyRef.current[old.id]) continue;
+          const now = msg.tabs.find((t) => t.id === old.id);
+          if (now ? now.url !== old.url : replacing(old.id) !== undefined) {
+            showToast(
+              `${displayTitle(old)} was replaced by another window before your edit was saved`,
+            );
+          }
+        }
+        // A pin is spent once a broadcast shows the tab pinned, or gone.
+        for (const id of pinSentRef.current) {
+          if (!msg.tabs.find((t) => t.id === id)?.preview) pinSentRef.current.delete(id);
+        }
+        for (const [id, wait] of showFileWaits.current) {
+          if (msg.tabs.some((t) => t.id === id && t.url === wait.url)) {
+            clearTimeout(wait.timer);
+            showFileWaits.current.delete(id);
+          }
+        }
         // Accumulate seen-terminals + prune BEFORE deciding close-nav (the
         // controller reads seenTermIds); `setTabs` is async so `tabsRef.current`
         // is still the OLD list the close-nav decision needs.
@@ -1989,7 +2158,7 @@ export function App() {
           setAwaitingResolve(false);
           // The refs first: `nextFreeId` and `show` read the list through them, and `setTabs`
           // below has not run yet.
-          writeTabsRef(msg.tabs);
+          writeTabsRef(withHints);
           // A detached window's reclaim of its tabs (design D6) runs HERE: after the refs it reads,
           // and before the resolve, which must see what it moved into this window.
           reclaim(msg.tabs);
@@ -2036,6 +2205,18 @@ export function App() {
           // only place holding the previous strip order needed to compute it.
           // On-screen splits reconcile in their own effect. It reads the tabs THIS window shows,
           // before and after.
+          //
+          // On the flat path (the mobile layer) a tab REPLACED in place hands the selection to the
+          // tab that replaced it first, so the controller sees no dead active tab and the neighbour
+          // never shows. With editor groups `reconcile` does the same in the pane.
+          if (!groupsEnabledRef.current) {
+            const shown = sessionIdRef.current;
+            const swap = replacing(shown);
+            if (swap && !msg.tabs.some((t) => t.id === shown)) {
+              sessionIdRef.current = swap.id;
+              setSessionIdRaw(swap.id);
+            }
+          }
           dispatch({ type: 'sessionsBroadcast', tabs: visibleOf(msg.tabs, optimisticRef.current) });
         }
         // A move this window made is spent once a broadcast shows the tab with that owner. Until
@@ -2051,7 +2232,13 @@ export function App() {
         // resolved before React renders it (a drop above all) must already see
         // it. Moved only now: the close-navigation decision above is the one
         // reader that needs the list as it was.
-        writeTabsRef(msg.tabs);
+        writeTabsRef(withHints);
+        // An answer that came before its tab was listed is matched now, or never.
+        if (heldAnswersRef.current.length > 0) {
+          const held = heldAnswersRef.current;
+          heldAnswersRef.current = [];
+          for (const id of held) answerPreview(id);
+        }
         // A reconnect's reclaim: the first broadcast's already ran above. After the list is
         // written, which the move reads, and before `setTabs` queues the list the claim is
         // rendered with. The page as last rendered: the decision above may have queued it, for a
@@ -2069,7 +2256,7 @@ export function App() {
         ) {
           setDragTabId(null);
         }
-        setTabs(msg.tabs);
+        setTabs(withHints);
         // After the list: the layout is built from it, with the boot choice set above.
         setSessionsReady(true);
       } else if (msg.type === 'settings') applySettings(msg.settings);
@@ -2132,6 +2319,7 @@ export function App() {
     dispatch,
     showTab,
     showToast,
+    answerPreview,
     hasSavedLayout,
     pendingTabs,
     boot,
@@ -2246,6 +2434,21 @@ export function App() {
     // put both in the command palette, where every other action is.
     uploadFile: guardedOpenPicker,
     downloadFile: doDownload,
+    ...(!onChooserPage && (activeTab.kind === 'editor' || activeTab.kind === 'review')
+      ? {
+          toggleWrap: () => {
+            if (activeTab.kind === 'editor') {
+              const next = !settingsRef.current.editorWrap;
+              updateSettings({ editorWrap: next });
+              showToast(next ? 'Word wrap on' : 'Word wrap off');
+              return;
+            }
+            const res = reviewApiFor(activeTab.id)?.toggleWrap();
+            if (res === 'split') showToast('Side-by-side always wraps');
+            else if (res) showToast(res === 'on' ? 'Word wrap on' : 'Word wrap off');
+          },
+        }
+      : {}),
     increaseFontSize: () => updateSettings({ fontSize: settingsRef.current.fontSize + 1 }),
     decreaseFontSize: () => updateSettings({ fontSize: settingsRef.current.fontSize - 1 }),
     resetFontSize: () => updateSettings({ fontSize: DEFAULTS.fontSize }),
@@ -2253,7 +2456,7 @@ export function App() {
   useKeybindings(actionHandlers);
 
   const createTab = useCallback(
-    (spec: CreateSpec): boolean => {
+    (spec: AppCreateSpec): boolean => {
       setNewTabOpen(false);
       setNewTabDialog(false);
       if (spec.kind === 'terminal') {
@@ -2390,9 +2593,14 @@ export function App() {
     (id: string, url: string) => wsControlRef.current?.sendUpdateTab({ id, url }),
     [],
   );
-  const onPaneDirty = useCallback((id: string, dirty: boolean) => {
-    setDirtyTabs((prev) => (prev[id] === dirty ? prev : { ...prev, [id]: dirty }));
-  }, []);
+  const onPaneDirty = useCallback(
+    (id: string, dirty: boolean) => {
+      setDirtyTabs((prev) => (prev[id] === dirty ? prev : { ...prev, [id]: dirty }));
+      // The first edit keeps a preview open, in every window.
+      if (dirty) pinTab(id);
+    },
+    [pinTab],
+  );
 
   // ── Moving tabs between windows ───────────────────────────────────────────────
   // Whether `ids` may move at all, and, when they LEAVE this window, whether the user accepts losing
@@ -2503,19 +2711,130 @@ export function App() {
    * two tabs on one path would be two editors over one file, and whichever
    * saved last would silently win.
    */
-  const openFileTab = useCallback(
-    (path: string) => {
-      const existing = tabsRef.current.find((t) => t.kind === 'editor' && t.url === path);
+  /**
+   * Open a file or a single-file review (design D3). `pin` false is a preview open: it replaces the
+   * focused pane's preview tab in place (`replaceTab`), or creates a preview. `pin` true shows the
+   * tab already open and keeps it, or creates a pinned tab; it never replaces anything. Without
+   * server support every open is a pinned one.
+   */
+  const openPreview = useCallback(
+    ({
+      kind,
+      url,
+      pin,
+    }: {
+      kind: 'editor' | 'review';
+      url: string;
+      pin: boolean;
+    }): 'opened' | 'held' => {
+      const supported = previewSupportedRef.current;
+      const keep = pin || !supported;
+      const current = layoutRef.current;
+      // The mobile layer's layout is its one virtual pane, so the same code applies there.
+      const leafId = current?.focused ?? 'p0';
+      const pending = supported ? pendingPreviewRef.current.get(leafId) : undefined;
+      const entry = (replaces?: string): PendingPreview => ({
+        sentKind: kind,
+        sentUrl: url,
+        latestKind: kind,
+        latestUrl: url,
+        pinLatest: false,
+        ...(replaces !== undefined ? { replaces } : {}),
+        at: Date.now(),
+      });
+
+      // 1. The target has a tab already.
+      const existing = tabsRef.current.find((t) => t.kind === kind && t.url === url);
       if (existing) {
         if (visibleTabsRef.current.some((t) => t.id === existing.id)) selectTab(existing.id);
-        // Another window holds it. It is not moved here: this window cannot see that buffer, so
-        // the discard confirm would be blind and an editor with unsaved text would lose it.
-        else showToast(`${displayTitle(existing)} is open in another window`);
-        return;
+        else if (kind === 'editor') {
+          // Another window holds it. It is not moved here: this window cannot see that buffer, so
+          // the discard confirm would be blind and an editor with unsaved text would lose it.
+          showToast(`${displayTitle(existing)} is open in another window`);
+          return 'held';
+        }
+        // A review holds no unsaved state, so one another window holds moves here.
+        else if (moveTabsToWindow([existing.id], myWindow)) selectTab(existing.id);
+        // The pane's pending answer lands only its own tab now.
+        if (pending) {
+          pending.latestKind = pending.sentKind;
+          pending.latestUrl = pending.sentUrl;
+          pending.pinLatest = false;
+        }
+        if (pin && existing.preview) pinTab(existing.id);
+        return 'opened';
       }
-      createTab({ kind: 'editor', url: path });
+
+      // An open in a pane whose last one is unanswered waits for that answer.
+      if (pending) {
+        if (kind === pending.latestKind && url === pending.latestUrl) {
+          if (pin) pending.pinLatest = true;
+          return 'opened';
+        }
+        if (!pin && !pending.pinLatest) {
+          pending.latestKind = kind;
+          pending.latestUrl = url;
+          return 'opened';
+        }
+        if (!pin) {
+          // The pending target was asked to stay open, so this open must not take its place. Its
+          // entry still waits for the answer, to pin it, under a key of its own, and this open goes
+          // out as a new preview. Never as a `replaceTab`: the preview this pane would offer may be
+          // the very tab the pending one is about to land in.
+          dropPendingPreview(leafId);
+          keptPreviewSeq.current += 1;
+          recordPendingPreview(`${leafId}~${keptPreviewSeq.current}`, pending);
+          if (createTab({ kind, url, preview: true })) recordPendingPreview(leafId, entry());
+          return 'opened';
+        }
+      }
+
+      // 2. The replaceable preview: the focused pane's tabs (only those this window shows) with
+      // `preview` and no unsaved text, the active one if it is one, else the last in strip order.
+      let replace: TabMeta | undefined;
+      if (!keep && current) {
+        const leaf = leaves(current).find((l) => l.id === current.focused);
+        if (leaf) {
+          const held = new Set(leaf.tabs.map((t) => t.id));
+          const candidates = visibleTabsRef.current.filter(
+            (t) => held.has(t.id) && t.preview && !dirtyRef.current[t.id],
+          );
+          replace = candidates.find((t) => t.id === leaf.active) ?? candidates.at(-1);
+        }
+      }
+
+      // 3. Swapped in place, whatever its kind; nothing changes on screen until the answer.
+      if (replace) {
+        if (wsControlRef.current?.sendReplaceTab(replace.id, kind, url)) {
+          recordPendingPreview(leafId, entry(replace.id));
+        } else showToast('Not connected — try again');
+        return 'opened';
+      }
+      // 4. A new tab.
+      if (createTab(keep ? { kind, url } : { kind, url, preview: true }) && !keep) {
+        recordPendingPreview(leafId, entry());
+      }
+      return 'opened';
     },
-    [createTab, selectTab, showToast],
+    [
+      createTab,
+      selectTab,
+      showToast,
+      moveTabsToWindow,
+      myWindow,
+      pinTab,
+      recordPendingPreview,
+      dropPendingPreview,
+    ],
+  );
+  /**
+   * Open a server file as a TAB, or focus the tab already showing it (the contract in design D3):
+   * `'held'` exactly when another window holds that file's editor tab. `preview` defaults to false.
+   */
+  const openFileTab = useCallback(
+    (path: string, opts?: { preview?: boolean }): 'opened' | 'held' =>
+      openPreview({ kind: 'editor', url: path, pin: !(opts?.preview ?? false) }),
+    [openPreview],
   );
 
   // The file each review tab should scroll to once it shows, keyed by the review's
@@ -2538,11 +2857,20 @@ export function App() {
    * refused one cannot block the url for good.
    */
   const openReview = useCallback(
-    (target: ScmOpenTarget) => {
-      const repo = activeScmRepoRef.current;
+    (target: { group: ScmGroup; path?: string; oldPath?: string; repo?: string }) => {
+      // A paused review names its own project, which is not the one this device reads.
+      const repo = target.repo ?? activeScmRepoRef.current;
       if (!repo) return;
       const url = reviewUrl(target.group, repo);
-      reviewScrollRef.current.set(url, target);
+      // With no file named (the group header's Open review) the review opens where it is.
+      if (target.path === undefined) reviewScrollRef.current.delete(url);
+      else {
+        reviewScrollRef.current.set(url, {
+          group: target.group,
+          path: target.path,
+          ...(target.oldPath !== undefined ? { oldPath: target.oldPath } : {}),
+        });
+      }
       setReviewOpenTick((tick) => tick + 1);
       const existing = tabsRef.current.find((t) => t.kind === 'review' && t.url === url);
       if (existing) {
@@ -2562,6 +2890,58 @@ export function App() {
       if (!createTab({ kind: 'review', url })) pendingReviewsRef.current.delete(url);
     },
     [createTab, selectTab, moveTabsToWindow, myWindow],
+  );
+  /**
+   * Open one file's diff in a single-file review tab (the contract in design D3); a review another
+   * window holds is moved here, so it is never `'held'`. Without server support it is the
+   * continuous review scrolled to the file.
+   */
+  const openFileReview = useCallback(
+    (target: ScmOpenTarget, opts?: { preview?: boolean }): 'opened' | 'held' => {
+      const repo = activeScmRepoRef.current;
+      if (!previewSupportedRef.current || !repo) {
+        openReview(target);
+        return 'opened';
+      }
+      return openPreview({
+        kind: 'review',
+        url: fileReviewUrl(target.group, repo, target.path),
+        pin: !(opts?.preview ?? false),
+      });
+    },
+    [openReview, openPreview],
+  );
+  /**
+   * Move a single-file review to another file of its group by changing its url, or show the tab
+   * that already holds that file's review. A toast when no broadcast shows the move in time.
+   */
+  const showFile = useCallback(
+    (tabId: string, path: string) => {
+      const tab = tabsRef.current.find((t) => t.id === tabId);
+      const parsed = tab?.kind === 'review' && tab.url ? parseReviewUrl(tab.url) : null;
+      if (!tab || !parsed) return;
+      const url = fileReviewUrl(parsed.group, parsed.top, path);
+      if (url === tab.url) return;
+      const other = tabsRef.current.find((t) => t.kind === 'review' && t.url === url);
+      if (other) {
+        if (visibleTabsRef.current.some((t) => t.id === other.id)) selectTab(other.id);
+        else if (moveTabsToWindow([other.id], myWindow)) selectTab(other.id);
+        return;
+      }
+      if (!wsControlRef.current?.sendUpdateTab({ id: tabId, url })) {
+        showToast('Not connected — try again');
+        return;
+      }
+      const waits = showFileWaits.current;
+      clearTimeout(waits.get(tabId)?.timer);
+      const timer = setTimeout(() => {
+        if (waits.get(tabId)?.timer !== timer) return;
+        waits.delete(tabId);
+        showToast('Could not open the next file');
+      }, SHOW_FILE_MS);
+      waits.set(tabId, { url, timer });
+    },
+    [selectTab, moveTabsToWindow, myWindow, showToast],
   );
 
   // Where the review bar's left→right swipe goes: the last tab that was NOT a review,
@@ -2595,7 +2975,10 @@ export function App() {
       openTick: reviewOpenTick,
       setPreferences: updateSettings,
       activate: (repo) => updateSettings({ scmActiveRepo: repo }),
-      openFile: openFileTab,
+      openFile: (path) => void openFileTab(path, { preview: true }),
+      showFile,
+      openReview,
+      pinTab,
       takeScrollTarget: (url) => {
         const target = reviewScrollRef.current.get(url);
         reviewScrollRef.current.delete(url);
@@ -2612,6 +2995,9 @@ export function App() {
       reviewOpenTick,
       updateSettings,
       openFileTab,
+      showFile,
+      openReview,
+      pinTab,
       showToast,
     ],
   );
@@ -2904,17 +3290,20 @@ export function App() {
       setDragTabId(null);
       if (!id) return;
       if (dropFromOtherWindow(id, local !== null, leafId, side)) return;
-      commitLayout((current) => {
+      const moved = commitLayout((current) => {
         const tab = refOfTab(current, id);
         return tab ? splitPane(current, leafId, side, tab, tabOrder()) : current;
       });
+      if (moved) pinTab(id);
     },
-    [commitLayout, refOfTab, tabOrder, dropFromOtherWindow],
+    [commitLayout, refOfTab, tabOrder, dropFromOtherWindow, pinTab],
   );
+  // A drop on the tab's own pane changes nothing and pins nothing; a move to another pane pins.
   const moveTabInto = useCallback(
-    (id: string, leafId: string) =>
-      commitLayout((current) => moveTab(current, id, leafId, tabOrder())),
-    [commitLayout, tabOrder],
+    (id: string, leafId: string) => {
+      if (commitLayout((current) => moveTab(current, id, leafId, tabOrder()))) pinTab(id);
+    },
+    [commitLayout, tabOrder, pinTab],
   );
   const dropOnCentre = useCallback(
     (leafId: string, dropped: string | null) => {
@@ -3047,6 +3436,7 @@ export function App() {
         onRename={renameTab}
         onRecolor={recolorTab}
         onSplit={doSplit}
+        onPin={pinTab}
         // Only where a new window can hold the tab: the server supports it, and not on a phone.
         onPopout={capDetached && !mobileActive ? doPopout : undefined}
         onMoveToMain={detached ? doMoveToMain : undefined}
@@ -3111,6 +3501,7 @@ export function App() {
               onUpdateQuickLinks={updateQuickLinks}
               onChangeUrl={changeTabUrl}
               onPaneDirty={onPaneDirty}
+              onPinTab={pinTab}
               onPaneFocus={focusPaneOf}
               paneMenu={mobileActive ? openDrawer : undefined}
             />
@@ -3210,7 +3601,7 @@ export function App() {
             )}
             {dockView === 'files' && (
               <FileTree
-                onOpenFile={openFileTab}
+                onOpenFile={(path, opts) => void openFileTab(path, opts)}
                 pins={settings.explorerPins}
                 onPinsChange={(explorerPins) => updateSettings({ explorerPins })}
                 onNotice={showToast}
@@ -3224,8 +3615,15 @@ export function App() {
                 activeRepo={activeScmRepo}
                 visible
                 onChange={updateSettings}
-                onOpenFile={openReview}
+                onOpenFile={(target, opts) =>
+                  void openFileReview(target, { preview: opts?.preview ?? true })
+                }
+                onOpenReview={(group) => openReview({ group })}
                 onNotice={showToast}
+                onNotify={showToast}
+                batchWrites={capScmBatch}
+                // A held file already toasts inside `openFileTab`, so its answer is not needed here.
+                onOpenPath={(path) => void openFileTab(path, { preview: true })}
               />
             )}
             {dockView === 'dictation' && (
@@ -3289,8 +3687,8 @@ export function App() {
             ? {
                 viewContent: (
                   <FileTree
-                    onOpenFile={(path) => {
-                      openFileTab(path);
+                    onOpenFile={(path, opts) => {
+                      openFileTab(path, opts);
                       closeDrawer();
                     }}
                     pins={settings.explorerPins}
@@ -3309,11 +3707,21 @@ export function App() {
                       // is not being seen: a closed drawer must not keep the poll alive.
                       visible={drawerOpen}
                       onChange={updateSettings}
-                      onOpenFile={(target) => {
+                      onOpenFile={(target, opts) => {
                         closeDrawer(); // opening navigates; get out of the way first
-                        openReview(target);
+                        openFileReview(target, { preview: opts?.preview ?? true });
+                      }}
+                      onOpenReview={(group) => {
+                        closeDrawer();
+                        openReview({ group });
                       }}
                       onNotice={showToast}
+                      onNotify={showToast}
+                      batchWrites={capScmBatch}
+                      onOpenPath={(path) => {
+                        closeDrawer();
+                        void openFileTab(path, { preview: true });
+                      }}
                     />
                   ),
                 }
@@ -3355,6 +3763,7 @@ export function App() {
           onAddToGroup={addToGroup}
           onRemoveFromGroup={removeFromGroup}
           onCloseTab={closeTab}
+          onPin={pinTab}
           onDismiss={() => setSheetTabId(null)}
         />
       )}

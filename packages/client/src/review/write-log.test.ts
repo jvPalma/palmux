@@ -58,3 +58,32 @@ describe('the recent writes', () => {
     expect(recordWrite(write('r3', 20)).map((w) => w.receiptId)).toEqual(['r2', 'r3']);
   });
 });
+
+describe('what a logged write can carry', () => {
+  it('keeps the count, the origin, the skips and a discard exactly as given', () => {
+    const all = recordWrite(
+      write('d1', 0, {
+        action: 'discard',
+        count: 40,
+        via: 'list',
+        skipped: [{ path: 'x.ts', reason: 'changed' }],
+      }),
+    );
+    expect(all[0]).toMatchObject({
+      action: 'discard',
+      count: 40,
+      via: 'list',
+      skipped: [{ path: 'x.ts', reason: 'changed' }],
+    });
+  });
+
+  it('windows and forgets a discard like any other write', () => {
+    const first = recordWrite(write('d1', 0, { action: 'discard' }));
+    recordWrite(write('r2', 1000));
+    forgetWrites(first);
+    expect(recordWrite(write('r3', UNDO_WINDOW_MS + 500)).map((w) => w.receiptId)).toEqual([
+      'r2',
+      'r3',
+    ]);
+  });
+});

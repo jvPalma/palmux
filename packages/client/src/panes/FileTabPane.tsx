@@ -26,9 +26,19 @@ export interface FileTabPaneProps {
   onChangePath: (path: string) => void;
   /** Report the buffer's dirty state so the strip can draw its ● . */
   onDirtyChange: (dirty: boolean) => void;
+  /** A save landed, or Ctrl+S on a clean buffer. */
+  onSaved?: (() => void) | undefined;
+  /** The tab is the focused pane's shown one: only then does Ctrl+S belong to its editor. */
+  focused: boolean;
 }
 
-export function FileTabPane({ path, onChangePath, onDirtyChange }: FileTabPaneProps) {
+export function FileTabPane({
+  path,
+  onChangePath,
+  onDirtyChange,
+  onSaved,
+  focused,
+}: FileTabPaneProps) {
   // Read first for anything with a rendered form; FilePane downgrades to Edit
   // by itself for a file that has none, so this is a preference, not a claim.
   const [mode, setMode] = useState<FileMode>('read');
@@ -40,6 +50,8 @@ export function FileTabPane({ path, onChangePath, onDirtyChange }: FileTabPanePr
       onMode={onMode}
       onChangePath={onChangePath}
       onDirtyChange={onDirtyChange}
+      onSaved={onSaved}
+      focused={focused}
       // No onClose: the TAB's ✕ closes it. A second close control inside the
       // pane would leave the tab behind with nothing in it.
     />

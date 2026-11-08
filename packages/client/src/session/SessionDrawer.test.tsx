@@ -153,6 +153,18 @@ afterEach(() => vi.useRealTimers());
 // next and swallow its first click. A keydown clears it.
 afterEach(() => void fireEvent.keyDown(document));
 
+describe('preview rows', () => {
+  it('marks a preview row with the class and a label without the number', () => {
+    renderDrawer({ tabs: [...TABS, { id: '7', kind: 'editor', url: '/a/notes.md', preview: true }] });
+    const r = screen.getByTestId('drawer-session-7');
+    expect(r).toHaveClass('preview');
+    expect(r).toHaveAttribute('aria-label', 'notes.md, preview');
+    const pinned = screen.getByTestId('drawer-session-0');
+    expect(pinned).not.toHaveClass('preview');
+    expect(pinned).not.toHaveAttribute('aria-label');
+  });
+});
+
 describe('rows', () => {
   const row = (id: string) => screen.getByTestId(`drawer-session-${id}`);
 

@@ -27,9 +27,9 @@ describe('editorLayoutOptions', () => {
     expect(editorLayoutOptions(300)).toEqual(editorLayoutOptions(390));
   });
 
-  it('wraps at every width — a narrow column beats horizontal scrolling', () => {
-    expect(editorLayoutOptions(320).wordWrap).toBe('on');
-    expect(editorLayoutOptions(1600).wordWrap).toBe('on');
+  it('carries no wordWrap: it is the editorWrap setting, not a width rule', () => {
+    expect('wordWrap' in editorLayoutOptions(320)).toBe(false);
+    expect('wordWrap' in editorLayoutOptions(1600)).toBe(false);
   });
 
   it('gives touch a bigger scrollbar than a mouse needs', () => {

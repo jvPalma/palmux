@@ -5,7 +5,7 @@
 
 import { act, fireEvent, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ScmFileSnapshot } from '@palmux/shared';
+import { fileReviewUrl, type ScmFileSnapshot, type TabMeta } from '@palmux/shared';
 import {
   FakeServer,
   REPO,
@@ -23,6 +23,7 @@ import {
   setup,
   snapshot,
   statusBody,
+  tab,
   teardown,
 } from './review-test-support';
 import { NAV_CONTEXT_PX } from './review-nav';
@@ -331,5 +332,82 @@ describe('the keys act on a review that is shown', () => {
     await go((a) => a.nextChange());
     await go((a) => a.nextChange());
     expect(rowByKey('a.ts|1:3')).toBeTruthy();
+  });
+});
+
+// ── A single-file review moves through its group ─────────────────────────────
+
+describe('A single-file review moves through its group', () => {
+  const FILES = ['a.ts', 'b.ts', 'c.ts'];
+  const fileTab = (path: string): TabMeta => tab(fileReviewUrl('changes', REPO, path));
+
+  async function openFile(path: string, host: Parameters<typeof mountReview>[0] = {}) {
+    server.status[REPO] = statusBody({ changes: FILES.map((p) => entry(p)) });
+    for (const p of FILES) server.files[p] = twoChanges(p);
+    const shown: [string, string][] = [];
+    const pane = mountReview({
+      tab: fileTab(path),
+      ...host,
+      host: { showFile: (id, p) => shown.push([id, p]), ...host.host },
+    });
+    await screen.findByTestId('review-list');
+    await settle();
+    return { pane, shown };
+  }
+  const api = () => reviewApiFor('7')!;
+  const run = async (action: () => void) => {
+    await act(async () => action());
+    await settle();
+  };
+
+  it('next file shows the group neighbour through the host', async () => {
+    const { shown } = await openFile('b.ts');
+    await run(() => api().nextFile());
+    expect(shown).toEqual([['7', 'c.ts']]);
+  });
+
+  it('previous file from inside the file goes to its start first', async () => {
+    const { shown } = await openFile('b.ts');
+    scroller().scrollTop = 300;
+    fireEvent.scroll(scroller());
+    await run(() => api().prevFile());
+    expect(shown).toEqual([]);
+    expect(scroller().scrollTop).toBe(0);
+    await run(() => api().prevFile());
+    expect(shown).toEqual([['7', 'a.ts']]);
+  });
+
+  it('toasts at the ends of the group', async () => {
+    const last = await openFile('c.ts');
+    await run(() => api().nextFile());
+    expect(last.shown).toEqual([]);
+    expect(last.pane.toasts.map((t) => t.message)).toEqual(['No more files in Changes']);
+    last.pane.unmount();
+
+    const first = await openFile('a.ts');
+    await run(() => api().prevFile());
+    expect(first.shown).toEqual([]);
+    expect(first.pane.toasts.map((t) => t.message)).toEqual(['First file in Changes']);
+  });
+
+  it('next change past the last change shows the next file', async () => {
+    const { shown } = await openFile('a.ts');
+    await go((a) => a.nextChange());
+    await go((a) => a.nextChange());
+    expect(shown).toEqual([]);
+    await go((a) => a.nextChange());
+    expect(shown).toEqual([['7', 'b.ts']]);
+  });
+
+  it('lands on the first change of the file the tab moved to', async () => {
+    const { pane } = await openFile('a.ts');
+    await go((a) => a.nextChange());
+    await go((a) => a.nextChange());
+    await go((a) => a.nextChange());
+    pane.setTab(fileTab('b.ts'));
+    await settle();
+    fireEvent.scroll(scroller());
+    await settle();
+    expectOn('b.ts|0:3');
   });
 });

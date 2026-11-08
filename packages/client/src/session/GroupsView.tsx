@@ -97,6 +97,7 @@ interface GroupsViewProps {
   onUpdateQuickLinks: (links: QuickLink[]) => void;
   onChangeUrl: (id: string, url: string) => void;
   onPaneDirty: (id: string, dirty: boolean) => void;
+  onPinTab?: ((id: string) => void) | undefined;
   onPaneFocus: (id: string) => void;
   paneMenu?: (() => void) | undefined;
 }
@@ -140,6 +141,7 @@ export const GroupsView = (props: GroupsViewProps) => {
     onUpdateQuickLinks,
     onChangeUrl,
     onPaneDirty,
+    onPinTab,
     onPaneFocus,
     paneMenu,
   } = props;
@@ -281,6 +283,7 @@ export const GroupsView = (props: GroupsViewProps) => {
             onUpdateQuickLinks={onUpdateQuickLinks}
             onChangeUrl={onChangeUrl}
             onDirtyChange={onPaneDirty}
+            onPinTab={onPinTab}
             onFocus={onPaneFocus}
             onMenu={paneMenu}
           />

@@ -66,6 +66,8 @@ interface SessionTabsProps {
   /** Chrome's bulk closes ("other tabs" / "to the right") behind ONE confirm. */
   onCloseMany?: ((ids: string[]) => void) | undefined;
   onRename: (id: string, name: string) => void;
+  /** Keep a preview tab open (pin it). */
+  onPin?: ((id: string) => void) | undefined;
   onRecolor: (id: string, color: string) => void;
   /** Desktop only: move this tab into a new pane beside its own (`row` = to the right, `column` = below). */
   onSplit?: ((id: string, orientation: 'row' | 'column') => void) | undefined;
@@ -210,6 +212,7 @@ export const SessionTabs = memo(function SessionTabs({
   onClose,
   onCloseMany,
   onRename,
+  onPin,
   onRecolor,
   onSplit,
   onPopout,
@@ -697,11 +700,13 @@ export const SessionTabs = memo(function SessionTabs({
     return (
       <div
         key={tab.id}
-        className={`ctab${active ? ' active' : ''}${tab.groupId ? ' grouped' : ''}${dropMark}${joinArmedIndex === tabIndex ? ' join-armed' : ''}`}
+        className={`ctab${active ? ' active' : ''}${tab.groupId ? ' grouped' : ''}${tab.preview ? ' preview' : ''}${dropMark}${joinArmedIndex === tabIndex ? ' join-armed' : ''}`}
         style={Object.keys(style).length ? style : undefined}
         data-testid={`session-tab-${tab.id}`}
         role="tab"
         aria-selected={active}
+        title={tab.preview ? `${displayTitle(tab)} — preview (double-click to keep open)` : undefined}
+        aria-label={tab.preview ? `${displayTitle(tab)}, preview` : undefined}
         draggable={!!onDrag}
         onDragStart={(e) => {
           e.dataTransfer.setData(TAB_DND_TYPE, tab.id);
@@ -745,7 +750,7 @@ export const SessionTabs = memo(function SessionTabs({
           if ((e.target as HTMLElement).closest('.ctab-kill')) return;
           onSwitch(tab.id);
         }}
-        onDoubleClick={() => startRename(tab)}
+        onDoubleClick={() => (tab.preview ? onPin?.(tab.id) : startRename(tab))}
         onContextMenu={(e) => openMenu(e, tab.id)}
       >
         {accent && <span className="ctab-dot" aria-hidden="true" />}
@@ -848,6 +853,19 @@ export const SessionTabs = memo(function SessionTabs({
           style={{ left: menu.x, top: menu.y }}
           onPointerDown={(e) => e.stopPropagation()}
         >
+          {menuTab.preview && (
+            <button
+              className="tab-menu-item"
+              data-testid="menu-keep-open"
+              onClick={() => {
+                setMenu(null);
+                onPin?.(menuTab.id);
+              }}
+            >
+              <Icon name="pin" />
+              Keep open
+            </button>
+          )}
           <button
             className="tab-menu-item"
             data-testid="menu-rename"

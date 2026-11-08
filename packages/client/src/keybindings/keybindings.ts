@@ -30,6 +30,7 @@ export type Action =
   | 'scmNextFile'
   | 'scmPrevFile'
   | 'scmReviewed'
+  | 'toggleWrap'
   | 'increaseFontSize'
   | 'decreaseFontSize'
   | 'resetFontSize';
@@ -58,6 +59,7 @@ export const ACTIONS: readonly Action[] = [
   'scmNextFile',
   'scmPrevFile',
   'scmReviewed',
+  'toggleWrap',
   'increaseFontSize',
   'decreaseFontSize',
   'resetFontSize',
@@ -87,6 +89,7 @@ export const ACTION_LABELS: Record<Action, string> = {
   scmNextFile: 'Review: next file',
   scmPrevFile: 'Review: previous file',
   scmReviewed: 'Review: Reviewed (Unstage in Staged)',
+  toggleWrap: 'Toggle word wrap',
   increaseFontSize: 'Increase font size',
   decreaseFontSize: 'Decrease font size',
   resetFontSize: 'Reset font size',
@@ -129,6 +132,7 @@ export const DEFAULT_BINDINGS: Record<Action, Chord> = {
   scmNextFile: { key: 'n', ctrl: true, alt: true },
   scmPrevFile: { key: 'n', ctrl: true, alt: true, shift: true },
   scmReviewed: { key: 'Enter', ctrl: true, alt: true },
+  toggleWrap: { key: 'z', alt: true },
   increaseFontSize: { key: '=', ctrl: true },
   decreaseFontSize: { key: '-', ctrl: true },
   resetFontSize: { key: '0', ctrl: true },
@@ -148,7 +152,18 @@ function sanitizeChord(c: Chord): Chord {
 }
 
 export function chordFromEvent(e: KeyboardEvent): Chord {
-  const chord: Chord = { key: normalizeKey(e.key) };
+  let key = normalizeKey(e.key);
+  // Option+letter on a Mac types a symbol (Option+Z is 'Ω'): match the physical key.
+  if (
+    e.altKey &&
+    !e.ctrlKey &&
+    !e.getModifierState?.('AltGraph') &&
+    !/^[a-z0-9]$/.test(key) &&
+    /^Key[A-Z]$/.test(e.code ?? '')
+  ) {
+    key = e.code.slice(3).toLowerCase();
+  }
+  const chord: Chord = { key };
   if (e.ctrlKey) chord.ctrl = true;
   if (e.altKey) chord.alt = true;
   if (e.shiftKey) chord.shift = true;

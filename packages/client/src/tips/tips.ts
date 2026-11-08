@@ -108,6 +108,12 @@ export const TIPS: Tip[] = [
   // ── Tabs ──────────────────────────────────────────────────────────────────
   {
     category: 'Tabs',
+    title: 'Preview tabs',
+    description:
+      'A file or diff opened from the Explorer or Source Control opens in an italic preview tab, which the next one replaces. Double-click the tab, edit or save the file, or choose Keep open to keep it.',
+  },
+  {
+    category: 'Tabs',
     title: 'The side panel',
     description:
       'Settings and the new-tab chooser open in a panel on the RIGHT that takes space instead of covering the terminal — the point being that you can still read the output you are changing a setting for. The icon rail beside it switches views. It is desktop-only: on mobile the drawer is the container.',
@@ -332,6 +338,12 @@ export const TIPS: Tip[] = [
     title: 'Copy diagnostics',
     description: 'Copy a support bundle to the clipboard.',
     action: 'diagnostics',
+  },
+  {
+    category: 'Keyboard',
+    title: 'Toggle word wrap',
+    description: 'Wraps or unwraps long lines in the open file or review. Terminals are not affected.',
+    action: 'toggleWrap',
   },
   // ── Review (live shortcuts, and what the review does) ───────────────────────
   {

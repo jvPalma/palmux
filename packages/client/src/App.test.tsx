@@ -11,6 +11,7 @@ import { flushSync } from 'react-dom';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
+import { fileReviewUrl } from '@palmux/shared';
 import { App, shouldRestoreKeyboard, type DrawerCloseOptions } from './App';
 import { GROUP_DND_TYPE, TAB_DIRTY_DND_TYPE, TAB_DND_TYPE } from './session/SessionTabs';
 import type { SessionDrawer as SessionDrawerComponent } from './session/SessionDrawer';
@@ -65,6 +66,10 @@ const { sockets } = vi.hoisted(() => ({
     settingsSent: Array<Record<string, unknown>>;
     /** Every theme import request, as typed. */
     imports: string[];
+    /** Every `updateTab` this client sent, in order. */
+    updates: Array<Record<string, unknown>>;
+    /** Every `replaceTab` this client sent, in order. */
+    replaced: Array<{ id: string; kind: string; url: string }>;
   }>,
 }));
 
@@ -82,6 +87,8 @@ vi.mock('./lib/ws', () => ({
     openHandler: (() => void) | null = null;
     settingsSent: Array<Record<string, unknown>> = [];
     imports: string[] = [];
+    updates: Array<Record<string, unknown>> = [];
+    replaced: Array<{ id: string; kind: string; url: string }> = [];
     constructor(url: string) {
       this.url = url;
       sockets.push(this);
@@ -115,7 +122,12 @@ vi.mock('./lib/ws', () => ({
       this.created.push(spec);
       return true;
     }
-    sendUpdateTab() {
+    sendUpdateTab(patch: Record<string, unknown>) {
+      this.updates.push(patch);
+      return true;
+    }
+    sendReplaceTab(id: string, kind: string, url: string) {
+      this.replaced.push({ id, kind, url });
       return true;
     }
     sendMoveToWindow(ids: string[], window: string | null) {
@@ -7013,6 +7025,200 @@ describe('Source Control in the dock', () => {
       expect(stored()['scmActiveRepo']).toBe(LIB_REPO);
     });
   });
+
+  describe('single-file reviews (preview tabs)', () => {
+    const WID = 'wq3k9x2m1ab';
+    const fileUrl = (path: string, group: 'changes' | 'staged' = 'changes') =>
+      fileReviewUrl(group, APP_REPO, path);
+    const openRows = () => {
+      answers[APP_REPO] = scmStatus(APP_REPO, {
+        staged: [entryOf('s.ts')],
+        changes: [entryOf('c.ts'), entryOf('d.ts')],
+      });
+      storeSettings({ scmRepos: [APP_REPO], scmActiveRepo: APP_REPO });
+    };
+    /** The server's `ready`, announcing preview tabs. */
+    const supported = () =>
+      send({ type: 'ready', maxUploadBytes: 1024, webApps: [], version: '', previewTabs: true });
+    const toastText = () => document.querySelector('.toast.show')?.textContent ?? null;
+    beforeEach(() => {
+      // A tap elsewhere marks its gesture in module state; a key press clears it.
+      fireEvent.keyDown(document, { key: 'Shift' });
+    });
+
+    it('a Source Control open sends one preview createTab for the file’s own review url', async () => {
+      openRows();
+      boot([{ id: '0', kind: 'terminal' }]);
+      await supported();
+      await openScm();
+      fireEvent.click(await screen.findByTestId('scm-row-changes:c.ts'));
+      expect(server().created).toEqual([
+        { kind: 'review', url: `changes-file:${encodeURIComponent(APP_REPO)}:c.ts`, preview: true },
+      ]);
+    });
+
+    it('a row’s Open file opens the file itself as a preview editor, not its review', async () => {
+      openRows();
+      boot([{ id: '0', kind: 'terminal' }]);
+      await send({
+        type: 'ready',
+        maxUploadBytes: 1024,
+        webApps: [],
+        version: '',
+        previewTabs: true,
+        scmBatchWrites: true,
+      });
+      await openScm();
+      const row = await screen.findByTestId('scm-row-changes:c.ts');
+      const item = row.closest<HTMLElement>('.scm-item');
+      expect(item).not.toBeNull();
+      fireEvent.click(within(item!).getByTestId('scm-action-open'));
+      expect(server().created).toEqual([{ kind: 'editor', url: `${APP_REPO}/c.ts`, preview: true }]);
+    });
+
+    it('a row offers no action until the server announces batch writes', async () => {
+      openRows();
+      boot([{ id: '0', kind: 'terminal' }]);
+      await supported();
+      await openScm();
+      const row = await screen.findByTestId('scm-row-changes:c.ts');
+      expect(row.closest('.scm-item')).toBeNull();
+      expect(document.querySelector('[data-testid^="scm-action-"]')).toBeNull();
+    });
+
+    it('Opening two files of one group: the second replaces the first in place', async () => {
+      openRows();
+      boot([
+        { id: '0', kind: 'terminal' },
+        { id: '4', kind: 'review', url: fileUrl('c.ts'), preview: true },
+      ]);
+      await supported();
+      await openScm();
+      fireEvent.click(await screen.findByTestId('scm-row-changes:d.ts'));
+      expect(server().replaced).toEqual([{ id: '4', kind: 'review', url: fileUrl('d.ts') }]);
+      expect(server().created).toEqual([]);
+    });
+
+    it('a double-click on a row keeps the review open', async () => {
+      openRows();
+      boot([
+        { id: '0', kind: 'terminal' },
+        { id: '4', kind: 'review', url: fileUrl('c.ts'), preview: true },
+      ]);
+      await supported();
+      await openScm();
+      fireEvent.doubleClick(await screen.findByTestId('scm-row-changes:c.ts'));
+      expect(server().updates).toEqual([{ id: '4', preview: false }]);
+    });
+
+    it('Opening the whole group: the header button opens the continuous review', async () => {
+      openRows();
+      boot([{ id: '0', kind: 'terminal' }]);
+      await supported();
+      await openScm();
+      fireEvent.click(await screen.findByTestId('scm-open-review-changes'));
+      expect(server().created).toEqual([{ kind: 'review', url: `changes:${APP_REPO}` }]);
+    });
+
+    it('A single-file review held by another window moves here and is shown', async () => {
+      openRows();
+      history.replaceState(null, '', '/');
+      boot([
+        { id: '0', kind: 'terminal' },
+        { id: '4', kind: 'review', url: fileUrl('c.ts'), preview: true, window: WID },
+      ]);
+      await supported();
+      await openScm();
+      fireEvent.click(await screen.findByTestId('scm-row-changes:c.ts'));
+      expect(server().moves).toEqual([{ ids: ['4'], window: null }]);
+      expect(server().created).toEqual([]);
+      expect(server().replaced).toEqual([]);
+      expect(selected()).toEqual(['4']);
+    });
+
+    it('A preview open never names a preview another window holds', async () => {
+      openRows();
+      history.replaceState(null, '', '/');
+      boot([
+        { id: '0', kind: 'terminal' },
+        { id: '4', kind: 'review', url: fileUrl('c.ts'), preview: true, window: WID },
+      ]);
+      await supported();
+      await openScm();
+      fireEvent.click(await screen.findByTestId('scm-row-changes:d.ts'));
+      expect(server().replaced).toEqual([]);
+      expect(server().created).toEqual([{ kind: 'review', url: fileUrl('d.ts'), preview: true }]);
+    });
+
+    it('showFile moves the tab by url, and toasts when no broadcast shows it within 2 s', async () => {
+      openRows();
+      boot([
+        { id: '0', kind: 'terminal' },
+        { id: '4', kind: 'review', url: fileUrl('c.ts'), preview: true },
+      ]);
+      await supported();
+      vi.useFakeTimers();
+      act(() => paneHost.review!.showFile('4', 'd.ts'));
+      expect(server().updates).toEqual([{ id: '4', url: fileUrl('d.ts') }]);
+      act(() => vi.advanceTimersByTime(2000));
+      expect(toastText()).toBe('Could not open the next file');
+    });
+
+    it('showFile says nothing once a broadcast shows the tab at its new url', async () => {
+      openRows();
+      boot([
+        { id: '0', kind: 'terminal' },
+        { id: '4', kind: 'review', url: fileUrl('c.ts'), preview: true },
+      ]);
+      await supported();
+      vi.useFakeTimers();
+      act(() => paneHost.review!.showFile('4', 'd.ts'));
+      await send({
+        type: 'sessions',
+        tabs: [
+          { id: '0', kind: 'terminal' },
+          { id: '4', kind: 'review', url: fileUrl('d.ts'), preview: true },
+        ],
+      });
+      act(() => vi.advanceTimersByTime(2000));
+      expect(toastText()).toBeNull();
+    });
+
+    it('showFile selects the tab that already holds the file’s review instead', async () => {
+      openRows();
+      boot([
+        { id: '0', kind: 'terminal' },
+        { id: '4', kind: 'review', url: fileUrl('c.ts'), preview: true },
+        { id: '5', kind: 'review', url: fileUrl('d.ts') },
+      ]);
+      await supported();
+      act(() => paneHost.review!.showFile('4', 'd.ts'));
+      expect(server().updates).toEqual([]);
+      expect(selected()).toEqual(['5']);
+    });
+
+    it('the review host opens the continuous review, with or without a file', async () => {
+      openRows();
+      boot([{ id: '0', kind: 'terminal' }]);
+      await supported();
+      act(() => paneHost.review!.openReview({ group: 'staged' }));
+      expect(server().created).toEqual([{ kind: 'review', url: `staged:${APP_REPO}` }]);
+      expect(paneHost.review!.takeScrollTarget(`staged:${APP_REPO}`)).toBeUndefined();
+    });
+
+    it('Open review from a paused file stays in its original repository', async () => {
+      openRows();
+      storeSettings({ scmRepos: [APP_REPO, LIB_REPO], scmActiveRepo: LIB_REPO });
+      boot([{ id: '0', kind: 'terminal' }]);
+      await supported();
+      act(() => paneHost.review!.openReview({ group: 'changes', path: 'c.ts', repo: APP_REPO }));
+      expect(server().created).toEqual([{ kind: 'review', url: `changes:${APP_REPO}` }]);
+      expect(paneHost.review!.takeScrollTarget(`changes:${APP_REPO}`)).toEqual({
+        group: 'changes',
+        path: 'c.ts',
+      });
+    });
+  });
 });
 
 // ── The review keys and the comments, as the app wires them ─────────────────────
@@ -7078,6 +7284,7 @@ describe('Source Control keys and comments in the app', () => {
     nextFile: vi.fn(),
     prevFile: vi.fn(),
     reviewCurrent: vi.fn(),
+    toggleWrap: vi.fn(() => 'on' as const),
   });
   /** Press a chord; true when the app claimed it (prevented its default). */
   const press = (init: KeyboardEventInit): boolean => !fireEvent.keyDown(window, init);
@@ -7146,6 +7353,23 @@ describe('Source Control keys and comments in the app', () => {
       expect(api.prevFile).toHaveBeenCalledTimes(1);
       expect(press({ key: 'Enter', ...CTRL_ALT })).toBe(true);
       expect(api.reviewCurrent).toHaveBeenCalledTimes(1);
+    });
+
+    it('Alt+Z is left to xterm on a terminal', () => {
+      render(<App />);
+      broadcast(['0']);
+      expect(press({ key: 'z', code: 'KeyZ', altKey: true })).toBe(false);
+    });
+
+    it('Alt+Z toggles wrap on a focused review, by physical key', async () => {
+      const api = fakeApi();
+      registerReview('1', api);
+      bootReviews('1');
+      select('1');
+      await flush();
+      expect(press({ key: 'Ω', code: 'KeyZ', altKey: true })).toBe(true);
+      expect(api.toggleWrap).toHaveBeenCalledTimes(1);
+      expect(screen.getByText('Word wrap on')).toBeTruthy();
     });
 
     it('reach only the focused review when several are open', async () => {
@@ -7415,6 +7639,7 @@ describe('Source Control on a phone', () => {
     nextFile: vi.fn(),
     prevFile: vi.fn(),
     reviewCurrent: vi.fn(),
+    toggleWrap: vi.fn(() => 'on' as const),
   });
   const REVIEW = { id: '4', kind: 'review', url: `changes:${APP}` };
   const STAGED = { id: '5', kind: 'review', url: `staged:${APP}` };
@@ -9238,6 +9463,539 @@ describe('detached windows', () => {
       expect(screen.queryByTestId('dock')).toBeNull();
       expect(localStorage.getItem('palmux-dock-view')).toBeNull();
       await act(async () => {}); // the history's fetch settles
+    });
+  });
+});
+
+// ── Preview tabs (openspec preview-tabs, design D3, D3a, D4, D9) ──────────────
+describe('preview tabs', () => {
+  const HOME = '/work';
+  const A = `${HOME}/a.ts`;
+  const B = `${HOME}/b.ts`;
+  const C = `${HOME}/c.ts`;
+  const WID = 'wq3k9x2m1ab';
+  const t = (id: string) => ({ id, kind: 'terminal' });
+  const ed = (id: string, url: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    kind: 'editor',
+    url,
+    ...extra,
+  });
+  const pv = (id: string, url: string) => ed(id, url, { preview: true });
+  const list = (...tabs: Array<Record<string, unknown>>) => send({ type: 'sessions', tabs });
+  /** The server's `ready`: `previewTabs` unless told otherwise. */
+  const ready = (extra: Record<string, unknown> = { previewTabs: true }) =>
+    send({ type: 'ready', maxUploadBytes: 1024, webApps: [], version: '', ...extra });
+  const toastText = () => document.querySelector('.toast.show')?.textContent ?? null;
+  const flush = () => act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+
+  beforeEach(() => {
+    // A tap marks its gesture in module state (`consumeGesture`), and the mark swallows the next
+    // pointer click for a moment; a key press clears it, so no test inherits another's tap.
+    fireEvent.keyDown(document, { key: 'Shift' });
+    // The Explorer lists HOME; the icon index is answered the way a host without icons would.
+    const files = ['a.ts', 'b.ts', 'c.ts', ...Array.from({ length: 10 }, (_, i) => `f${i}.ts`)];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) => {
+        const u = new URL(url, 'http://palmux');
+        if (u.pathname === '/files/list') {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () =>
+              Promise.resolve({
+                path: HOME,
+                parent: '/',
+                entries: files.map((name) => ({
+                  name,
+                  dir: false,
+                  size: 1,
+                  mtime: 0,
+                  symlink: false,
+                })),
+              }),
+          });
+        }
+        return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) });
+      }),
+    );
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  /** The dock's Explorer, listed. */
+  const explorer = async () => {
+    fireEvent.click(screen.getByTestId('dock-rail-files'));
+    await flush();
+    await screen.findByTestId(`ft-row-${A}`);
+  };
+  /** A click on a file row: `detail` 2 is the second click of a double-click, 0 a key. */
+  const row = (path: string, detail = 1) =>
+    fireEvent.click(screen.getByTestId(`ft-row-${path}`), { detail });
+
+  describe('against an older server', () => {
+    it('sends no preview field and no replaceTab before the first ready, or after one without the flag', async () => {
+      render(<App />);
+      await list(t('0'), pv('3', A));
+      await explorer();
+      row(B);
+      await ready({});
+      row(C);
+      expect(server().created).toEqual([
+        { kind: 'editor', url: B },
+        { kind: 'editor', url: C },
+      ]);
+      expect(server().replaced).toEqual([]);
+      act(() => paneHost.review!.pinTab('3'));
+      expect(server().updates).toEqual([]);
+    });
+  });
+
+  describe('pinTab', () => {
+    it('sends one message for two calls, and sends it again after a reconnect while still a preview', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), pv('3', A));
+      act(() => {
+        paneHost.review!.pinTab('3');
+        paneHost.review!.pinTab('3');
+      });
+      expect(server().updates).toEqual([{ id: '3', preview: false }]);
+      await ready(); // a reconnect: the pin may never have arrived
+      expect(server().updates).toEqual([
+        { id: '3', preview: false },
+        { id: '3', preview: false },
+      ]);
+      await list(t('0'), ed('3', A)); // now pinned
+      await ready();
+      expect(server().updates).toHaveLength(2);
+      act(() => paneHost.review!.pinTab('0')); // not a preview
+      expect(server().updates).toHaveLength(2);
+    });
+  });
+
+  describe('a preview open', () => {
+    it('An Explorer open sends createTab with preview: true', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'));
+      await explorer();
+      row(A);
+      expect(server().created).toEqual([{ kind: 'editor', url: A, preview: true }]);
+    });
+
+    it('replaces the preview of the same kind with exactly one replaceTab, and nothing else', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), pv('3', A));
+      await explorer();
+      row(B);
+      expect(server().replaced).toEqual([{ id: '3', kind: 'editor', url: B }]);
+      expect(server().created).toEqual([]);
+      expect(server().killed).toEqual([]);
+      expect(server().reorders).toEqual([]);
+    });
+
+    it('replaces a preview of another kind with exactly one replaceTab too', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), {
+        id: '3',
+        kind: 'review',
+        url: 'changes-file:%2Fw:x.ts',
+        preview: true,
+      });
+      await explorer();
+      row(B);
+      expect(server().replaced).toEqual([{ id: '3', kind: 'editor', url: B }]);
+      expect(server().created).toEqual([]);
+      expect(server().killed).toEqual([]);
+      expect(server().reorders).toEqual([]);
+    });
+
+    it('shows an open pinned target and sends nothing; a pinned open of a previewed one pins it', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), ed('3', A), pv('4', B));
+      clickTab('0');
+      await explorer();
+      row(A);
+      row(A, 2);
+      expect(shownIn('p0')).toBe('3');
+      expect(server().created).toEqual([]);
+      expect(server().replaced).toEqual([]);
+      expect(server().updates).toEqual([]);
+      row(B, 2);
+      expect(shownIn('p0')).toBe('4');
+      expect(server().updates).toEqual([{ id: '4', preview: false }]);
+    });
+
+    it('two opens before the answer end in one tab showing the second url', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'));
+      await explorer();
+      row(A);
+      row(B);
+      expect(server().created).toEqual([{ kind: 'editor', url: A, preview: true }]);
+      expect(server().replaced).toEqual([]);
+      await list(t('0'), pv('5', A));
+      await send({ type: 'tabCreated', id: '5' });
+      expect(server().replaced).toEqual([{ id: '5', kind: 'editor', url: B }]);
+      await list(t('0'), pv('5', B));
+      await send({ type: 'tabCreated', id: '5' });
+      expect(server().created).toHaveLength(1);
+      expect(server().replaced).toHaveLength(1);
+      expect(strips()[0]!.tabs).toEqual(['0', '5']);
+    });
+
+    it('matches its answer by content: an unrelated broadcast in between creates no second tab', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'));
+      await explorer();
+      row(A);
+      await list({ ...t('0'), title: 'vim' }); // a rename, not the answer
+      await list(t('0'), pv('5', A));
+      await send({ type: 'tabCreated', id: '5' });
+      row(B);
+      expect(server().created).toHaveLength(1);
+      expect(server().replaced).toEqual([{ id: '5', kind: 'editor', url: B }]);
+    });
+
+    it('holds an answer that comes before its tab is listed, and matches it on the next list', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'));
+      await explorer();
+      row(A);
+      row(B);
+      await send({ type: 'tabCreated', id: '5' }); // not listed yet
+      expect(server().replaced).toEqual([]);
+      await list(t('0'), pv('5', A));
+      expect(server().replaced).toEqual([{ id: '5', kind: 'editor', url: B }]);
+    });
+
+    it('with no answer in 5 s toasts and sends nothing more', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'));
+      await explorer();
+      vi.useFakeTimers();
+      row(A);
+      act(() => vi.advanceTimersByTime(5000));
+      expect(toastText()).toBe('Could not open a.ts');
+      expect(server().created).toHaveLength(1);
+      expect(server().replaced).toEqual([]);
+      row(B); // the pane is free again
+      expect(server().created).toHaveLength(2);
+    });
+
+    it('a pinned open of the pending url pins it once the answer lands', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'));
+      await explorer();
+      row(A);
+      row(A, 2);
+      expect(server().created).toHaveLength(1);
+      expect(server().updates).toEqual([]);
+      await list(t('0'), pv('5', A));
+      await send({ type: 'tabCreated', id: '5' });
+      expect(server().updates).toEqual([{ id: '5', preview: false }]);
+    });
+
+    it('a double-click then a click on another file before the answer keeps the first open', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), pv('3', C));
+      await explorer();
+      row(A); // replaces 3
+      row(A, 2); // keep it
+      row(B); // a new preview, never a replace of what is to be kept
+      expect(server().replaced).toEqual([{ id: '3', kind: 'editor', url: A }]);
+      expect(server().created).toEqual([{ kind: 'editor', url: B, preview: true }]);
+      await list(t('0'), pv('3', A));
+      await send({ type: 'tabCreated', id: '3' });
+      expect(server().updates).toEqual([{ id: '3', preview: false }]);
+      expect(server().replaced).toHaveLength(1);
+      await list(t('0'), ed('3', A), pv('5', B));
+      await send({ type: 'tabCreated', id: '5' });
+      expect(server().replaced).toHaveLength(1);
+      expect(server().created).toHaveLength(1);
+      expect(server().updates).toHaveLength(1);
+      // B is the pane's preview now: the next open replaces it.
+      row(C);
+      expect(server().replaced).toEqual([
+        { id: '3', kind: 'editor', url: A },
+        { id: '5', kind: 'editor', url: C },
+      ]);
+    });
+
+    it('a pinned open of the previewed url after the answer pins it at once', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'));
+      await explorer();
+      row(A);
+      await list(t('0'), pv('5', A));
+      await send({ type: 'tabCreated', id: '5' });
+      row(A, 2);
+      expect(server().updates).toEqual([{ id: '5', preview: false }]);
+      expect(server().created).toHaveLength(1);
+    });
+
+    it('two Enter presses do not pin', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), pv('5', A));
+      await explorer();
+      row(A, 0);
+      row(A, 0);
+      expect(server().updates).toEqual([]);
+    });
+
+    it('a held editor toasts and sends nothing', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), ed('3', A, { window: WID }));
+      await explorer();
+      row(A);
+      expect(toastText()).toBe('a.ts is open in another window');
+      expect(server().created).toEqual([]);
+      expect(server().replaced).toEqual([]);
+      expect(server().moves).toEqual([]);
+    });
+
+    it('Which preview is replaced: the active one when it is one', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), pv('3', A), pv('4', B));
+      clickTab('3');
+      await explorer();
+      row(C);
+      expect(server().replaced).toEqual([{ id: '3', kind: 'editor', url: C }]);
+    });
+
+    it('Which preview is replaced: else the last in strip order, and never a dirty one', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), pv('3', A), pv('4', B));
+      clickTab('0');
+      act(() => paneHost.onDirtyChange!('4', true));
+      await explorer();
+      row(C);
+      expect(server().replaced).toEqual([{ id: '3', kind: 'editor', url: C }]);
+    });
+
+    it('Each pane keeps its own preview', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), t('1'), pv('3', A));
+      splitVia('1'); // p0 = [0, 3], p1 = [1], p1 focused
+      await explorer();
+      row(B);
+      expect(server().replaced).toEqual([]);
+      expect(server().created).toEqual([{ kind: 'editor', url: B, preview: true }]);
+      fireEvent.pointerDown(screen.getByTestId('session-tab-0'), { button: 0 }); // focus p0
+      row(C);
+      expect(server().replaced).toEqual([{ id: '3', kind: 'editor', url: C }]);
+    });
+
+    it('A new terminal is never a preview', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), pv('3', A));
+      fireEvent.pointerDown(stripOf('p0').getByTestId('session-new'), { button: 0 });
+      tapPress(screen.getByTestId('dash-new-terminal'));
+      expect(server().created).toEqual([]);
+      expect(server().replaced).toEqual([]);
+      expect(strips()[0]!.tabs).toContain('3');
+    });
+
+    it('Browsing ten files leaves one preview', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'));
+      await explorer();
+      for (let i = 0; i < 10; i++) {
+        const path = `${HOME}/f${i}.ts`;
+        row(path);
+        // oxlint-disable-next-line no-await-in-loop -- each answer lands before the next open
+        await list(t('0'), pv('5', path));
+        // oxlint-disable-next-line no-await-in-loop -- the answer to the open above
+        await send({ type: 'tabCreated', id: '5' });
+      }
+      expect(server().created).toHaveLength(1);
+      expect(server().replaced).toHaveLength(9);
+      expect(strips()).toEqual([{ pane: 'p0', tabs: ['0', '5'], focused: true }]);
+    });
+  });
+
+  describe('a replaced tab', () => {
+    const swapped = {
+      id: '9',
+      kind: 'review',
+      url: 'changes-file:%2Fw:x.ts',
+      preview: true,
+      replaces: '4',
+    };
+
+    it('keeps its place in the pane and stays the shown tab', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), pv('4', A), t('2'));
+      clickTab('4');
+      await list(t('0'), swapped, t('2'));
+      expect(strips()).toEqual([{ pane: 'p0', tabs: ['0', '9', '2'], focused: true }]);
+      expect(shownIn('p0')).toBe('9');
+    });
+
+    // The hint rides one broadcast: a pin of the new tab clears it on the server. Two broadcasts
+    // handled before one render show the layout only the second.
+    it('a replacement followed by a pin in one render keeps its original pane', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), t('1'), pv('4', A), t('2'));
+      splitVia('1'); // p0 = [0, 4, 2], p1 = [1], p1 focused
+      clickTab('4'); // p0 shows 4, and is focused
+      fireEvent.pointerDown(screen.getByTestId('session-tab-1'), { button: 0 }); // focus p1
+      expect(strips()).toEqual([
+        { pane: 'p0', tabs: ['0', '4', '2'], focused: false },
+        { pane: 'p1', tabs: ['1'], focused: true },
+      ]);
+      const { replaces: _, preview: __, ...pinned } = swapped;
+      act(() => {
+        server().handler!({ type: 'sessions', tabs: [t('0'), t('1'), swapped, t('2')] });
+        server().handler!({ type: 'sessions', tabs: [t('0'), t('1'), pinned, t('2')] });
+      });
+      expect(strips()).toEqual([
+        { pane: 'p0', tabs: ['0', '9', '2'], focused: false },
+        { pane: 'p1', tabs: ['1'], focused: true },
+      ]);
+      expect(shownIn('p0')).toBe('9');
+    });
+
+    it('on a phone, a hint left on a tab from an earlier swap does not move the selection', async () => {
+      localStorage.setItem('palmux-settings', JSON.stringify({ mobileMode: 'on' }));
+      render(<App />);
+      await ready();
+      await list(t('0'), pv('1', A), t('2'));
+      act(() => void paneHost.review!.openFile(A)); // shows 1
+      const review = { ...swapped, replaces: '1' };
+      await list(t('0'), review, t('2')); // editor 1 became review 9
+      expect(drawer().current).toBe('9');
+      // An unrelated tab takes the recycled id 1, and the server still lists review 9's hint.
+      await list(t('0'), review, t('2'), ed('1', B));
+      act(() => void paneHost.review!.openFile(B)); // shows 1
+      expect(drawer().current).toBe('1');
+      await list(t('0'), review, t('2')); // 1 is closed: its left neighbour is 2
+      expect(drawer().current).toBe('2');
+    });
+
+    it('on a phone, hands the selection over with no render showing the neighbour', async () => {
+      localStorage.setItem('palmux-settings', JSON.stringify({ mobileMode: 'on' }));
+      render(<App />);
+      await ready();
+      await list(t('0'), pv('4', A));
+      act(() => void paneHost.review!.openFile(A)); // shows 4
+      expect(drawer().current).toBe('4');
+      expect(panes()).toEqual([]);
+      const seen: Element[] = [];
+      const observer = new MutationObserver((records) => {
+        for (const r of records)
+          for (const n of r.addedNodes) if (n instanceof Element) seen.push(n);
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+      await list(t('0'), swapped);
+      for (const r of observer.takeRecords()) {
+        for (const n of r.addedNodes) if (n instanceof Element) seen.push(n);
+      }
+      observer.disconnect();
+      expect(drawer().current).toBe('9');
+      expect(panes()).toEqual([]);
+      const terminalMounted = seen.some(
+        (n) =>
+          n.matches('[data-testid^="term-pane-"]') ||
+          n.querySelector('[data-testid^="term-pane-"]') !== null,
+      );
+      expect(terminalMounted).toBe(false);
+    });
+
+    it('toasts when a preview with unsaved text was replaced by another window', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), pv('4', A));
+      act(() => paneHost.onDirtyChange!('4', true));
+      await list(t('0'), pv('4', B));
+      expect(toastText()).toBe('a.ts was replaced by another window before your edit was saved');
+    });
+
+    it('does not toast for a pinned tab following a link', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), ed('4', `${HOME}/a.md`));
+      act(() => paneHost.onDirtyChange!('4', true));
+      await list(t('0'), ed('4', `${HOME}/b.md`));
+      expect(toastText()).toBeNull();
+    });
+  });
+
+  describe('what pins', () => {
+    it('The first edit pins in every window: a dirty transition sends the pin', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), pv('4', A));
+      act(() => paneHost.onDirtyChange!('4', true));
+      expect(server().updates).toEqual([{ id: '4', preview: false }]);
+    });
+
+    it('Split right pins a preview in a two-tab pane', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), pv('4', A));
+      splitVia('4');
+      expect(strips().map((s) => s.tabs)).toEqual([['0'], ['4']]);
+      expect(server().updates).toEqual([{ id: '4', preview: false }]);
+    });
+
+    it('Split right on a lone preview opens a terminal and pins nothing', async () => {
+      history.replaceState(null, '', '/'); // not the suite's legacy `/0`, which would add a terminal
+      render(<App />);
+      await ready();
+      await list(pv('4', A));
+      splitVia('4');
+      expect(strips()).toHaveLength(2);
+      expect(server().updates).toEqual([]);
+    });
+
+    it('Moving to another pane pins; a drop on its own pane does not', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), t('1'), pv('4', A));
+      splitVia('1'); // p0 = [0, 4], p1 = [1]
+      dropOnPane('4', 0, 'centre'); // its own pane
+      expect(server().updates).toEqual([]);
+      dropOnPane('4', 1, 'centre');
+      expect(strips().map((s) => s.tabs)).toEqual([['0'], ['1', '4']]);
+      expect(server().updates).toEqual([{ id: '4', preview: false }]);
+    });
+
+    it('Moving to another window keeps the preview', async () => {
+      const open = vi.spyOn(window, 'open').mockReturnValue({} as Window);
+      history.replaceState(null, '', '/');
+      render(<App />);
+      await ready({ previewTabs: true, detachedWindows: true });
+      await list(t('0'), pv('4', A));
+      fireEvent.contextMenu(screen.getByTestId('session-tab-4'));
+      fireEvent.click(screen.getByTestId('menu-popout'));
+      expect(open).toHaveBeenCalled();
+      expect(server().moves).toHaveLength(1);
+      expect(server().updates).toEqual([]);
     });
   });
 });

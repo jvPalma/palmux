@@ -6,8 +6,9 @@
 // that fails is something the view must SHOW, not a crash. The server's own message
 // is carried through, so "path is not a git repository" reaches the user as written.
 //
-// The writes follow the same shape: the comment store's four requests and the three
-// index writes (stage, unstage, restore). A refused write carries the server's
+// The writes follow the same shape: the comment store's four requests, the three
+// index writes (stage, unstage, restore) and the three batch writes (stage, unstage
+// and discard many paths in one request). A refused write carries the server's
 // `code`, which is what lets the review tell a busy index from a conflict.
 //
 // Paths go on the wire exactly as given (`encodeURIComponent`, no trimming): a
@@ -20,9 +21,13 @@ import {
   type ScmCommentInput,
   type ScmCommentList,
   type ScmCommentPatch,
+  SCM_SKIP_LABEL,
+  type ScmBatchResult,
   type ScmEntry,
   type ScmError,
   type ScmErrorCode,
+  type ScmSkip,
+  type ScmSkipReason,
   type ScmStatus,
   type ScmWriteResult,
 } from '@palmux/shared';
@@ -190,9 +195,11 @@ export function deleteScmComment(
 
 // ── Index writes ──────────────────────────────────────────────────────────────
 
+// A stage or unstage always answers a receipt; a restore answers null when it leaves
+// nothing to redo (a discard's Undo). A missing field is still a malformed answer.
 const parseWriteResult = (raw: unknown): ScmWriteResult | null =>
   isRecord(raw) &&
-  typeof raw['receiptId'] === 'string' &&
+  (typeof raw['receiptId'] === 'string' || raw['receiptId'] === null) &&
   (raw['status'] === 'staged' || raw['status'] === 'unstaged' || raw['status'] === 'restored')
     ? { receiptId: raw['receiptId'], status: raw['status'] }
     : null;
@@ -226,5 +233,57 @@ export function restoreScmWrite(
 ): Promise<ScmFetchResult<ScmWriteResult>> {
   return requestJson('POST', `/scm/restore?${repoQuery(repo)}`, parseWriteResult, {
     body: { receiptId },
+  });
+}
+
+// ── Batch writes ──────────────────────────────────────────────────────────────
+
+const isSkipReason = (v: unknown): v is ScmSkipReason =>
+  typeof v === 'string' && Object.hasOwn(SCM_SKIP_LABEL, v);
+
+const isSkip = (v: unknown): v is ScmSkip =>
+  isRecord(v) && typeof v['path'] === 'string' && isSkipReason(v['reason']);
+
+/**
+ * The answer of a batch stage, unstage or discard, or null when it is not that shape.
+ * A reason the client has no label for is a failure and not a skip: the toast could
+ * not say why a path was left alone.
+ */
+export function parseBatchResult(raw: unknown): ScmBatchResult | null {
+  if (!isRecord(raw)) return null;
+  const { receiptId, status, done, skipped } = raw;
+  if (receiptId !== null && typeof receiptId !== 'string') return null;
+  if (status !== 'staged' && status !== 'unstaged' && status !== 'discarded') return null;
+  if (!isStringList(done) || !Array.isArray(skipped) || !skipped.every(isSkip)) return null;
+  return { receiptId, status, done, skipped };
+}
+
+/** Stage the working-tree version of every path in one transaction. */
+export function stageScmPaths(
+  repo: string,
+  paths: string[],
+): Promise<ScmFetchResult<ScmBatchResult>> {
+  return requestJson('POST', `/scm/stage-paths?${repoQuery(repo)}`, parseBatchResult, {
+    body: { paths },
+  });
+}
+
+/** Return every entry (and the source of a rename) to what HEAD holds, in one transaction. */
+export function unstageScmPaths(
+  repo: string,
+  entries: { path: string; oldPath?: string }[],
+): Promise<ScmFetchResult<ScmBatchResult>> {
+  return requestJson('POST', `/scm/unstage-paths?${repoQuery(repo)}`, parseBatchResult, {
+    body: { entries },
+  });
+}
+
+/** Discard the changes of every entry whose `fp` still matches what the reader confirmed. */
+export function discardScmPaths(
+  repo: string,
+  entries: { path: string; fp: string }[],
+): Promise<ScmFetchResult<ScmBatchResult>> {
+  return requestJson('POST', `/scm/discard?${repoQuery(repo)}`, parseBatchResult, {
+    body: { entries },
   });
 }

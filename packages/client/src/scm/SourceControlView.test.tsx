@@ -10,8 +10,11 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { parse } from 'postcss';
 import { useEffect, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ScmEntry, ScmStatus } from '@palmux/shared';
+import type { ScmEntry, ScmGroup, ScmStatus } from '@palmux/shared';
+import userEvent from '@testing-library/user-event';
 import { __setIconIndex, type IconIndex } from '../panes/file-icons';
+import { undoWrites } from '../review/review-writes';
+import { recordWrite, resetWriteLog } from '../review/write-log';
 import { DEFAULTS, saveSettings } from '../settings/settings';
 import {
   LONG_GROUP_ROWS,
@@ -19,6 +22,8 @@ import {
   type ScmOpenTarget,
   type ScmProjectChange,
 } from './SourceControlView';
+import { DISCARD_UNDO_MS, readLastDiscard, recordDiscard } from './discard-log';
+import { restoreScmWrite } from './scm-api';
 import { scmStatusStore } from './status-store';
 
 const APP = '/home/u/work/app';
@@ -58,7 +63,18 @@ interface Server {
   status: (repo: string) => { body: unknown; httpStatus?: number };
   /** What `/scm/repo?path=` answers for a typed path. */
   repo: (path: string) => { body: unknown; httpStatus?: number };
+  /** What a POST to another `/scm/` route answers (stage-paths, unstage-paths, discard, restore). */
+  write: (route: string, body: Record<string, unknown>) => { body: unknown; httpStatus?: number };
 }
+
+/** The POSTs the view made: the route and the JSON body. */
+const posts = (): { route: string; body: Record<string, unknown> }[] =>
+  (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
+    .filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST')
+    .map(([url, init]) => ({
+      route: new URL(String(url), 'http://palmux').pathname,
+      body: JSON.parse(String((init as RequestInit).body)) as Record<string, unknown>,
+    }));
 
 const calls = (prefix: string): string[] =>
   (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
@@ -69,12 +85,17 @@ function stubServer(server: Partial<Server> = {}) {
   const handlers: Server = {
     status: (repo) => ({ body: status({ top: repo }) }),
     repo: (path) => ({ body: { top: path } }),
+    write: () => ({ body: { error: 'no such route' }, httpStatus: 404 }),
     ...server,
   };
   vi.stubGlobal(
     'fetch',
-    vi.fn((url: string) => {
+    vi.fn((url: string, init?: RequestInit) => {
       const u = new URL(url, 'http://palmux');
+      if (init?.method === 'POST') {
+        const out = handlers.write(u.pathname, JSON.parse(String(init.body)));
+        return reply(out.body, out.httpStatus);
+      }
       if (u.pathname === '/scm/status') {
         const out = handlers.status(u.searchParams.get('repo') ?? '');
         return reply(out.body, out.httpStatus);
@@ -93,16 +114,33 @@ interface Harness {
   repos?: string[];
   active?: string;
   visible?: boolean;
+  /** The server announced batch writes, so rows offer their actions. */
+  batchWrites?: boolean;
 }
 
 interface Spies {
   onChange: ReturnType<typeof vi.fn<(change: ScmProjectChange) => void>>;
-  onOpenFile: ReturnType<typeof vi.fn<(target: ScmOpenTarget) => void>>;
+  onOpenFile: ReturnType<
+    typeof vi.fn<(target: ScmOpenTarget, opts?: { preview?: boolean }) => void>
+  >;
+  onOpenReview: ReturnType<typeof vi.fn<(group: ScmGroup) => void>>;
+  onOpenPath: ReturnType<typeof vi.fn<(path: string) => void>>;
+  onNotice: ReturnType<typeof vi.fn<(message: string) => void>>;
+  onNotify: ReturnType<
+    typeof vi.fn<(message: string, action?: { label: string; onClick: () => void }) => void>
+  >;
 }
 
 /** The host: it owns the two settings and mirrors the active one into the store, as App does. */
-const mount = ({ repos = [], active, visible = true }: Harness = {}): Spies => {
-  const spies: Spies = { onChange: vi.fn(), onOpenFile: vi.fn() };
+const mount = ({ repos = [], active, visible = true, batchWrites }: Harness = {}): Spies => {
+  const spies: Spies = {
+    onChange: vi.fn(),
+    onOpenFile: vi.fn(),
+    onOpenReview: vi.fn(),
+    onOpenPath: vi.fn(),
+    onNotice: vi.fn(),
+    onNotify: vi.fn(),
+  };
   const Host = () => {
     const [list, setList] = useState(repos);
     const [selected, setSelected] = useState(active ?? repos[0] ?? '');
@@ -120,6 +158,15 @@ const mount = ({ repos = [], active, visible = true }: Harness = {}): Spies => {
           if (change.scmActiveRepo !== undefined) setSelected(change.scmActiveRepo);
         }}
         onOpenFile={spies.onOpenFile}
+        onOpenReview={spies.onOpenReview}
+        {...(batchWrites === undefined
+          ? {}
+          : {
+              batchWrites,
+              onOpenPath: spies.onOpenPath,
+              onNotice: spies.onNotice,
+              onNotify: spies.onNotify,
+            })}
       />
     );
   };
@@ -151,6 +198,10 @@ const groupOrder = (): string[] =>
 
 beforeEach(() => {
   localStorage.clear();
+  // The write log is the window's, module-wide by design: no test inherits another's writes.
+  resetWriteLog();
+  // A tap marks its gesture in module state; a key press clears it, so no test inherits it.
+  fireEvent.keyDown(document, { key: 'Shift' });
 });
 
 afterEach(async () => {
@@ -634,6 +685,34 @@ describe('Unmerged files are listed, not hidden', () => {
   });
 });
 
+describe('Opening the whole group', () => {
+  it('the header button opens the group’s review and does not toggle the group', async () => {
+    stubServer({
+      status: () => ({
+        body: status({
+          merge: [entry('m.ts', { kind: 'unmerged', status: 'U' })],
+          staged: [entry('s.ts')],
+          changes: [entry('c.ts')],
+        }),
+      }),
+    });
+    const { onOpenReview, onOpenFile } = mount({ repos: [APP] });
+    const button = await screen.findByTestId('scm-open-review-changes');
+    const trigger = screen.getByTestId('scm-group-changes-trigger');
+    const before = trigger.getAttribute('data-state');
+    expect(trigger.contains(button)).toBe(false);
+    press(button);
+    expect(onOpenReview).toHaveBeenCalledWith('changes');
+    expect(trigger.getAttribute('data-state')).toBe(before);
+    press(screen.getByTestId('scm-open-review-staged'));
+    expect(onOpenReview).toHaveBeenLastCalledWith('staged');
+    // A conflicted file is reviewed in Changes.
+    press(screen.getByTestId('scm-open-review-merge'));
+    expect(onOpenReview).toHaveBeenLastCalledWith('changes');
+    expect(onOpenFile).not.toHaveBeenCalled();
+  });
+});
+
 describe('Choosing a file', () => {
   const rows = () =>
     stubServer({
@@ -647,6 +726,20 @@ describe('Choosing a file', () => {
         }),
       }),
     });
+
+  it('a double-click keeps the file open: the row hands over { preview: false }', async () => {
+    rows();
+    const { onOpenFile } = mount({ repos: [APP] });
+    const row = await screen.findByTestId('scm-row-changes:c.ts');
+    fireEvent.click(row, { detail: 1 });
+    fireEvent.click(row, { detail: 2 });
+    fireEvent.doubleClick(row);
+    expect(onOpenFile).toHaveBeenLastCalledWith(
+      { group: 'changes', path: 'c.ts' },
+      { preview: false },
+    );
+    expect(onOpenFile.mock.calls[0]).toEqual([{ group: 'changes', path: 'c.ts' }]);
+  });
 
   it('opens the Staged review for a staged file and the Changes review for the rest', async () => {
     rows();
@@ -790,9 +883,10 @@ describe('The scrollbar covers no row', () => {
 
 // The owner (2026-10-26) found the changed-files list too large on a phone: 36px rows, a
 // 12px indent per level, and found it still too large at 32px: a row is 24px now, with no
-// gap between rows. happy-dom has no layout, so the metrics are read where they are
-// written, and resolved the way a browser would.
-describe('The changed-files list is compact on a phone', () => {
+// gap between rows. The desktop followed (scm-row-actions D1): the same 24px row and 8px
+// indent from its own 28px control height. happy-dom has no layout, so the metrics are read
+// where they are written, and resolved the way a browser would.
+describe('The changed-files list is compact', () => {
   const sheet = readFileSync(join(__dirname, 'scm.css'), 'utf8');
   const index = readFileSync(join(__dirname, '../index.css'), 'utf8');
   /** Declarations of every rule that has `selector` among its selectors. */
@@ -810,6 +904,7 @@ describe('The changed-files list is compact on a phone', () => {
     if (value === undefined) throw new Error(`no ${name}`);
     return Number(value);
   };
+  const DESKTOP_CTL = scale('--ctl-h');
   const PHONE_CTL = Number(
     /:root\[data-mobile='true'\]\s*{[^}]*--ctl-h:\s*(\d+)px/.exec(index)?.[1],
   );
@@ -829,12 +924,13 @@ describe('The changed-files list is compact on a phone', () => {
     expect(sheet).not.toMatch(/height:\s*var\(--ctl-h\)/);
   });
 
-  it('keeps the desktop as it was: a control height, 12px a level, 8px between parts', () => {
+  it('draws a row 24px tall on a desktop, 8px a level, 4px between parts', () => {
     const own = decls('.scm-view');
-    expect(own.get('--scm-row-h')).toBe('var(--ctl-h)');
-    expect(own.get('--scm-indent')).toBe('var(--sp-3)');
-    expect(own.get('--scm-gap')).toBe('var(--sp-2)');
-    expect(scale('--sp-3')).toBe(12);
+    expect(own.get('--scm-row-h')).toBe('calc(var(--ctl-h) - var(--sp-1))');
+    expect(own.get('--scm-indent')).toBe('var(--sp-2)');
+    expect(own.get('--scm-gap')).toBe('var(--sp-1)');
+    expect(DESKTOP_CTL - scale('--sp-1')).toBe(24);
+    expect(scale('--sp-2')).toBe(8);
   });
 
   it('draws a row 24px tall on a phone, well under the extra-keys bar’s own key', () => {
@@ -937,12 +1033,39 @@ describe('The changed-files list is compact on a phone', () => {
       expect(PHONE_CTL - scale('--sp-3')).toBe(24);
     });
 
-    it('keep the control height on a desktop, which is the rows’ height there', async () => {
+    it('are the kit’s small step on a desktop, 24px, which is the rows’ height there', async () => {
       withChanges();
       mount({ repos: [APP] });
       const trigger = await header();
+      expect(trigger).toHaveClass('ui-collapsible-trigger', 'ui-collapsible-trigger-sm');
       expect(trigger).not.toHaveClass('ui-collapsible-trigger-xs');
-      expect(minHeight([...trigger.classList])).toBe(decls('.scm-view').get('--scm-row-h'));
+      const height = minHeight([...trigger.classList]);
+      expect(height).toBe('calc(var(--ctl-h) - var(--sp-1))');
+      expect(height).toBe(decls('.scm-view').get('--scm-row-h'));
+      expect(DESKTOP_CTL - scale('--sp-1')).toBe(24);
+    });
+
+    // The header is a flex row: a button in its actions slot taller than the trigger
+    // makes the whole header that tall (measured: 32px on a 390px phone before this).
+    it('hold an Open review button no taller than the header, on a phone and on a desktop', async () => {
+      const height = (classes: string[]): string | undefined => {
+        let won: string | undefined;
+        parse(kit).walkRules((rule) => {
+          if (rule.parent?.type !== 'root') return;
+          if (!rule.selectors.some((s) => classes.some((c) => s.trim() === `.${c}`))) return;
+          rule.walkDecls('height', (d) => void (won = d.value.replace(/\s+/g, ' ').trim()));
+        });
+        return won;
+      };
+      withChanges();
+      mount({ repos: [APP] });
+      const trigger = await header();
+      const button = screen.getByTestId('scm-open-review-changes');
+      expect(height([...button.classList])).toBe(minHeight([...trigger.classList]));
+      await mobileLayer(true);
+      expect(button).toHaveClass('ui-icon-btn-xs');
+      expect(height([...button.classList])).toBe('calc(var(--ctl-h) - var(--sp-3))');
+      expect(height([...button.classList])).toBe(minHeight([...trigger.classList]));
     });
 
     it('follow the mobile layer as it turns on and off', async () => {
@@ -952,6 +1075,7 @@ describe('The changed-files list is compact on a phone', () => {
       await mobileLayer(true);
       expect(trigger).toHaveClass('ui-collapsible-trigger-xs');
       await mobileLayer(false);
+      expect(trigger).toHaveClass('ui-collapsible-trigger-sm');
       expect(trigger).not.toHaveClass('ui-collapsible-trigger-xs');
     });
   });
@@ -1043,5 +1167,548 @@ describe('The list stays live while it is visible', () => {
     state('visible');
     await act(() => vi.advanceTimersByTimeAsync(0));
     expect(calls('/scm/status')).toHaveLength(hidden + 1);
+  });
+});
+
+// ── Row actions (scm-row-actions, design D2, D3, D9, D10) ─────────────────────
+
+const itemOf = (testId: string): HTMLElement => {
+  const item = screen.getByTestId(testId).closest<HTMLElement>('.scm-item');
+  if (!item) throw new Error(`${testId} has no .scm-item`);
+  return item;
+};
+
+/** The ids of the inline actions of a row, in the order they are drawn. */
+const actionIds = (item: HTMLElement): string[] =>
+  [...item.querySelectorAll('[data-testid^="scm-action-"]')].map(
+    (el) => el.getAttribute('data-testid')?.replace('scm-action-', '') ?? '',
+  );
+
+/** Every declaration of every top-level rule of scm.css that lists `selector`. */
+const scmRule = (selector: string): Map<string, string> => {
+  const held = new Map<string, string>();
+  parse(readFileSync(join(__dirname, 'scm.css'), 'utf8')).walkRules((rule) => {
+    if (!rule.selectors.some((s) => s.replace(/\s+/g, ' ').trim() === selector)) return;
+    rule.walkDecls((d) => void held.set(d.prop, d.value));
+  });
+  return held;
+};
+
+/** A mouse press with `button` (0 primary, 1 middle, 2 secondary), for the pointer events. */
+const mouse = (button: number) => ({
+  pointerId: 1,
+  pointerType: 'mouse',
+  button,
+  clientX: 10,
+  clientY: 10,
+});
+
+const batch = (over: Record<string, unknown> = {}) => ({
+  body: { receiptId: 'r1', status: 'staged', done: [], skipped: [], ...over },
+});
+
+describe('A row offers its actions', () => {
+  const changes = () =>
+    stubServer({
+      status: () => ({
+        body: status({ staged: [entry('s.ts')], changes: [entry('src/a.ts')] }),
+      }),
+    });
+
+  it('a Changes file holds Open file, Stage and Discard, Discard last behind a hairline', async () => {
+    changes();
+    mount({ repos: [APP], batchWrites: true });
+    await screen.findByTestId('scm-row-changes:src/a.ts');
+    const item = itemOf('scm-row-changes:src/a.ts');
+    expect(item).toHaveAttribute('data-testid', 'scm-item');
+    expect(actionIds(item)).toEqual(['open', 'stage', 'discard']);
+    const group = within(item).getByRole('group', { name: 'Actions for a.ts' });
+    // The actions are siblings of the main button, never inside it.
+    expect(screen.getByTestId('scm-row-changes:src/a.ts').contains(group)).toBe(false);
+    const discard = within(item).getByTestId('scm-action-discard');
+    expect(discard).toHaveAttribute('data-danger', 'true');
+    expect(discard.previousElementSibling).toHaveClass('scm-actions-sep');
+    expect(within(item).getByTestId('scm-action-stage')).toHaveAccessibleName('Stage');
+    // A staged file offers Unstage instead.
+    expect(actionIds(itemOf('scm-row-staged:s.ts'))).toEqual(['open', 'unstage']);
+  });
+
+  it('shows them only under the pointer or with focus in the row, and never on a phone', () => {
+    expect(scmRule('.scm-actions').get('display')).toBe('none');
+    expect(scmRule('.scm-item:hover > .scm-actions').get('display')).toBe('flex');
+    expect(scmRule('.scm-item:focus-within > .scm-actions').get('display')).toBe('flex');
+    expect(scmRule(":root[data-mobile='true'] .scm-item > .scm-actions").get('display')).toBe(
+      'none',
+    );
+    // The wrapper is the row's own height, and the name gives way before the actions.
+    expect(scmRule('.scm-item').get('height')).toBe('var(--scm-row-h)');
+    expect(scmRule('.scm-item > .scm-row').get('min-width')).toBe('0');
+  });
+
+  it('offers no action and no menu when the server has no batch writes', async () => {
+    changes();
+    mount({ repos: [APP], batchWrites: false });
+    const row = await screen.findByTestId('scm-row-changes:src/a.ts');
+    expect(row.closest('.scm-item')).toBeNull();
+    expect(document.querySelector('[data-testid^="scm-action-"]')).toBeNull();
+    fireEvent.contextMenu(row);
+    await settle();
+    expect(screen.queryByTestId('scm-menu')).toBeNull();
+  });
+
+  it('Tab from the row reaches each action, and Enter runs it without opening the review', async () => {
+    changes();
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const user = userEvent.setup();
+    const { onOpenFile, onOpenPath } = mount({ repos: [APP], batchWrites: true });
+    const row = await screen.findByTestId('scm-row-changes:src/a.ts');
+    const item = itemOf('scm-row-changes:src/a.ts');
+    act(() => row.focus());
+    await user.tab();
+    expect(within(item).getByTestId('scm-action-open')).toHaveFocus();
+    await user.keyboard('{Enter}');
+    expect(onOpenPath).toHaveBeenCalledWith(`${APP}/src/a.ts`);
+    await user.tab();
+    expect(within(item).getByTestId('scm-action-stage')).toHaveFocus();
+    await user.tab();
+    expect(within(item).getByTestId('scm-action-discard')).toHaveFocus();
+    await user.keyboard('{Enter}');
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(onOpenFile).not.toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+
+  it('a right-click opens a menu with the same items, and opens no review', async () => {
+    changes();
+    const { onOpenFile } = mount({ repos: [APP], batchWrites: true });
+    const row = await screen.findByTestId('scm-row-changes:src/a.ts');
+    const right = { pointerId: 1, pointerType: 'mouse', button: 2, clientX: 10, clientY: 10 };
+    fireEvent.pointerDown(row, right);
+    fireEvent.contextMenu(row, { button: 2 });
+    fireEvent.pointerUp(row, right);
+    expect(await screen.findByTestId('scm-menu')).toBeInTheDocument();
+    expect(
+      [...screen.getByTestId('scm-menu').querySelectorAll('[data-testid^="scm-menu-"]')].map(
+        (el) => el.textContent,
+      ),
+    ).toEqual(['Open file', 'Stage', 'Discard changes']);
+    expect(onOpenFile).not.toHaveBeenCalled();
+  });
+
+  it('a right-click or a middle-click on an inline action runs nothing, a primary press does', async () => {
+    stubServer({
+      status: () => ({ body: status({ changes: [entry('src/a.ts')] }) }),
+      write: () => batch({ done: ['src/a.ts'] }),
+    });
+    const { onOpenFile } = mount({ repos: [APP], batchWrites: true });
+    await screen.findByTestId('scm-row-changes:src/a.ts');
+    const stage = within(itemOf('scm-row-changes:src/a.ts')).getByTestId('scm-action-stage');
+    // The right-click opens the row's menu, and its release lands on the button under it.
+    fireEvent.pointerDown(stage, mouse(2));
+    fireEvent.contextMenu(stage, { button: 2 });
+    fireEvent.pointerUp(stage, mouse(2));
+    const menu = await screen.findByTestId('scm-menu');
+    await settle();
+    expect(posts()).toEqual([]);
+    fireEvent.keyDown(menu, { key: 'Escape' });
+    await settle();
+    fireEvent.pointerDown(stage, mouse(1));
+    fireEvent.pointerUp(stage, mouse(1));
+    await settle();
+    expect(posts()).toEqual([]);
+    fireEvent.pointerDown(stage, mouse(0));
+    fireEvent.pointerUp(stage, mouse(0));
+    await settle();
+    expect(posts()).toEqual([{ route: '/scm/stage-paths', body: { paths: ['src/a.ts'] } }]);
+    expect(onOpenFile).not.toHaveBeenCalled();
+  });
+
+  it('a menu item runs its action', async () => {
+    stubServer({
+      status: () => ({ body: status({ changes: [entry('src/a.ts')] }) }),
+      write: () => batch({ done: ['src/a.ts'] }),
+    });
+    mount({ repos: [APP], batchWrites: true });
+    fireEvent.contextMenu(await screen.findByTestId('scm-row-changes:src/a.ts'));
+    fireEvent.click(await screen.findByTestId('scm-menu-stage'));
+    await settle();
+    expect(posts()).toEqual([{ route: '/scm/stage-paths', body: { paths: ['src/a.ts'] } }]);
+  });
+
+  describe('on a phone', () => {
+    const touch = (clientY: number) => ({
+      pointerId: 9,
+      pointerType: 'touch',
+      clientX: 10,
+      clientY,
+    });
+    beforeEach(() => {
+      document.documentElement.dataset.mobile = 'true';
+    });
+    afterEach(() => {
+      document.documentElement.removeAttribute('data-mobile');
+    });
+
+    it('draws no inline action, and the menu still offers them', async () => {
+      changes();
+      mount({ repos: [APP], batchWrites: true });
+      const row = await screen.findByTestId('scm-row-staged:s.ts');
+      expect(row.closest('.scm-item')).not.toBeNull();
+      expect(document.querySelector('[data-testid^="scm-action-"]')).toBeNull();
+      fireEvent.contextMenu(row);
+      expect(await screen.findByTestId('scm-menu-unstage')).toBeInTheDocument();
+    });
+
+    it('a long-press opens the menu, and its release opens no review', async () => {
+      vi.useFakeTimers();
+      changes();
+      const { onOpenFile } = mount({ repos: [APP], batchWrites: true });
+      await settle();
+      const row = screen.getByTestId('scm-row-staged:s.ts');
+      fireEvent.pointerDown(row, touch(100));
+      await act(() => vi.advanceTimersByTimeAsync(700));
+      expect(screen.getByTestId('scm-menu-open')).toBeInTheDocument();
+      expect(screen.getByTestId('scm-menu-unstage')).toBeInTheDocument();
+      fireEvent.pointerUp(row, touch(100));
+      fireEvent.click(row, { detail: 1 });
+      expect(onOpenFile).not.toHaveBeenCalled();
+    });
+
+    it('a pan that starts on a row is left to the browser and opens no menu', async () => {
+      vi.useFakeTimers();
+      changes();
+      const { onOpenFile } = mount({ repos: [APP], batchWrites: true });
+      await settle();
+      const row = screen.getByTestId('scm-row-staged:s.ts');
+      expect(fireEvent.pointerDown(row, touch(100))).toBe(true);
+      expect(fireEvent.touchStart(row, { touches: [{ clientX: 10, clientY: 100 }] })).toBe(true);
+      fireEvent.pointerMove(row, touch(60));
+      await act(() => vi.advanceTimersByTimeAsync(700));
+      expect(screen.queryByTestId('scm-menu')).toBeNull();
+      fireEvent.pointerUp(row, touch(60));
+      expect(onOpenFile).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe('Row writes', () => {
+  /** 40 files under packages/server, ten of them in a subfolder the test collapses. */
+  const forty = [
+    ...Array.from({ length: 30 }, (_, i) => entry(`packages/server/f${i}.ts`)),
+    ...Array.from({ length: 10 }, (_, i) => entry(`packages/server/src/g${i}.ts`)),
+  ];
+
+  it('Stage all on a folder stages every file under it once, collapsed ones too, with Undo', async () => {
+    stubServer({
+      status: () => ({ body: status({ changes: forty }) }),
+      write: (route, body) =>
+        route === '/scm/restore'
+          ? { body: { receiptId: null, status: 'restored' } }
+          : batch({ done: body['paths'] }),
+    });
+    const { onNotify } = mount({ repos: [APP], batchWrites: true });
+    // Fold the subfolder: its files are off screen and still part of the folder.
+    press(await screen.findByTestId('scm-folder-changes:packages/server/src'));
+    expect(screen.queryByTestId('scm-row-changes:packages/server/src/g0.ts')).toBeNull();
+    press(within(itemOf('scm-folder-changes:packages/server')).getByTestId('scm-action-stage'));
+    await settle();
+    const [stage] = posts();
+    expect(stage?.route).toBe('/scm/stage-paths');
+    const paths = stage?.body['paths'] as string[];
+    expect(paths.toSorted()).toEqual(forty.map((e) => e.path).toSorted());
+    expect(new Set(paths).size).toBe(40);
+    expect(onNotify).toHaveBeenLastCalledWith(
+      'Staged 40 files',
+      expect.objectContaining({ label: 'Undo' }),
+    );
+    act(() => onNotify.mock.lastCall?.[1]?.onClick());
+    await settle();
+    expect(posts()[1]).toEqual({ route: '/scm/restore', body: { receiptId: 'r1' } });
+    expect(onNotify).toHaveBeenLastCalledWith('Undone', undefined);
+  });
+
+  it('Unstage all sends each entry, and the source of a rename', async () => {
+    stubServer({
+      status: () => ({
+        body: status({
+          staged: [
+            entry('lib/a.ts'),
+            entry('lib/new.ts', { kind: 'rename', status: 'R', oldPath: 'lib/old.ts' }),
+          ],
+        }),
+      }),
+      write: () => batch({ status: 'unstaged', done: ['lib/a.ts', 'lib/new.ts'] }),
+    });
+    const { onNotify } = mount({ repos: [APP], batchWrites: true });
+    await screen.findByTestId('scm-folder-staged:lib');
+    press(within(itemOf('scm-folder-staged:lib')).getByTestId('scm-action-unstage'));
+    await settle();
+    expect(posts()).toEqual([
+      {
+        route: '/scm/unstage-paths',
+        body: { entries: [{ path: 'lib/a.ts' }, { path: 'lib/new.ts', oldPath: 'lib/old.ts' }] },
+      },
+    ]);
+    expect(onNotify.mock.lastCall?.[0]).toBe('Unstaged 2 files');
+  });
+
+  it('says how many were skipped and why', async () => {
+    const four = ['d/a.ts', 'd/b.ts', 'd/c.ts', 'd/e.ts'].map((p) => entry(p));
+    stubServer({
+      status: () => ({ body: status({ changes: four }) }),
+      write: () =>
+        batch({
+          done: ['d/a.ts', 'd/b.ts'],
+          skipped: [
+            { path: 'd/c.ts', reason: 'converted' },
+            { path: 'd/e.ts', reason: 'converted' },
+          ],
+        }),
+    });
+    const { onNotify } = mount({ repos: [APP], batchWrites: true });
+    await screen.findByTestId('scm-folder-changes:d');
+    press(within(itemOf('scm-folder-changes:d')).getByTestId('scm-action-stage'));
+    await settle();
+    expect(onNotify.mock.lastCall?.[0]).toBe('Staged 2 files, skipped 2 (needs a git filter)');
+  });
+
+  it('a write that changed nothing says so, with no Undo', async () => {
+    stubServer({
+      status: () => ({ body: status({ changes: [entry('a.ts')] }) }),
+      write: () => batch({ receiptId: null, skipped: [{ path: 'a.ts', reason: 'converted' }] }),
+    });
+    const { onNotify } = mount({ repos: [APP], batchWrites: true });
+    await screen.findByTestId('scm-row-changes:a.ts');
+    press(within(itemOf('scm-row-changes:a.ts')).getByTestId('scm-action-stage'));
+    await settle();
+    expect(onNotify).toHaveBeenLastCalledWith(
+      'Nothing staged, skipped a.ts (needs a git filter)',
+      undefined,
+    );
+  });
+
+  it('a refused write says why, through the notice', async () => {
+    stubServer({
+      status: () => ({ body: status({ changes: [entry('a.ts')] }) }),
+      write: () => ({ body: { error: 'index.lock exists', code: 'busy' }, httpStatus: 409 }),
+    });
+    const { onNotice, onNotify } = mount({ repos: [APP], batchWrites: true });
+    await screen.findByTestId('scm-row-changes:a.ts');
+    press(within(itemOf('scm-row-changes:a.ts')).getByTestId('scm-action-stage'));
+    await settle();
+    expect(onNotice.mock.lastCall?.[0]).toMatch(/index\.lock/);
+    expect(onNotify).not.toHaveBeenCalled();
+  });
+
+  describe('a discard', () => {
+    const two = () =>
+      stubServer({
+        status: () => ({
+          body: status({ changes: [entry('t/a.ts'), entry('t/new.txt', { status: '?' })] }),
+        }),
+        write: (route) =>
+          route === '/scm/restore'
+            ? { body: { receiptId: null, status: 'restored' } }
+            : batch({ receiptId: 'd1', status: 'discarded', done: ['t/a.ts', 't/new.txt'] }),
+      });
+
+    it('asks first, naming the files, the untracked ones and the Undo window', async () => {
+      two();
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+      mount({ repos: [APP], batchWrites: true });
+      await screen.findByTestId('scm-folder-changes:t');
+      press(within(itemOf('scm-folder-changes:t')).getByTestId('scm-action-discard'));
+      await settle();
+      const text = confirm.mock.lastCall?.[0] ?? '';
+      expect(text).toContain('Discard changes to 2 files?');
+      expect(text).toContain('t/a.ts\nt/new.txt');
+      expect(text).toContain('1 untracked file will be deleted.');
+      expect(text).toContain('You can undo this for 10 minutes');
+      // Each entry carries the fp the list showed, so a file changed since is left alone.
+      expect(posts()).toEqual([
+        {
+          route: '/scm/discard',
+          body: {
+            entries: [
+              { path: 't/a.ts', fp: 'fp-t/a.ts' },
+              { path: 't/new.txt', fp: 'fp-t/new.txt' },
+            ],
+          },
+        },
+      ]);
+      expect(readLastDiscard(APP)).toMatchObject({ receiptId: 'd1', count: 2 });
+      confirm.mockRestore();
+    });
+
+    it('Cancel on the confirm sends nothing', async () => {
+      two();
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+      mount({ repos: [APP], batchWrites: true });
+      await screen.findByTestId('scm-row-changes:t/a.ts');
+      press(within(itemOf('scm-row-changes:t/a.ts')).getByTestId('scm-action-discard'));
+      await settle();
+      expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Discard changes to t/a.ts?'));
+      expect(posts()).toEqual([]);
+      confirm.mockRestore();
+    });
+
+    it('the toast’s Undo also takes the project bar’s Undo away', async () => {
+      two();
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+      const { onNotify } = mount({ repos: [APP], batchWrites: true });
+      await screen.findByTestId('scm-row-changes:t/a.ts');
+      press(within(itemOf('scm-row-changes:t/a.ts')).getByTestId('scm-action-discard'));
+      await settle();
+      expect(screen.getByTestId('scm-undo-discard')).toBeInTheDocument();
+      act(() => onNotify.mock.lastCall?.[1]?.onClick());
+      await settle();
+      expect(posts()[1]).toEqual({ route: '/scm/restore', body: { receiptId: 'd1' } });
+      expect(screen.queryByTestId('scm-undo-discard')).toBeNull();
+      confirm.mockRestore();
+    });
+
+    it('the review’s Undo of a toast holding the discard takes the project bar’s Undo away', async () => {
+      two();
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+      mount({ repos: [APP], batchWrites: true });
+      await screen.findByTestId('scm-row-changes:t/a.ts');
+      press(within(itemOf('scm-row-changes:t/a.ts')).getByTestId('scm-action-discard'));
+      await settle();
+      expect(screen.getByTestId('scm-undo-discard')).toBeInTheDocument();
+      // Reviewed within 6 s: the review's toast names both writes, and its Undo takes both back,
+      // the way the review pane runs it, outside this view.
+      const recent = recordWrite({
+        repo: APP,
+        receiptId: 'r9',
+        action: 'stage',
+        name: 'x.ts',
+        at: Date.now(),
+      });
+      expect(recent.map((write) => write.receiptId)).toEqual(['d1', 'r9']);
+      await act(async () => {
+        expect(await undoWrites(restoreScmWrite, recent)).toEqual({ kind: 'done', undone: 2 });
+      });
+      expect(readLastDiscard(APP)).toBeNull();
+      expect(screen.queryByTestId('scm-undo-discard')).toBeNull();
+      confirm.mockRestore();
+    });
+  });
+
+  it('an Undo from the project bar leaves the toast’s later Undo nothing spent to retry', async () => {
+    // Stage A, discard B, undo B from the project bar, stage B, then the toast's Undo (all in 6 s).
+    const spent = new Set<string>();
+    stubServer({
+      status: () => ({ body: status({ changes: [entry('a.ts'), entry('b.ts')] }) }),
+      write: (route, body) => {
+        if (route === '/scm/discard') {
+          return batch({ receiptId: 'd1', status: 'discarded', done: ['b.ts'] });
+        }
+        if (route === '/scm/restore') {
+          const id = String(body['receiptId']);
+          if (spent.has(id)) {
+            return {
+              body: { error: 'Undo is no longer available.', code: 'token' },
+              httpStatus: 410,
+            };
+          }
+          spent.add(id);
+          return { body: { receiptId: null, status: 'restored' } };
+        }
+        const [path] = body['paths'] as string[];
+        return batch({ receiptId: path === 'a.ts' ? 'r1' : 'r2', done: [path] });
+      },
+    });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const { onNotify, onNotice } = mount({ repos: [APP], batchWrites: true });
+    const action = (path: string, id: string) =>
+      press(within(itemOf(`scm-row-changes:${path}`)).getByTestId(`scm-action-${id}`));
+    await screen.findByTestId('scm-row-changes:a.ts');
+    action('a.ts', 'stage');
+    await settle();
+    action('b.ts', 'discard');
+    await settle();
+    press(screen.getByTestId('scm-undo-discard'));
+    await settle();
+    expect(onNotify).toHaveBeenLastCalledWith('Restored 1 file', undefined);
+    action('b.ts', 'stage');
+    await settle();
+    // The discard was taken back already, so the toast no longer names it.
+    expect(onNotify.mock.lastCall?.[0]).toBe('Staged 2 files');
+    act(() => onNotify.mock.lastCall?.[1]?.onClick());
+    await settle();
+    const restores = posts()
+      .filter((post) => post.route === '/scm/restore')
+      .map((post) => post.body['receiptId']);
+    expect(restores).toEqual(['d1', 'r2', 'r1']);
+    expect(onNotify).toHaveBeenLastCalledWith('Undid 2 files', undefined);
+    expect(onNotice).not.toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+});
+
+describe('Undo last discard', () => {
+  const MIN = 60_000;
+  /** A project with one change, a discard of two files recorded now, and the restore's answer. */
+  const discarded = (restore: { body: unknown; httpStatus?: number }) => {
+    vi.useFakeTimers();
+    stubServer({
+      status: () => ({ body: status({ changes: [entry('a.ts')] }) }),
+      write: () => restore,
+    });
+    recordDiscard(APP, { receiptId: 'd1', at: Date.now(), count: 2 });
+  };
+  const button = () => screen.queryByTestId('scm-undo-discard');
+  const later = (ms: number) => act(() => vi.advanceTimersByTimeAsync(ms));
+
+  it('is offered after a discard, still at 8 minutes, and restores on tap, then goes', async () => {
+    discarded({ body: { receiptId: null, status: 'restored' } });
+    const { onNotify } = mount({ repos: [APP], batchWrites: true });
+    await settle();
+    expect(button()).toHaveAccessibleName('Undo last discard (2 files)');
+    await later(8 * MIN);
+    expect(button()).toBeInTheDocument();
+    press(button()!);
+    await settle();
+    expect(posts()).toEqual([{ route: '/scm/restore', body: { receiptId: 'd1' } }]);
+    expect(onNotify).toHaveBeenLastCalledWith('Restored 2 files', undefined);
+    expect(button()).toBeNull();
+  });
+
+  it('goes by itself after 10 minutes', async () => {
+    discarded({ body: { receiptId: null, status: 'restored' } });
+    mount({ repos: [APP], batchWrites: true });
+    await settle();
+    await later(DISCARD_UNDO_MS - 1);
+    expect(button()).toBeInTheDocument();
+    await later(1);
+    expect(button()).toBeNull();
+  });
+
+  it('an expired receipt says so and goes', async () => {
+    discarded({ body: { error: 'receipt expired', code: 'token' }, httpStatus: 410 });
+    const { onNotice } = mount({ repos: [APP], batchWrites: true });
+    await settle();
+    press(button()!);
+    await settle();
+    expect(onNotice).toHaveBeenLastCalledWith('This Undo has expired');
+    expect(button()).toBeNull();
+  });
+
+  it('a conflict says the files changed and keeps the Undo for later', async () => {
+    const message = 'The files changed since the discard; nothing was undone.';
+    discarded({ body: { error: message, code: 'conflict' }, httpStatus: 409 });
+    const { onNotice } = mount({ repos: [APP], batchWrites: true });
+    await settle();
+    press(button()!);
+    await settle();
+    expect(onNotice).toHaveBeenLastCalledWith(message);
+    expect(button()).toBeInTheDocument();
+  });
+
+  it('is not offered without batch writes', async () => {
+    discarded({ body: { receiptId: null, status: 'restored' } });
+    mount({ repos: [APP], batchWrites: false });
+    await settle();
+    expect(button()).toBeNull();
   });
 });

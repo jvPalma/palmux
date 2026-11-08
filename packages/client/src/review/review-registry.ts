@@ -15,6 +15,8 @@ export interface ReviewApi {
   prevFile(): void;
   /** Reviewed in a Changes review, Unstage in a Staged one, for the file in view. */
   reviewCurrent(): void;
+  /** Flip the review's wrap. `'split'`: side-by-side always wraps, nothing changed. */
+  toggleWrap(): 'on' | 'off' | 'split';
 }
 
 const reviews = new Map<string, ReviewApi>();

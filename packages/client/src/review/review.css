@@ -202,6 +202,13 @@
   color: var(--t-subtext);
 }
 
+/* On a desktop the bar also carries the file's state, counts and its two actions.
+   Only the path gives way, and the controls keep their kit height, which fits the
+   bar's own minimum, so the bar is the height it always was. */
+.rv-current > :not(.rv-current-path) {
+  flex: 0 0 auto;
+}
+
 .rv-body {
   flex: 1 1 auto;
   min-height: 0;

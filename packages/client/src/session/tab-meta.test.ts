@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { TAB_KINDS } from '@palmux/shared';
+import { TAB_KINDS, fileReviewUrl } from '@palmux/shared';
 import {
   displayTitle,
   kindIcon,
@@ -61,6 +61,15 @@ describe('displayTitle', () => {
   // A review tab is named for what it shows and which project it is about, so two
   // reviews of one project (Changes and Staged) and two projects stay apart.
   describe('review tabs', () => {
+    it('names a single-file review after the file and the group', () => {
+      expect(
+        displayTitle({ id: '4', kind: 'review', url: fileReviewUrl('changes', '/work/p', 'src/a.ts') }),
+      ).toBe('a.ts (Changes)');
+      expect(
+        displayTitle({ id: '4', kind: 'review', url: fileReviewUrl('staged', '/work/p', 'b.md') }),
+      ).toBe('b.md (Staged)');
+    });
+
     it('names Changes and Staged after the project folder', () => {
       expect(displayTitle({ id: '4', kind: 'review', url: 'changes:/work/palmux' })).toBe(
         'Changes · palmux',

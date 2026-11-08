@@ -91,6 +91,10 @@ export interface TabMeta {
   groupId?: string;
   /** Detached window holding this tab (isWindowId); absent = the main window. */
   window?: string;
+  /** A preview tab (review, or editor with a url): the next open may replace it. Absent = pinned. */
+  preview?: true;
+  /** Set for one broadcast on a tab that replaced this id in place; never persisted. */
+  replaces?: string;
 }
 
 /**
@@ -129,6 +133,10 @@ export interface ReadyMessage {
   version: string;
   /** Present (`true`) when the server supports detached windows; absent on an older server. */
   detachedWindows?: true;
+  /** Present (`true`) when the server supports preview tabs and `replaceTab`. */
+  previewTabs?: true;
+  /** Present (`true`) when the server has the batch stage, unstage and discard routes. */
+  scmBatchWrites?: true;
 }
 
 /** Current server-persisted settings. Sent on connect and after any change. */
@@ -336,6 +344,8 @@ export interface CreateTabMessage {
   color?: string;
   /** Detached window to create the tab in (isWindowId); absent = the main window. */
   window?: string;
+  /** Open as a preview (honoured for `review` and url-bearing `editor` only). */
+  preview?: true;
 }
 
 /** Update tab metadata. Empty-string `name`/`color` clears the field. */
@@ -346,6 +356,16 @@ export interface UpdateTabMessage {
   color?: string;
   /** Applied to `web` tabs only; ignored on other kinds. */
   url?: string;
+  /** `false` pins a preview tab; `true` is not part of the protocol. */
+  preview?: false;
+}
+
+/** Replace the preview tab `id` in place (or open a new preview when it cannot be replaced). */
+export interface ReplaceTabMessage {
+  type: 'replaceTab';
+  id: string;
+  kind: 'editor' | 'review';
+  url: string;
 }
 
 /**
@@ -424,6 +444,7 @@ export type ClientMessage =
   | KillMessage
   | CreateTabMessage
   | UpdateTabMessage
+  | ReplaceTabMessage
   | ReorderTabsMessage
   | GroupCreateMessage
   | GroupUpdateMessage
@@ -468,6 +489,8 @@ function parseTabMeta(v: unknown): TabMeta | null {
     ...(isGroupId(v['groupId']) ? { groupId: v['groupId'] } : {}),
     // Same for window: a malformed owner reads as the main window.
     ...(isWindowId(v['window']) ? { window: v['window'] } : {}),
+    ...(v['preview'] === true ? { preview: true as const } : {}),
+    ...(typeof v['replaces'] === 'string' ? { replaces: v['replaces'] } : {}),
   };
 }
 
@@ -543,6 +566,8 @@ export function parseServerMessage(data: string): ServerMessage | null {
           webApps: parseWebApps(raw['webApps']),
           version: typeof raw['version'] === 'string' ? raw['version'] : '',
           ...(raw['detachedWindows'] === true ? { detachedWindows: true as const } : {}),
+          ...(raw['previewTabs'] === true ? { previewTabs: true as const } : {}),
+          ...(raw['scmBatchWrites'] === true ? { scmBatchWrites: true as const } : {}),
         };
       }
       return null;
@@ -690,10 +715,24 @@ export function parseClientMessage(data: string): ClientMessage | null {
         kind: raw['kind'],
         ...copyStrings(raw, ['url', 'name', 'color']),
         ...(isWindowId(raw['window']) ? { window: raw['window'] } : {}),
+        ...(raw['preview'] === true ? { preview: true as const } : {}),
       };
     case 'updateTab':
       if (typeof raw['id'] !== 'string') return null;
-      return { type: 'updateTab', id: raw['id'], ...copyStrings(raw, ['name', 'color', 'url']) };
+      return {
+        type: 'updateTab',
+        id: raw['id'],
+        ...copyStrings(raw, ['name', 'color', 'url']),
+        ...(raw['preview'] === false ? { preview: false as const } : {}),
+      };
+    case 'replaceTab':
+      if (
+        typeof raw['id'] !== 'string' ||
+        (raw['kind'] !== 'editor' && raw['kind'] !== 'review') ||
+        typeof raw['url'] !== 'string'
+      )
+        return null;
+      return { type: 'replaceTab', id: raw['id'], kind: raw['kind'], url: raw['url'] };
     case 'reorderTabs': {
       const ids = raw['ids'];
       // isTabId bounds each id; the length cap bounds the frame (the registry

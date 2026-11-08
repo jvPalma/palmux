@@ -235,11 +235,24 @@ export class WsClient {
     color?: string;
     /** The detached window to create the tab in; absent = the main window. */
     window?: string;
+    /** Open as a preview tab (sent only to a server whose `ready` carries `previewTabs`). */
+    preview?: true;
   }): boolean {
     return this.sendMessage({ type: 'createTab', ...spec });
   }
-  sendUpdateTab(patch: { id: string; name?: string; color?: string; url?: string }): boolean {
+  sendUpdateTab(patch: {
+    id: string;
+    name?: string;
+    color?: string;
+    url?: string;
+    /** `false` pins a preview tab. */
+    preview?: false;
+  }): boolean {
     return this.sendMessage({ type: 'updateTab', ...patch });
+  }
+  /** Replace the preview tab `id` in place with `kind`/`url` (one server operation, one broadcast). */
+  sendReplaceTab(id: string, kind: 'editor' | 'review', url: string): boolean {
+    return this.sendMessage({ type: 'replaceTab', id, kind, url });
   }
   /** Hand `ids` to a detached window (`window` = its id), or back to the main window (`null`). */
   sendMoveToWindow(ids: string[], window: string | null): boolean {

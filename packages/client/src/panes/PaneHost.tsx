@@ -40,6 +40,8 @@ interface PaneHostProps {
   onUpdateQuickLinks: (links: QuickLink[]) => void;
   onChangeUrl: (id: string, url: string) => void;
   onDirtyChange: (id: string, dirty: boolean) => void;
+  /** A file tab was saved: pin it if it is a preview. */
+  onPinTab?: ((id: string) => void) | undefined;
   /** Focus the pane showing this tab on click. */
   onFocus: (id: string) => void;
   /** Set on mobile: pane headers get a ☰ that opens the session drawer. */
@@ -64,6 +66,7 @@ export const PaneHost = memo(function PaneHost({
   onUpdateQuickLinks,
   onChangeUrl,
   onDirtyChange,
+  onPinTab,
   onFocus,
   onMenu,
 }: PaneHostProps) {
@@ -107,6 +110,8 @@ export const PaneHost = memo(function PaneHost({
                   path={tab.url}
                   onChangePath={(path) => onChangeUrl(tab.id, path)}
                   onDirtyChange={(dirty) => onDirtyChange(tab.id, dirty)}
+                  onSaved={() => onPinTab?.(tab.id)}
+                  focused={focused}
                 />
               ) : (
                 <EditorPane

@@ -266,6 +266,26 @@ describe('Source Control settings', () => {
   });
 });
 
+describe('editorWrap setting', () => {
+  afterEach(() => localStorage.clear());
+
+  it('defaults to on', () => {
+    expect(DEFAULTS.editorWrap).toBe(true);
+    expect(loadSettings().editorWrap).toBe(true);
+  });
+
+  it('sanitises a non-boolean to true and keeps a boolean', () => {
+    expect(sanitize(fullSettings({ editorWrap: false })).editorWrap).toBe(false);
+    for (const bad of ['no', 0, null]) {
+      expect(sanitize(fullSettings({ editorWrap: bad as unknown as boolean })).editorWrap).toBe(true);
+    }
+  });
+
+  it('is absent from the synced payload', () => {
+    expect('editorWrap' in toServerSettings(fullSettings({ editorWrap: false }))).toBe(false);
+  });
+});
+
 // The tree/list choice is how THIS screen reads a group, so like the other Source
 // Control display choices it never joins SYNCED_KEYS: a synced copy would put one
 // device's preference back on every other device pointed at the same palmux.

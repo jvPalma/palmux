@@ -23,19 +23,23 @@ import type { ScmAlgorithm, ScmFileSnapshot, ScmGroup } from '@palmux/shared';
 import { setGitObserver } from './scm-git';
 import {
   SIDE_LIMIT_BYTES,
+  closeAll,
   configureScmCache,
   crlfToLf,
   eolDecision,
   gatherStats,
   getReceipt,
   getToken,
+  openParent,
   parseUnifiedDiff,
   putReceipt,
   putToken,
   readAttrContext,
   readSnapshot,
+  readWorkTree,
   resetScmCache,
   scmCacheStats,
+  statAt,
   walkHooks,
 } from './scm-snapshot';
 
@@ -1063,6 +1067,108 @@ describe('the work tree walk', () => {
     await git(dir, 'update-index', '--add', '--cacheinfo', `160000,${head},vendor/inner`);
     const failure = await snapFailure(dir, 'staged', 'vendor/inner');
     expect(failure.code).toBe('unsupported');
+  });
+});
+
+describe('readWorkTree options and the walk helpers the discard uses', () => {
+  const MIB = 1024 * 1024;
+
+  it('reads a 2 MB file in full with a 64 MiB limit, and as big without one', async () => {
+    const content = Buffer.alloc(2 * MIB, 0x61);
+    const dir = await makeRepo({ 'a.ts': 'a\n' });
+    await put(dir, 'two.bin', content);
+
+    const full = await readWorkTree(dir, 'two.bin', { limit: 64 * MIB });
+    if (!full.ok || full.kind !== 'file') throw new Error(`expected a file, got ${JSON.stringify(full)}`);
+    expect(full.bytes.equals(content)).toBe(true);
+    const st = await stat(join(dir, 'two.bin'));
+    expect(full.stat).toEqual({ size: st.size, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs, ino: st.ino, mode: st.mode });
+
+    const capped = await readWorkTree(dir, 'two.bin');
+    expect(capped.ok && capped.kind).toBe('big');
+    if (capped.ok && capped.kind === 'big') expect(capped.stat.size).toBe(2 * MIB);
+  });
+
+  it('answers the stat without the bytes for statOnly', async () => {
+    const dir = await makeRepo({ 'run.sh': 'echo\n' });
+    await chmod(join(dir, 'run.sh'), 0o755);
+    const probe = await readWorkTree(dir, 'run.sh', { statOnly: true });
+    expect(probe).toMatchObject({ ok: true, kind: 'stat', exec: true, stat: { size: 5 } });
+    expect(probe).not.toHaveProperty('bytes');
+  });
+
+  it('classifies a FIFO as special and a link on the path as link-in-path, where a snapshot refuses them', async () => {
+    const dir = await makeRepo({ 'a.ts': 'a\n' });
+    const outside = await tempDir();
+    await put(outside, 'secret.txt', 'TOP SECRET\n');
+    await exec('mkfifo', [join(dir, 'pipe')]);
+    await symlink(outside, join(dir, 'linked'));
+
+    expect(await readWorkTree(dir, 'pipe', { classify: true })).toEqual({ ok: true, kind: 'special' });
+    expect(await readWorkTree(dir, 'linked/secret.txt', { classify: true })).toEqual({ ok: true, kind: 'link-in-path' });
+    expect(await readWorkTree(dir, 'pipe')).toMatchObject({ ok: false, status: 400 });
+    expect(await readWorkTree(dir, 'linked/secret.txt')).toMatchObject({ ok: false, status: 403 });
+  });
+
+  it('classifies a folder at the file and a file at a folder as special, which a snapshot reads as absent', async () => {
+    const dir = await makeRepo({ 'a.ts': 'a\n' });
+    await put(dir, 'folder/keep.txt', 'k\n');
+    await put(dir, 'plain', 'p\n');
+    expect(await readWorkTree(dir, 'folder', { classify: true })).toEqual({ ok: true, kind: 'special' });
+    expect(await readWorkTree(dir, 'plain/child.txt', { classify: true })).toEqual({ ok: true, kind: 'special' });
+    expect(await readWorkTree(dir, 'folder')).toEqual({ ok: true, kind: 'absent' });
+    expect(await readWorkTree(dir, 'plain/child.txt')).toEqual({ ok: true, kind: 'absent' });
+    expect(await readWorkTree(dir, 'missing/child.txt', { classify: true })).toEqual({ ok: true, kind: 'absent' });
+  });
+
+  it('opens every folder on the way and stats the file through the last one', async () => {
+    const dir = await makeRepo({ 'sub/inner/file.txt': 'inside\n' });
+    const walk = await openParent(dir, 'sub/inner/file.txt');
+    if (!walk.ok || walk.kind !== 'dirs') throw new Error(`expected dirs, got ${JSON.stringify(walk)}`);
+    try {
+      expect(walk.dirs).toHaveLength(3);
+      expect(walk.name).toBe('file.txt');
+      const st = await statAt(walk.dirs[2]!, walk.name, 2);
+      expect(st).toMatchObject({ ok: true, kind: 'file', stat: { size: 7 } });
+      expect(await statAt(walk.dirs[2]!, 'nope', 2)).toEqual({ ok: true, kind: 'absent' });
+    } finally {
+      await closeAll(walk.dirs);
+    }
+  });
+
+  it('refuses a folder swapped for a link between two steps, for openParent as for the read', async () => {
+    const dir = await makeRepo({ 'sub/inner/file.txt': 'inside\n' });
+    const outside = await tempDir();
+    await put(outside, 'file.txt', 'OUTSIDE\n');
+    const steps: string[] = [];
+    walkHooks.onStep = async (step) => {
+      steps.push(`${step.kind}:${step.name}`);
+      if (step.kind === 'dir' && step.name === 'inner') {
+        await rename(join(dir, 'sub/inner'), join(dir, 'sub/inner.moved'));
+        await symlink(outside, join(dir, 'sub/inner'));
+      }
+    };
+    expect(await openParent(dir, 'sub/inner/file.txt')).toEqual({ ok: true, kind: 'link-in-path' });
+    expect(steps).toEqual(['dir:sub', 'dir:inner']);
+  });
+
+  it('keeps the folder it already holds when a later swap happens, so statAt never looks outside', async () => {
+    const dir = await makeRepo({ 'sub/inner/file.txt': 'inside\n' });
+    const outside = await tempDir();
+    await put(outside, 'file.txt', 'OUTSIDE, much longer than the inside file\n');
+    const walk = await openParent(dir, 'sub/inner/file.txt');
+    if (!walk.ok || walk.kind !== 'dirs') throw new Error('expected dirs');
+    walkHooks.onStep = async (step) => {
+      if (step.kind === 'file') {
+        await rename(join(dir, 'sub/inner'), join(dir, 'sub/inner.moved'));
+        await symlink(outside, join(dir, 'sub/inner'));
+      }
+    };
+    try {
+      expect(await statAt(walk.dirs[2]!, walk.name, 2)).toMatchObject({ ok: true, kind: 'file', stat: { size: 7 } });
+    } finally {
+      await closeAll(walk.dirs);
+    }
   });
 });
 

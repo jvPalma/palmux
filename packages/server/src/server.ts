@@ -27,6 +27,7 @@ import {
   nextFreeId,
   normalizeOrder,
   parseClientMessage,
+  fileReviewUrl,
   parseReviewUrl,
   registerDynamicThemes,
   reviewUrl,
@@ -116,7 +117,16 @@ import {
   updateComment,
 } from './scm-comments';
 import { checkRepo, resolveRepo, scmFail, type ScmFailure } from './scm-git';
-import { restoreReceipt, stageFile, unstageFile, type WriteResult } from './scm-index';
+import { discardPaths, discardReceiptSize, restoreDiscard } from './scm-discard';
+import {
+  restoreReceipt,
+  stageFile,
+  stagePaths,
+  unstageFile,
+  unstagePaths,
+  type BatchWrite,
+  type WriteResult,
+} from './scm-index';
 import { readSnapshot } from './scm-snapshot';
 import { getStatus } from './scm-status';
 import { resolveImageFile } from './image-file';
@@ -174,6 +184,10 @@ interface TabRecord {
    * tab and each window reclaims its own on reconnect.
    */
   window?: string;
+  /** A preview tab: review, or url-bearing editor. The next open may replace it. */
+  preview?: true;
+  /** The id this tab replaced in place; emitted by `tabs()`, never persisted. */
+  replaces?: string;
   /**
    * The pty's controlling tty (`pts/16`), captured while the process is ALIVE.
    * `ttyOf` reads /proc/<pid>/fd/0, which is gone the instant the shell exits,
@@ -230,7 +244,15 @@ const GROUP_DEFAULT_COLORS = [
 function canonicalReviewUrl(url: string): string | null {
   const parsed = parseReviewUrl(url);
   if (!parsed || parsed.top.includes('\0')) return null;
-  return reviewUrl(parsed.group, resolve(parsed.top));
+  const top = resolve(parsed.top);
+  return parsed.file !== undefined
+    ? fileReviewUrl(parsed.group, top, parsed.file)
+    : reviewUrl(parsed.group, top);
+}
+
+/** Only a review and an editor on a file can be a preview. */
+function canBePreview(kind: TabKind, url: string | undefined): boolean {
+  return kind === 'review' || (kind === 'editor' && !!url);
 }
 
 export interface CreateTabSpec {
@@ -240,12 +262,16 @@ export interface CreateTabSpec {
   color?: string;
   /** Detached window to create the tab in (isWindowId); absent = the main window. */
   window?: string;
+  /** Open as a preview; honoured for `review` and url-bearing `editor` only. */
+  preview?: true;
 }
 
 export interface UpdateTabPatch {
   name?: string;
   color?: string;
   url?: string;
+  /** `false` pins a preview tab. */
+  preview?: false;
 }
 
 export interface SessionRegistry {
@@ -284,6 +310,17 @@ export interface SessionRegistry {
    * the kind refuses, or a review url another tab holds, is ignored.
    */
   updateTab(id: string, patch: UpdateTabPatch): boolean;
+  /**
+   * Swap the preview tab `id` for `spec` in ONE operation (one `onListChanged`). Same kind
+   * keeps the id; another kind allocates a new id at `id`'s place in the order and the new
+   * tab carries `replaces: id`. When `id` is missing, pinned or held by another window than
+   * `senderWindow`, it opens a new preview like `createTab`. Null = invalid spec.
+   */
+  replaceTab(
+    id: string,
+    spec: { kind: 'editor' | 'review'; url: string },
+    senderWindow: string | undefined,
+  ): string | null;
   /**
    * Apply a new display order (forgiving permutation: unknown ids ignored,
    * omitted known ids appended in prior relative order). False = no change.
@@ -395,6 +432,7 @@ export function createSessionRegistry(
       ...(t.name !== undefined ? { name: t.name } : {}),
       ...(t.color !== undefined ? { color: t.color } : {}),
       ...(t.url !== undefined ? { url: t.url } : {}),
+      ...(t.preview === true ? { preview: true as const } : {}),
       // Keep membership only if the group survived the sidecar restore.
       ...(t.groupId !== undefined && groups.has(t.groupId) ? { groupId: t.groupId } : {}),
     });
@@ -475,6 +513,7 @@ export function createSessionRegistry(
         ...(r.color !== undefined ? { color: r.color } : {}),
         ...(r.url !== undefined ? { url: r.url } : {}),
         ...(r.groupId !== undefined ? { groupId: r.groupId } : {}),
+        ...(r.preview ? { preview: true as const } : {}),
       };
     });
     store.save(out);
@@ -656,7 +695,7 @@ export function createSessionRegistry(
     sweep.unref?.();
   }
 
-  return {
+  const registry: SessionRegistry = {
     get(id, spawn) {
       const existing = tabs.get(id);
       if (existing && existing.kind !== 'terminal') {
@@ -734,6 +773,8 @@ export function createSessionRegistry(
           ...(r.pty?.title ? { title: r.pty.title } : {}),
           ...(r.groupId !== undefined ? { groupId: r.groupId } : {}),
           ...(r.window !== undefined ? { window: r.window } : {}),
+          ...(r.preview ? { preview: true as const } : {}),
+          ...(r.replaces !== undefined ? { replaces: r.replaces } : {}),
         };
       }),
     setWindow(ids, window) {
@@ -823,6 +864,9 @@ export function createSessionRegistry(
         ...(spec.kind === 'markdown' && spec.url ? { url: spec.url } : {}),
         ...(spec.kind === 'editor' && spec.url ? { url: spec.url } : {}),
         ...(reviewKey !== undefined ? { url: reviewKey } : {}),
+        ...(spec.preview && canBePreview(spec.kind, reviewKey ?? spec.url)
+          ? { preview: true as const }
+          : {}),
       });
       order.push(id);
       persist();
@@ -832,6 +876,10 @@ export function createSessionRegistry(
     updateTab(id, patch) {
       const rec = tabs.get(id);
       if (!rec) return false;
+      // The new url is applied below; a pinned tab is anything that carries a name or colour.
+      delete rec.replaces;
+      if (patch.preview === false) delete rec.preview;
+      if (patch.name !== undefined || patch.color !== undefined) delete rec.preview;
       if (patch.name !== undefined) {
         if (patch.name === '') delete rec.name;
         else rec.name = patch.name;
@@ -864,6 +912,56 @@ export function createSessionRegistry(
       listChanged();
       return true;
     },
+    replaceTab(id, spec, senderWindow) {
+      const create = () =>
+        registry.createTab({
+          kind: spec.kind,
+          url: spec.url,
+          preview: true,
+          ...(senderWindow !== undefined ? { window: senderWindow } : {}),
+        });
+      // Validate as createTab does; a refused spec changes nothing.
+      let url = spec.url;
+      if (spec.kind === 'review') {
+        const canonical = canonicalReviewUrl(spec.url);
+        if (canonical === null) return null;
+        const open = reviewTabHolding(canonical);
+        if (open !== undefined) return open;
+        url = canonical;
+      } else if (!isAbsolute(spec.url)) {
+        return null;
+      }
+      const rec = tabs.get(id);
+      if (!rec || !rec.preview || rec.window !== senderWindow) return create();
+      if (rec.kind === spec.kind) {
+        rec.url = url;
+        delete rec.replaces;
+        persist();
+        listChanged();
+        return id;
+      }
+      const next = nextFreeId(orderedIds()); // `id` still exists, so next !== id
+      if (restoreEnabled) restoreStore.forget(next);
+      tabs.set(next, {
+        kind: spec.kind,
+        url,
+        preview: true,
+        replaces: id,
+        ...(rec.window !== undefined ? { window: rec.window } : {}),
+      });
+      order.splice(order.indexOf(id), 0, next);
+      // killTab's non-terminal teardown, without its own broadcast.
+      restoreStore.forget(id);
+      tabs.delete(id);
+      dropFromOrder(id);
+      pruneEmptyGroups();
+      persist();
+      listChanged();
+      // The hint belongs to the broadcast that made the swap (sent synchronously above);
+      // left on the record, a later broadcast would announce a swap that already happened.
+      delete tabs.get(next)?.replaces;
+      return next;
+    },
     reorder(ids) {
       // Forgiving permutation (known-first, omitted appended) then normalize for
       // group contiguity — a stale/fragmenting request can never lose, duplicate,
@@ -882,7 +980,11 @@ export function createSessionRegistry(
       const gid = newGroupId();
       const color = meta.color || GROUP_DEFAULT_COLORS[groups.size % GROUP_DEFAULT_COLORS.length]!;
       groups.set(gid, { color, ...(meta.name ? { name: meta.name } : {}) });
-      for (const id of members) tabs.get(id)!.groupId = gid; // joining leaves any prior group
+      for (const id of members) {
+        const m = tabs.get(id)!;
+        m.groupId = gid; // joining leaves any prior group
+        delete m.preview;
+      }
       pruneEmptyGroups(); // a stolen tab may have emptied its old group
       applyNormalizedOrder();
       persist();
@@ -911,6 +1013,7 @@ export function createSessionRegistry(
           const r = tabs.get(tid);
           if (r && r.groupId !== id) {
             r.groupId = id; // joining leaves any prior group
+            delete r.preview;
             changed = true;
           }
         }
@@ -937,6 +1040,7 @@ export function createSessionRegistry(
       titleChanged = cb;
     },
   };
+  return registry;
 }
 
 // ── Source Control route helpers ────────────────────────────────────────────────
@@ -1346,8 +1450,10 @@ export async function createServer(
   // boundary. Every request names its project by the work tree's own top level
   // (`checkRepo`), every failure is JSON `{ error, code? }` with the module's own
   // status, and the not-found handler answers an unknown /scm/ path with a 404
-  // instead of the SPA shell. The only writes are three index transactions
-  // (stage, unstage, restore) and the comment store under <configDir>/.cache.
+  // instead of the SPA shell. The writes are the index transactions (stage,
+  // unstage, their batch forms and an index Undo), the discard and its Undo (the
+  // only work tree writes), and the comment store under <configDir>/.cache.
+  // `scm-routes.test.ts` ("the write surface") holds this list.
   app.get(
     '/scm/repo',
     scmRoute(async (req, reply) => {
@@ -1432,17 +1538,118 @@ export async function createServer(
     commentRoute((top, req) => deleteComment(top, commentId(req)), true),
   );
 
-  // The three index writes. The body is `{ path, token }`, `{ path, oldPath? }`
-  // and `{ receiptId }`; a body that is not an object reads as empty, which each
-  // module refuses as a missing field.
-  const indexWrite = (run: (top: string, body: Record<string, unknown>) => Promise<WriteResult>) =>
+  // One audit line per batch write and per refusal, so a discard that went wrong
+  // can be traced. It lives here, not in the modules, to keep them free of logging.
+  const AUDIT_PATHS = 10;
+  const auditText = (text: string): string => text.replace(/[\u0000-\u001f\u007f]/g, '?');
+  const auditList = (items: string[]): string => {
+    const shown = items.slice(0, AUDIT_PATHS).map(auditText).join(',');
+    return items.length > AUDIT_PATHS ? `${shown},…(+${items.length - AUDIT_PATHS})` : shown;
+  };
+  const auditScm = (op: string, fields: Record<string, string | number>): void => {
+    const rest = Object.entries(fields).map(([key, value]) => `${key}=${value}`);
+    console.info(`scm: ${op} ${rest.join(' ')}`);
+  };
+  // `repo` is the checked top, or the raw query value when the repo itself was refused.
+  // `requested` counts the paths the call named, `ms` the time from the request.
+  const auditRefusal = (
+    op: string,
+    repo: string,
+    failure: ScmFailure,
+    requested: number,
+    started: number,
+  ): void =>
+    auditScm(`${op} refused`, {
+      repo: auditText(repo),
+      requested,
+      status: failure.status,
+      code: failure.code ?? '-',
+      ms: Date.now() - started,
+      error: `"${auditText(failure.error)}"`,
+    });
+  // An Undo of a discard says its outcome on one line whether it worked or not
+  // (D12), with how many files it put back and how many the receipt still keeps.
+  const auditRestoreDiscard = (
+    repo: string,
+    receiptId: string,
+    outcome: { restored: number; kept: number; status: number; code: string; started: number },
+  ): void =>
+    auditScm('restore-discard', {
+      repo: auditText(repo),
+      receipt: auditText(receiptId),
+      restored: outcome.restored,
+      kept: outcome.kept,
+      status: outcome.status,
+      code: outcome.code,
+      ms: Date.now() - outcome.started,
+    });
+  const requestPaths = (list: unknown, field: 'paths' | 'entries'): string[] => {
+    if (!Array.isArray(list)) return [];
+    return list.flatMap((item): string[] => {
+      if (field === 'paths') return typeof item === 'string' ? [item] : [];
+      return isJsonObject(item) && typeof item['path'] === 'string' ? [item['path']] : [];
+    });
+  };
+
+  // The index writes. The body is `{ path, token }`, `{ path, oldPath? }`,
+  // `{ paths }`, `{ entries }` or `{ receiptId }`; a body that is not an object
+  // reads as empty, which each module refuses as a missing field. The helper is
+  // generic over the answer because the batch routes send a `ScmBatchResult`.
+  // An audited route also hears a refusal of the repo itself, which comes before
+  // its own code runs: D12 wants one line per call, the refused ones included.
+  const indexWrite = <T>(
+    run: (
+      top: string,
+      body: Record<string, unknown>,
+    ) => Promise<{ ok: true; result: T } | ScmFailure>,
+    repoRefused?: (
+      repo: string,
+      failure: ScmFailure,
+      body: Record<string, unknown>,
+      started: number,
+    ) => void,
+  ) =>
     scmRoute(async (req, reply) => {
-      const repo = await checkRepo((req.query as Record<string, unknown>)['repo']);
-      if (!repo.ok) return sendScmFailure(reply, repo);
-      const res = await run(repo.top, isJsonObject(req.body) ? req.body : {});
+      const started = Date.now();
+      const raw = (req.query as Record<string, unknown>)['repo'];
+      const body = isJsonObject(req.body) ? req.body : {};
+      const repo = await checkRepo(raw);
+      if (!repo.ok) {
+        repoRefused?.(typeof raw === 'string' && raw !== '' ? raw : '-', repo, body, started);
+        return sendScmFailure(reply, repo);
+      }
+      const res = await run(repo.top, body);
       if (!res.ok) return sendScmFailure(reply, res);
       return reply.send(res.result);
     });
+
+  const batchWrite = (
+    op: 'stage-paths' | 'unstage-paths',
+    field: 'paths' | 'entries',
+    run: (top: string, list: unknown) => Promise<BatchWrite>,
+  ) =>
+    indexWrite(
+      async (top, body) => {
+        const started = Date.now();
+        const res = await run(top, body[field]);
+        if (!res.ok) {
+          auditRefusal(op, top, res, requestPaths(body[field], field).length, started);
+          return res;
+        }
+        auditScm(op, {
+          repo: top,
+          done: res.result.done.length,
+          skipped: res.result.skipped.length,
+          receipt: res.result.receiptId ?? '-',
+          lockMs: Math.round(res.lockMs),
+          ms: Date.now() - started,
+          paths: auditList(requestPaths(body[field], field)),
+        });
+        return res;
+      },
+      (repo, failure, body, started) =>
+        auditRefusal(op, repo, failure, requestPaths(body[field], field).length, started),
+    );
   app.post(
     '/scm/stage',
     indexWrite((top, body) =>
@@ -1460,8 +1667,87 @@ export async function createServer(
     ),
   );
   app.post(
+    '/scm/stage-paths',
+    batchWrite('stage-paths', 'paths', (top, paths) => stagePaths({ top, paths })),
+  );
+  app.post(
+    '/scm/unstage-paths',
+    batchWrite('unstage-paths', 'entries', (top, entries) => unstagePaths({ top, entries })),
+  );
+  app.post(
+    '/scm/discard',
+    indexWrite(
+      async (top, body) => {
+        const started = Date.now();
+        const res = await discardPaths({ top, entries: body['entries'] });
+        if (!res.ok) {
+          auditRefusal('discard', top, res, requestPaths(body['entries'], 'entries').length, started);
+          return res;
+        }
+        const failures = res.failures.map((f) => `${f.path}:${f.error}`);
+        auditScm('discard', {
+          repo: top,
+          done: res.result.done.length,
+          skipped: res.result.skipped.length,
+          receipt: res.result.receiptId ?? '-',
+          ms: Date.now() - started,
+          paths: auditList(requestPaths(body['entries'], 'entries')),
+          ...(failures.length > 0 ? { failures: auditList(failures) } : {}),
+        });
+        return res;
+      },
+      (repo, failure, body, started) =>
+        auditRefusal(
+          'discard',
+          repo,
+          failure,
+          requestPaths(body['entries'], 'entries').length,
+          started,
+        ),
+    ),
+  );
+  // Undo dispatches on the receipt's prefix: `r` is an index write, `d` a
+  // discard. A blank id keeps going to the index store, which answers it 400 as
+  // it always has; any other prefix names nothing palmux issued.
+  app.post(
     '/scm/restore',
-    indexWrite((top, body) => restoreReceipt({ top, receiptId: textOrBlank(body['receiptId']) })),
+    indexWrite(
+      async (top, body) => {
+        const started = Date.now();
+        const receiptId = textOrBlank(body['receiptId']);
+        if (receiptId === '' || receiptId.startsWith('r'))
+          return restoreReceipt({ top, receiptId });
+        const held = receiptId.startsWith('d') ? discardReceiptSize(receiptId) : 0;
+        const res: WriteResult = receiptId.startsWith('d')
+          ? await restoreDiscard({ top, receiptId })
+          : scmFail(410, 'Undo is no longer available.', 'token');
+        if (receiptId.startsWith('d')) {
+          // A success spends the receipt; a refusal leaves what it did not put back.
+          const kept = res.ok ? 0 : discardReceiptSize(receiptId);
+          auditRestoreDiscard(top, receiptId, {
+            restored: held - kept,
+            kept,
+            status: res.ok ? 200 : res.status,
+            code: res.ok ? '-' : (res.code ?? '-'),
+            started,
+          });
+        }
+        return res;
+      },
+      (repo, failure, body, started) => {
+        // Only a discard's Undo is audited; an index Undo stays as silent as Reviewed's.
+        const receiptId = textOrBlank(body['receiptId']);
+        if (receiptId.startsWith('d')) {
+          auditRestoreDiscard(repo, receiptId, {
+            restored: 0,
+            kept: discardReceiptSize(receiptId),
+            status: failure.status,
+            code: failure.code ?? '-',
+            started,
+          });
+        }
+      },
+    ),
   );
 
   // GET/PUT /config-file — the raw config.json behind the settings editor. The
@@ -2076,6 +2362,8 @@ function handleConnection(
       webApps: deps.webApps,
       version: APP_VERSION,
       detachedWindows: true,
+      previewTabs: true,
+      scmBatchWrites: true,
     }),
   );
   ws.send(encodeServerMessage({ type: 'settings', settings: loadSettings() }));
@@ -2248,6 +2536,7 @@ function handleConnection(
           ...(msg.name !== undefined ? { name: msg.name } : {}),
           ...(msg.color !== undefined ? { color: msg.color } : {}),
           ...(msg.window !== undefined ? { window: msg.window } : {}),
+          ...(msg.preview ? { preview: true as const } : {}),
         });
         if (id !== null && msg.window !== undefined) deps.windows.moved(msg.window);
         // Ack the assigned id to THIS client so it switches deterministically.
@@ -2261,7 +2550,16 @@ function handleConnection(
           ...(msg.name !== undefined ? { name: msg.name } : {}),
           ...(msg.color !== undefined ? { color: msg.color } : {}),
           ...(msg.url !== undefined ? { url: msg.url } : {}),
+          ...(msg.preview === false ? { preview: false as const } : {}),
         });
+        break;
+      }
+      case 'replaceTab': {
+        const id = deps.registry.replaceTab(msg.id, { kind: msg.kind, url: msg.url }, window);
+        if (id !== null && window !== undefined) deps.windows.moved(window);
+        if (id !== null && ws.readyState === ws.OPEN) {
+          ws.send(encodeServerMessage({ type: 'tabCreated', id }));
+        }
         break;
       }
     }
