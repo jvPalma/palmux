@@ -4,13 +4,53 @@ All notable changes to palmux are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [1.3.0] — unreleased
+## [1.3.0] — 2026-11-12
+
+Preview tabs like VS Code's, Source Control actions on every row (stage, unstage and discard, each
+with Undo), and a `palmux` CLI that drives the window from any terminal: open files, show a port,
+add a project, export review comments for an agent.
+
+### Highlights
+
+- **Preview tabs.** A file you open from the Explorer or Source Control lands in the pane's preview
+  tab (italic title). The next one replaces it, so browsing ten files leaves one tab. Edit, save,
+  double-click or Keep open makes it a normal tab.
+- **One file's diff per click.** A Source Control click opens that file's review in the preview tab.
+  Reviewed and next file move through the group in the same tab. The whole-group review opens from
+  the group header.
+- **Row actions in Source Control.** Stage, Unstage and Discard on each file and folder, inline on
+  hover or from a right-click or long-press menu, each with Undo.
+- **The `palmux` CLI.** `open` (with `file:line` and `--wait` for `GIT_EDITOR`), `web`, `git`,
+  `comments` and `status`.
 
 ### Added
 
+- **Preview tabs.** Explorer opens, Source Control clicks and Open file actions are previews; a
+  terminal never is. The preview state is shared by every window and device and survives a restart.
+  A preview is replaced in place, in one step: no tab flashes in or out. A tab with unsaved text is
+  never replaced.
+- **Keep open** in the desktop tab menu and the phone's tab sheet pins a preview.
+- **Single-file review.** `<name> (Changes)` / `(Staged)`, with `n / N` for its place in the group,
+  next and previous file, "No more files" at the end and "No longer changed" when the file leaves
+  the group. An **Open review** button on each group header opens the continuous review.
+- **Source Control row actions.** Changes: Open file, Stage, Discard (file); Stage all, Discard all
+  (folder). Staged: Open file, Unstage (file); Unstage all (folder). Merge: Open file. Stage runs
+  git's own `git add`, so line endings behave as in a terminal. Paths that need a git filter (LFS),
+  a `working-tree-encoding` or `ident`, unmerged files, submodules and nested repositories are
+  skipped and named in the result. Reviewed still stages exactly the version you read.
+- **Discard with Undo.** Discard returns a file to its staged version, or deletes it when it is
+  untracked, after a confirm that names the files. A file that changed after you confirmed is
+  skipped. Undo is in the toast for 6 seconds and in the project bar ("Undo last discard") for 10
+  minutes, and it puts the bytes back only if every file is still as the discard left it.
+- **Undo for Stage and Unstage** from the list, in the same toast the review uses.
+- **A review header that stays.** On a desktop the current-file bar above the review shows the
+  file's state, line counts, Reviewed or Unstage and Open file, however far you scroll.
+- **Alt+Z toggles word wrap** in the focused editor or review. On a terminal it still reaches the
+  shell. An "Editor word wrap" switch in Settings sets the default per device.
 - **`palmux open <file>...`.** Run it in a palmux terminal and the window opens each file as a
   pinned editor tab, showing the last one. A file already open is selected. A missing file, a
-  folder or a file over the editor limit is refused with its reason.
+  folder or a file over the editor limit is refused with its reason. Like `palmux git`, it exits 1
+  when no palmux window answers within 3 seconds.
 - **`palmux open file:line[:col]`.** Opens the file with the cursor on that line and column, the
   form compilers and agents print. A file whose own name ends in `:N` still opens as itself.
 - **`palmux open --wait`.** Returns once every tab it opened is closed, so `palmux open --wait` can be
@@ -34,20 +74,28 @@ All notable changes to palmux are documented here. The format follows
 
 ### Changed
 
-- Window commands (`open`, `git`) now report back: the CLI exits 1 when no palmux window answers
-  within 3 seconds, instead of claiming success.
+- **A Source Control click opens one file's diff**, not the whole group scrolled to that file.
+- **A double-click on a preview tab pins it.** A double-click on a pinned tab still renames it.
+- **Editor wrap is a setting** (on by default) where it was always on.
+- **Denser Source Control rows on a desktop**: 24px rows and an 8px indent per level, as on a phone.
 - **Tab colours are fifteen named colours** that follow the theme: white, gray, pink, magenta,
   purple, blue, light-blue, cyan, green, lime, yellow, orange, red, crimson-red and black, in one
   row. The normal/bright split is gone. Tabs and groups coloured before keep their colour.
 - **A tab's colour is a bar on the pill's left edge**, dimmed on an inactive tab and full on the
   active one, where it was a dot.
 
-### Upgrade
+### Upgrade notes
 
-- The new commands (`web`, `status`, `open --wait`, `file:line`), the window answers and Clear all
-  need a server restart, which ends every live
-  terminal. Until then the CLI says the server predates the command, and `palmux download` keeps
-  working.
+- **Restart the server** (`yarn service:update` or `systemctl --user restart palmux`). A restart ends
+  open terminals; tmux sessions survive it. Until then:
+  - every open is a normal tab and a Source Control click opens the whole-group review;
+  - the list shows no row actions and no Undo last discard;
+  - the CLI says the server predates every command but `palmux download`, which keeps working;
+  - Clear all answers an error.
+- **Reload every open window** after the restart. A window still on the 1.2 bundle shows a
+  single-file review as "This review has no valid address." until it reloads.
+- **Rollback.** Going back to 1.2.x turns preview tabs into normal tabs. A Discard Undo does not
+  survive a restart.
 
 ## [1.2.0] — 2026-10-30
 
