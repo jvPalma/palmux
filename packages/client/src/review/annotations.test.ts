@@ -3,9 +3,15 @@
 // the comments that cannot hang from a line, in one list at the end of the file.
 
 import { describe, expect, it } from 'vitest';
-import type { ScmComment, ScmEntry, ScmFileSnapshot, ScmHunk, ScmHunkLine } from '@palmux/shared';
+import type {
+  ScmComment,
+  ScmEntry,
+  ScmFileSnapshot,
+  ScmHunk,
+  ScmHunkLine,
+  PlacedComment,
+} from '@palmux/shared';
 import { hasNotes, withNotes, type FileNotes } from './annotations';
-import type { PlacedComment } from './comment-placement';
 import { buildFileRows, type Row, type RowsLayout } from './rows';
 
 function hunk(lines: [ScmHunkLine['kind'], string][], start = 1): ScmHunk {

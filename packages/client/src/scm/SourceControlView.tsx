@@ -28,10 +28,19 @@
 // same component, in the dock and in the drawer. The limit is on the group's FILES,
 // not on the rows a tree shows, so collapsing a folder never swaps the list for
 // another kind under the user's focus.
+//
+// When the server announces batch writes (`batchWrites`), a row also offers its
+// actions (`row-actions.ts`): Open file, Stage, Unstage and Discard, as inline icon
+// buttons on a desktop and as a context menu (right-click, or a long-press on a
+// phone). A `<button>` cannot hold buttons, so a row is a wrapper holding the
+// unchanged main button and its actions as siblings. The press that opens the menu
+// must not also open the review or run an action, so the wrapper records each press
+// and the main button and the inline actions refuse a press that opened the menu or
+// was not the primary button.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
-import type { ScmEntry, ScmGroup } from '@palmux/shared';
+import type { KeyboardEvent as ReactKeyboardEvent, ReactElement } from 'react';
+import { SCM_STATUS_LABEL, type ScmEntry, type ScmGroup } from '@palmux/shared';
 import {
   Button,
   Collapsible,
@@ -44,16 +53,50 @@ import {
   useListRef,
   type RowComponentProps,
 } from '../ui';
+import { ContextMenu, type ContextMenuItemSpec } from '../ui/ContextMenu';
 import { Icon } from '../ui/icons';
 import { hasLineBreak, LINE_BREAK_MESSAGE } from '../panes/DashboardBody';
 import { normalizePin, rootLabel } from '../panes/explorer-pins';
 import { entryIconUrl, iconIndex, loadIconIndex, type IconIndex } from '../panes/file-icons';
-import { pressMove } from '../panes/press';
+import { consumeGesture, pressMove } from '../panes/press';
 import { useMobileLayer } from '../review/review-density';
-import { useComments } from '../review/use-comments';
+import {
+  describeFailure,
+  describeNoChange,
+  describeWrites,
+  undoWrites,
+} from '../review/review-writes';
+import { commentsStore, useComments } from '../review/use-comments';
+import { forgetWrites, recordWrite, type LoggedWrite } from '../review/write-log';
 import { loadSettings, onSettingsChange, type ClientSettings } from '../settings/settings';
-import { commentsMarkdown, copyPendingText } from './copy-comments';
-import { fetchScmRepo } from './scm-api';
+import {
+  commentCount,
+  commentsMarkdown,
+  confirmClearAll,
+  copyPendingText,
+} from './copy-comments';
+import { addScmProject } from './scm-projects';
+import {
+  DISCARD_UNDO_MS,
+  forgetDiscard,
+  readLastDiscard,
+  recordDiscard,
+  subscribeDiscards,
+  type LastDiscard,
+} from './discard-log';
+import {
+  discardConfirmText,
+  rowActions,
+  type RowAction,
+  type RowActionContext,
+} from './row-actions';
+import {
+  discardScmPaths,
+  fetchScmRepo,
+  restoreScmWrite,
+  stageScmPaths,
+  unstageScmPaths,
+} from './scm-api';
 import {
   buildTree,
   flattenTree,
@@ -90,9 +133,20 @@ export interface SourceControlViewProps {
   visible: boolean;
   /** A change to the project list and/or to this device's selection. */
   onChange: (change: ScmProjectChange) => void;
-  onOpenFile: (target: ScmOpenTarget) => void;
+  /** Open one file's diff. `{ preview: false }` keeps it open (the row's double-click). */
+  onOpenFile: (target: ScmOpenTarget, opts?: { preview?: boolean }) => void;
+  /** Open the continuous review of a group (the group header's Open review button). */
+  onOpenReview?: ((group: ScmGroup) => void) | undefined;
   /** Where the view says what happened (Copy comments); a toast in the app. */
   onNotice?: ((message: string) => void) | undefined;
+  /** Open a file of the project in an editor (a row's Open file action), by absolute path. */
+  onOpenPath?: ((absolutePath: string) => void) | undefined;
+  /** A toast that can carry an action (a write's Undo). Plain messages fall back to `onNotice`. */
+  onNotify?:
+    | ((message: string, action?: { label: string; onClick: () => void }) => void)
+    | undefined;
+  /** The server announced batch writes: rows offer their actions and menus. */
+  batchWrites?: boolean | undefined;
 }
 
 type ViewGroup = 'merge' | 'staged' | 'changes';
@@ -103,17 +157,45 @@ const GROUPS: readonly { id: ViewGroup; title: string }[] = [
   { id: 'changes', title: 'Changes' },
 ];
 
-const STATUS_LABEL: Record<ScmEntry['status'], string> = {
-  M: 'Modified',
-  A: 'Added',
-  D: 'Deleted',
-  R: 'Renamed',
-  T: 'Type changed',
-  U: 'Conflicted',
-  '?': 'Untracked',
-};
-
 const BLANK_PATH_MESSAGE = 'Enter the absolute path of a folder inside a git repository';
+
+const baseName = (path: string): string => path.slice(path.lastIndexOf('/') + 1);
+const fileCount = (count: number): string => `${count} ${count === 1 ? 'file' : 'files'}`;
+
+type WriteAction = 'stage' | 'unstage' | 'discard';
+
+/** The same entry, read again: storage hands back a new object on every read. */
+const sameDiscard = (a: LastDiscard | null, b: LastDiscard | null): boolean =>
+  a === b || (a !== null && b !== null && a.receiptId === b.receiptId && a.at === b.at);
+
+/**
+ * The project's last discard while it can still be undone (design D9): read again when
+ * any window of this device records or forgets one, and at the moment it expires, so the
+ * project bar's button goes away by itself.
+ */
+function useLastDiscard(top: string, enabled: boolean): LastDiscard | null {
+  const [last, setLast] = useState<LastDiscard | null>(null);
+  useEffect(() => {
+    if (!enabled || top === '') {
+      setLast(null);
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const read = () => {
+      clearTimeout(timer);
+      const entry = readLastDiscard(top);
+      setLast((prev) => (sameDiscard(prev, entry) ? prev : entry));
+      if (entry) timer = setTimeout(read, Math.max(0, entry.at + DISCARD_UNDO_MS - Date.now()));
+    };
+    read();
+    const off = subscribeDiscards(read);
+    return () => {
+      off();
+      clearTimeout(timer);
+    };
+  }, [top, enabled]);
+  return last;
+}
 
 /** A project's name in the selector: its folder, or the whole path when two share a folder name. */
 function projectLabel(repo: string, repos: readonly string[]): string {
@@ -137,10 +219,138 @@ interface RowContext {
   /** The row to move focus onto once it is drawn; null when none is wanted. */
   focusKey: string | null;
   onFocused: () => void;
-  onOpen: (group: ViewGroup, entry: ScmEntry) => void;
+  onOpen: (group: ViewGroup, entry: ScmEntry, opts?: { preview: false }) => void;
   onToggle: (path: string, collapse: boolean) => void;
   onKey: (e: ReactKeyboardEvent, row: TreeRow) => void;
+  /** A row's actions; null when the server has no batch writes, and the row is as before. */
+  actionsFor: ((row: TreeRow) => RowAction[]) | null;
+  /** The mobile layer: a phone reaches the actions through the menu alone. */
+  compact: boolean;
 }
+
+/** What the wrapper remembers of the press that is on it, for the main button's guard. */
+interface PressGuard {
+  /** Wrap a row's pointer action: it refuses a press that opened the menu or was not primary. */
+  guard: (action: () => void) => () => void;
+  onPointerDownCapture: (e: { pointerId: number; button: number }) => void;
+  onKeyDownCapture: () => void;
+  onMenuOpen: () => void;
+}
+
+/**
+ * The two guards that keep a menu's opening press from opening the review (design D3,
+ * R8). The record is overwritten only by the next pointerdown, never on pointerup: the
+ * wrapper's capture would run before the button's own pointerup and leave the guard
+ * nothing to read. A refusal spends the record, and a key press clears it, so Enter
+ * after a right-click and Escape still opens the file.
+ */
+function usePressGuard(): PressGuard {
+  const press = useRef<{ pointerId: number; button: number } | null>(null);
+  const menuOpened = useRef(false);
+  return useMemo<PressGuard>(
+    () => ({
+      guard: (action) => () => {
+        if (menuOpened.current || (press.current !== null && press.current.button !== 0)) {
+          menuOpened.current = false;
+          press.current = null;
+          return;
+        }
+        action();
+      },
+      onPointerDownCapture: (e) => {
+        press.current = { pointerId: e.pointerId, button: e.button };
+        if (e.button === 0) menuOpened.current = false;
+      },
+      onKeyDownCapture: () => {
+        press.current = null;
+        menuOpened.current = false;
+      },
+      onMenuOpen: () => {
+        menuOpened.current = true;
+        // `onOpen` carries no event, so the press is the one the wrapper recorded. A menu
+        // opened from the keyboard has none, and there is no pointer tail to swallow.
+        const held = press.current;
+        if (held !== null)
+          consumeGesture({ pointerId: held.pointerId, type: 'pointerdown' }, () => {});
+      },
+    }),
+    [],
+  );
+}
+
+/**
+ * A row with its actions: the wrapper, the unchanged main button, the inline buttons
+ * (not on a phone) and the context menu, all drawn from one `rowActions` list. Without
+ * batch writes it is the main button alone, exactly as before.
+ */
+const RowShell = ({
+  row,
+  name,
+  context,
+  press,
+  children,
+}: {
+  row: TreeRow;
+  name: string;
+  context: RowContext;
+  press: PressGuard;
+  children: ReactElement;
+}) => {
+  const actions = context.actionsFor?.(row) ?? null;
+  if (actions === null) return children;
+  const items: ContextMenuItemSpec[] = actions.map((action) => ({
+    id: action.id,
+    label: action.label,
+    icon: <Icon name={action.icon} size={14} />,
+    onSelect: action.run,
+    danger: action.danger,
+    disabled: action.disabled !== undefined,
+    separatorBefore: action.id === 'discard',
+  }));
+  return (
+    <ContextMenu items={items} testidPrefix="scm-menu" onOpen={press.onMenuOpen}>
+      <div
+        className="scm-item"
+        data-testid="scm-item"
+        onPointerDownCapture={press.onPointerDownCapture}
+        onKeyDownCapture={press.onKeyDownCapture}
+      >
+        {children}
+        {!context.compact && actions.length > 0 && (
+          <span className="scm-actions" role="group" aria-label={`Actions for ${name}`}>
+            {actions.map((action) => (
+              <ActionButton key={action.id} action={action} press={press} />
+            ))}
+          </span>
+        )}
+      </div>
+    </ContextMenu>
+  );
+};
+
+const ActionButton = ({ action, press }: { action: RowAction; press: PressGuard }) => {
+  const disabled = action.disabled !== undefined;
+  return (
+    <>
+      {action.id === 'discard' && <span className="scm-actions-sep" aria-hidden="true" />}
+      <IconButton
+        label={action.label}
+        size="sm"
+        // The reason rides the tooltip: a disabled control says why it is.
+        title={action.disabled ?? action.label}
+        disabled={disabled}
+        data-danger={action.danger ? 'true' : undefined}
+        data-testid={`scm-action-${action.id}`}
+        // A disabled button still hears pointer events in some engines: give it nothing to run.
+        // The row's guard as well: a right-click on the button opens the menu, and its release
+        // must not run the action under it.
+        {...(disabled ? {} : pressMove(press.guard(action.run)))}
+      >
+        <Icon name={action.icon} size={14} />
+      </IconButton>
+    </>
+  );
+};
 
 /**
  * Focus the row's button when the group asks for it, then say it was done. A row
@@ -172,46 +382,52 @@ const FileRow = ({
   const { group, icons, tree, focusKey, onFocused, onOpen, onKey } = context;
   const { entry } = row;
   const ref = useFocusRequest(focusKey === row.key, onFocused);
+  const press = usePressGuard();
   const icon = entryIconUrl(icons, row.name, false);
-  const label = STATUS_LABEL[entry.status];
+  const label = SCM_STATUS_LABEL[entry.status];
   // A rename names where it came from: the old path is part of what the row says,
   // in the tree as well, where the directory is not.
   const origin = entry.oldPath ? `← ${entry.oldPath}` : '';
   const { dir } = splitPath(entry.path);
   const where = tree ? origin : [dir || (origin ? '.' : ''), origin].filter(Boolean).join(' ');
   return (
-    <button
-      ref={ref}
-      type="button"
-      className="scm-row"
-      style={tree ? depthStyle(row.depth) : undefined}
-      data-testid={`scm-row-${group}:${entry.path}`}
-      data-status={entry.status}
-      data-conflicted={group === 'merge' ? 'true' : undefined}
-      title={entry.oldPath ? `${entry.path} (renamed from ${entry.oldPath})` : entry.path}
-      onKeyDown={tree ? (e) => onKey(e, row) : undefined}
-      {...pressMove(() => onOpen(group, entry))}
-    >
-      {tree && <span className="scm-twisty" aria-hidden="true" />}
-      {icon ? (
-        <img className="scm-glyph" src={icon} alt="" aria-hidden="true" loading="lazy" />
-      ) : (
-        <span className="scm-glyph scm-glyph-fallback" aria-hidden="true">
-          <Icon name="file" size={14} />
-        </span>
-      )}
-      <span className="scm-name">{row.name}</span>
-      {where && <span className="scm-dir">{where}</span>}
-      <span
-        className="scm-letter"
+    <RowShell row={row} name={row.name} context={context} press={press}>
+      <button
+        ref={ref}
+        type="button"
+        className="scm-row"
+        style={tree ? depthStyle(row.depth) : undefined}
+        data-testid={`scm-row-${group}:${entry.path}`}
         data-status={entry.status}
-        role="img"
-        aria-label={label}
-        title={label}
+        data-conflicted={group === 'merge' ? 'true' : undefined}
+        title={entry.oldPath ? `${entry.path} (renamed from ${entry.oldPath})` : entry.path}
+        onKeyDown={tree ? (e) => onKey(e, row) : undefined}
+        {...pressMove(press.guard(() => onOpen(group, entry)))}
+        // `pressMove` hands its action no event, so a double-click is heard here: the first click
+        // already opened the file as a preview, and this pinned open keeps it (D4).
+        onDoubleClick={() => onOpen(group, entry, { preview: false })}
       >
-        {entry.status}
-      </span>
-    </button>
+        {tree && <span className="scm-twisty" aria-hidden="true" />}
+        {icon ? (
+          <img className="scm-glyph" src={icon} alt="" aria-hidden="true" loading="lazy" />
+        ) : (
+          <span className="scm-glyph scm-glyph-fallback" aria-hidden="true">
+            <Icon name="file" size={14} />
+          </span>
+        )}
+        <span className="scm-name">{row.name}</span>
+        {where && <span className="scm-dir">{where}</span>}
+        <span
+          className="scm-letter"
+          data-status={entry.status}
+          role="img"
+          aria-label={label}
+          title={label}
+        >
+          {entry.status}
+        </span>
+      </button>
+    </RowShell>
   );
 };
 
@@ -225,6 +441,7 @@ const FolderRow = ({
   const { group, icons, focusKey, onFocused, onToggle, onKey } = context;
   const { node, open } = row;
   const ref = useFocusRequest(focusKey === row.key, onFocused);
+  const press = usePressGuard();
   // A chain is named by its deepest folder, as VS Code does for a compact folder.
   const icon = entryIconUrl(icons, node.path.slice(node.path.lastIndexOf('/') + 1), true, open);
   const files = `${node.files} ${node.files === 1 ? 'file' : 'files'}`;
@@ -233,40 +450,42 @@ const FolderRow = ({
   const head = node.name.slice(0, cut);
   const tail = node.name.slice(cut);
   return (
-    <button
-      ref={ref}
-      type="button"
-      className="scm-folder"
-      style={depthStyle(row.depth)}
-      data-testid={`scm-folder-${group}:${node.path}`}
-      aria-expanded={open}
-      aria-label={`${node.name}, ${files}`}
-      title={node.path}
-      onKeyDown={(e) => onKey(e, row)}
-      {...pressMove(() => onToggle(node.path, open))}
-    >
-      <span className="scm-twisty" aria-hidden="true">
-        <Icon name="chevron-right" size={14} />
-      </span>
-      {icon ? (
-        <img className="scm-glyph" src={icon} alt="" aria-hidden="true" loading="lazy" />
-      ) : (
-        <span className="scm-glyph scm-glyph-fallback" aria-hidden="true">
-          <Icon name={open ? 'folder-open' : 'folder'} size={14} />
-        </span>
-      )}
-      <span className="scm-name scm-chain">
-        {head && <span className="scm-chain-head">{head}</span>}
-        <span className="scm-chain-tail">{tail}</span>
-      </span>
-      <span
-        className="scm-folder-count"
-        data-testid={`scm-folder-count-${group}:${node.path}`}
-        aria-hidden="true"
+    <RowShell row={row} name={node.name} context={context} press={press}>
+      <button
+        ref={ref}
+        type="button"
+        className="scm-folder"
+        style={depthStyle(row.depth)}
+        data-testid={`scm-folder-${group}:${node.path}`}
+        aria-expanded={open}
+        aria-label={`${node.name}, ${files}`}
+        title={node.path}
+        onKeyDown={(e) => onKey(e, row)}
+        {...pressMove(press.guard(() => onToggle(node.path, open)))}
       >
-        {node.files}
-      </span>
-    </button>
+        <span className="scm-twisty" aria-hidden="true">
+          <Icon name="chevron-right" size={14} />
+        </span>
+        {icon ? (
+          <img className="scm-glyph" src={icon} alt="" aria-hidden="true" loading="lazy" />
+        ) : (
+          <span className="scm-glyph scm-glyph-fallback" aria-hidden="true">
+            <Icon name={open ? 'folder-open' : 'folder'} size={14} />
+          </span>
+        )}
+        <span className="scm-name scm-chain">
+          {head && <span className="scm-chain-head">{head}</span>}
+          <span className="scm-chain-tail">{tail}</span>
+        </span>
+        <span
+          className="scm-folder-count"
+          data-testid={`scm-folder-count-${group}:${node.path}`}
+          aria-hidden="true"
+        >
+          {node.files}
+        </span>
+      </button>
+    </RowShell>
   );
 };
 
@@ -308,15 +527,28 @@ interface GroupSectionProps {
   entries: ScmEntry[];
   icons: IconIndex | null;
   tree: boolean;
-  onOpen: (group: ViewGroup, entry: ScmEntry) => void;
+  onOpen: (group: ViewGroup, entry: ScmEntry, opts?: { preview: false }) => void;
+  onOpenReview?: ((group: ScmGroup) => void) | undefined;
+  /** What the row actions need besides the group's entries; null without batch writes. */
+  writes: Omit<RowActionContext, 'entries'> | null;
 }
 
-const GroupSection = ({ id, title, repo, entries, icons, tree, onOpen }: GroupSectionProps) => {
-  // Rows are `--scm-row-h` tall (28px, 24px on a phone), so they are measured rather
-  // than assumed; the default only sizes the scrollbar until they are.
-  const rowHeight = useDynamicRowHeight({ defaultRowHeight: 28 });
-  // On a phone the header takes the kit's extra-small step, so it is no taller than the
-  // rows it heads (24px); the desktop keeps the control height its rows have.
+const GroupSection = ({
+  id,
+  title,
+  repo,
+  entries,
+  icons,
+  tree,
+  onOpen,
+  onOpenReview,
+  writes,
+}: GroupSectionProps) => {
+  // Rows are `--scm-row-h` tall (24px on a desktop and on a phone), so they are measured
+  // rather than assumed; the default only sizes the scrollbar until they are.
+  const rowHeight = useDynamicRowHeight({ defaultRowHeight: 24 });
+  // The header takes the kit's small step on a desktop and its extra-small step on a phone,
+  // so it is no taller than the rows it heads (24px either way).
   const compact = useMobileLayer();
   const listRef = useListRef(null);
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(
@@ -376,6 +608,12 @@ const GroupSection = ({ id, title, repo, entries, icons, tree, onOpen }: GroupSe
     [toggle, focusRow],
   );
 
+  // A folder acts on the group's FULL list, so the entries ride the context whole.
+  const actionsFor = useMemo(
+    () => (writes ? (row: TreeRow) => rowActions(id, row, { ...writes, entries }) : null),
+    [writes, id, entries],
+  );
+
   const context = useMemo<RowContext>(
     () => ({
       group: id,
@@ -386,8 +624,10 @@ const GroupSection = ({ id, title, repo, entries, icons, tree, onOpen }: GroupSe
       onOpen,
       onToggle: toggle,
       onKey,
+      actionsFor,
+      compact,
     }),
-    [id, icons, tree, focusKey, clearFocus, onOpen, toggle, onKey],
+    [id, icons, tree, focusKey, clearFocus, onOpen, toggle, onKey, actionsFor, compact],
   );
   const rowProps = useMemo<VirtualRowProps>(() => ({ rows, context }), [rows, context]);
 
@@ -402,7 +642,20 @@ const GroupSection = ({ id, title, repo, entries, icons, tree, onOpen }: GroupSe
         </>
       }
       storageKey={`palmux-scm-group-${id}`}
-      size={compact ? 'xs' : 'md'}
+      size={compact ? 'xs' : 'sm'}
+      actions={
+        onOpenReview && (
+          <IconButton
+            label="Open review"
+            size={compact ? 'xs' : 'sm'}
+            data-testid={`scm-open-review-${id}`}
+            // A conflicted file is reviewed in Changes, so the merge group opens that review.
+            {...pressMove(() => onOpenReview(id === 'staged' ? 'staged' : 'changes'))}
+          >
+            <Icon name="external" size={14} />
+          </IconButton>
+        )
+      }
       data-testid={`scm-group-${id}`}
     >
       {entries.length > LONG_GROUP_ROWS ? (
@@ -499,7 +752,11 @@ export const SourceControlView = ({
   visible,
   onChange,
   onOpenFile,
+  onOpenReview,
   onNotice,
+  onOpenPath,
+  onNotify,
+  batchWrites = false,
 }: SourceControlViewProps) => {
   const { status, error } = useScmStatus(activeRepo, visible);
   const { comments } = useComments(activeRepo, visible);
@@ -561,11 +818,7 @@ export const SourceControlView = ({
       return;
     }
     // The same project twice is not a second entry: it only becomes the active one.
-    onChange(
-      latest.current.repos.includes(top)
-        ? { scmActiveRepo: top }
-        : { scmRepos: [...latest.current.repos, top], scmActiveRepo: top },
-    );
+    onChange(addScmProject({ scmRepos: latest.current.repos }, top));
     closeForm();
   }, [checking, draft, onChange, closeForm]);
 
@@ -578,14 +831,172 @@ export const SourceControlView = ({
   }, [repos, activeRepo, onChange]);
 
   const open = useCallback(
-    (group: ViewGroup, entry: ScmEntry) => {
-      onOpenFile({
+    (group: ViewGroup, entry: ScmEntry, opts?: { preview: false }) => {
+      const target: ScmOpenTarget = {
         group: group === 'staged' ? 'staged' : 'changes',
         path: entry.path,
         ...(entry.oldPath ? { oldPath: entry.oldPath } : {}),
-      });
+      };
+      if (opts) onOpenFile(target, opts);
+      else onOpenFile(target);
     },
     [onOpenFile],
+  );
+
+  // One write in flight per project: a second tap before the first answer must not post
+  // again, and the ref sees it before any re-render could.
+  const writingRef = useRef(new Set<string>());
+  const [writing, setWriting] = useState<ReadonlySet<string>>(() => new Set());
+  const setWritingFor = useCallback((top: string, on: boolean) => {
+    if (on) writingRef.current.add(top);
+    else writingRef.current.delete(top);
+    setWriting(new Set(writingRef.current));
+  }, []);
+  const busy = writing.has(activeRepo);
+  const lastDiscard = useLastDiscard(activeRepo, batchWrites);
+
+  /** Say something; with an action only where the host can draw one. */
+  const notify = useCallback(
+    (message: string, action?: { label: string; onClick: () => void }) => {
+      if (onNotify) onNotify(message, action);
+      else onNotice?.(message);
+    },
+    [onNotify, onNotice],
+  );
+
+  // One Undo takes back every write the toast named, newest first: the review's rule,
+  // since the two share the window's one toast and its write log.
+  const undo = useCallback(
+    async (writes: readonly LoggedWrite[]) => {
+      // `undoWrites` also takes each discard it restores out of the project bar, from any pane.
+      const outcome = await undoWrites(restoreScmWrite, writes);
+      forgetWrites(writes.slice(writes.length - outcome.undone));
+      if (outcome.undone > 0) scmStatusStore.refresh();
+      if (outcome.kind === 'notice') {
+        onNotice?.(outcome.message);
+        return;
+      }
+      notify(outcome.undone === 1 ? 'Undone' : `Undid ${outcome.undone} files`);
+    },
+    [notify, onNotice],
+  );
+
+  const write = useCallback(
+    async (action: WriteAction, entries: ScmEntry[]) => {
+      const top = activeRepo;
+      const [first] = entries;
+      if (top === '' || first === undefined || writingRef.current.has(top)) return;
+      if (action === 'discard') {
+        // A discard has no trash: the confirm names what goes, and Cancel sends nothing.
+        const untracked = entries.filter((entry) => entry.status === '?').length;
+        const text = discardConfirmText(
+          entries.map((entry) => entry.path),
+          untracked,
+        );
+        if (!window.confirm(text)) return;
+      }
+      setWritingFor(top, true);
+      let result;
+      try {
+        result =
+          action === 'stage'
+            ? await stageScmPaths(
+                top,
+                entries.map((entry) => entry.path),
+              )
+            : action === 'unstage'
+              ? await unstageScmPaths(
+                  top,
+                  entries.map(({ path, oldPath }) => (oldPath ? { path, oldPath } : { path })),
+                )
+              : await discardScmPaths(
+                  top,
+                  entries.map(({ path, fp }) => ({ path, fp })),
+                );
+      } finally {
+        setWritingFor(top, false);
+      }
+      // Whatever the answer, the files moved or may have: read the list again now.
+      scmStatusStore.refresh();
+      if (!result.ok) {
+        onNotice?.(describeFailure(result, action));
+        return;
+      }
+      const { receiptId, done, skipped } = result.value;
+      // Nothing changed, so there is nothing to undo and nothing to log (R1).
+      if (receiptId === null) {
+        notify(describeNoChange(action, skipped));
+        return;
+      }
+      const at = Date.now();
+      if (action === 'discard') recordDiscard(top, { receiptId, at, count: done.length });
+      const recent = recordWrite({
+        repo: top,
+        receiptId,
+        action,
+        // Named only when the write changed one file; a folder write is told by its count.
+        name: baseName(done[0] ?? first.path),
+        at,
+        count: done.length,
+        via: 'list',
+        ...(skipped.length > 0 ? { skipped } : {}),
+      });
+      notify(describeWrites(recent), { label: 'Undo', onClick: () => void undo(recent) });
+    },
+    [activeRepo, setWritingFor, onNotice, notify, undo],
+  );
+
+  const undoLastDiscard = useCallback(async () => {
+    const top = activeRepo;
+    const entry = lastDiscard;
+    if (entry === null || writingRef.current.has(top)) return;
+    setWritingFor(top, true);
+    let result;
+    try {
+      result = await restoreScmWrite(top, entry.receiptId);
+    } finally {
+      setWritingFor(top, false);
+    }
+    // A refused Undo may still have put some files back (the server says how many).
+    scmStatusStore.refresh();
+    // A receipt that was used or is gone leaves BOTH places that offer it: the toast's write
+    // log holds the same discard for 6 s, and a later toast's Undo would otherwise try it again,
+    // be refused and stop before the older writes it names. The log forgets by receipt, so
+    // the entry is rebuilt from what the project bar holds.
+    const spend = () => {
+      forgetDiscard(top, entry.receiptId);
+      forgetWrites([
+        { repo: top, receiptId: entry.receiptId, action: 'discard', name: '', at: entry.at },
+      ]);
+    };
+    if (result.ok) {
+      spend();
+      notify(`Restored ${fileCount(entry.count)}`);
+    } else if (result.code === 'token' || result.httpStatus === 410) {
+      // Expired, used, or lost with a server restart: nothing can bring it back.
+      spend();
+      onNotice?.('This Undo has expired');
+    } else {
+      // A conflict keeps the entry: the Undo works again once the files are out of its way.
+      onNotice?.(describeFailure(result, 'discard'));
+    }
+  }, [activeRepo, lastDiscard, setWritingFor, notify, onNotice]);
+
+  const truncated = status?.truncated ?? false;
+  const writes = useMemo<Omit<RowActionContext, 'entries'> | null>(
+    () =>
+      batchWrites && activeRepo !== ''
+        ? {
+            top: activeRepo,
+            truncated,
+            busy,
+            ...(onOpenPath ? { onOpenPath } : {}),
+            onStage: (entries) => void write('stage', entries),
+            onUnstage: (entries) => void write('unstage', entries),
+            onDiscard: (entries) => void write('discard', entries),
+          }
+        : null,
+    [batchWrites, activeRepo, truncated, busy, onOpenPath, write],
   );
 
   const copyComments = useCallback(async () => {
@@ -596,13 +1007,19 @@ export const SourceControlView = ({
       // Not awaited here: the clipboard has to be asked inside the tap, so it takes
       // the document while the file reads are still running.
       const copied = await copyPendingText(commentsMarkdown(activeRepo, status, comments));
-      const count = `${comments.length} ${comments.length === 1 ? 'comment' : 'comments'}`;
+      const count = commentCount(comments.length);
       onNotice?.(copied ? `Copied ${count}` : 'Could not copy the comments');
     } finally {
       copyingRef.current = false;
       setCopying(false);
     }
   }, [comments, activeRepo, status, onNotice]);
+
+  const clearComments = useCallback(async () => {
+    if (!confirmClearAll(comments.length, activeRepo)) return;
+    const result = await commentsStore.clearAll();
+    if (!result.ok) onNotice?.(`Could not delete the comments: ${result.message}`);
+  }, [comments.length, activeRepo, onNotice]);
 
   const form = (
     <AddForm
@@ -672,26 +1089,44 @@ export const SourceControlView = ({
               <Icon name="close" size={14} />
             </IconButton>
             <IconButton
-              label="Copy comments"
-              title={
-                comments.length === 0
-                  ? 'No comments to copy'
-                  : `Copy ${comments.length} ${comments.length === 1 ? 'comment' : 'comments'} as markdown`
-              }
-              disabled={comments.length === 0 || copying}
-              data-testid="scm-copy-comments"
-              {...pressMove(() => void copyComments())}
-            >
-              <Icon name="comment" size={14} />
-            </IconButton>
-            <IconButton
               label={tree ? 'View as list' : 'View as tree'}
               data-testid="scm-view-toggle"
               {...pressMove(() => onChange({ scmTree: !tree }))}
             >
               <Icon name={tree ? 'sessions' : 'folder'} size={14} />
             </IconButton>
+            {batchWrites && lastDiscard !== null && (
+              <IconButton
+                label={`Undo last discard (${fileCount(lastDiscard.count)})`}
+                disabled={busy}
+                data-testid="scm-undo-discard"
+                {...pressMove(() => void undoLastDiscard())}
+              >
+                <Icon name="undo" size={14} />
+              </IconButton>
+            )}
           </div>
+          {comments.length > 0 && (
+            <div className="scm-comments-bar" data-testid="scm-comments-bar">
+              <Button
+                size="sm"
+                disabled={copying}
+                title={`Copy ${commentCount(comments.length)} as markdown`}
+                data-testid="scm-copy-comments"
+                {...pressMove(() => void copyComments())}
+              >
+                <Icon name="comment" size={12} />
+                Copy comments
+              </Button>
+              <Button
+                size="sm"
+                data-testid="scm-clear-comments"
+                {...pressMove(() => void clearComments())}
+              >
+                Clear all comments
+              </Button>
+            </div>
+          )}
           {adding && form}
           {status && (
             <div className="scm-meta" data-testid="scm-branch" title={activeRepo}>
@@ -743,6 +1178,8 @@ export const SourceControlView = ({
                       icons={icons}
                       tree={tree}
                       onOpen={open}
+                      onOpenReview={onOpenReview}
+                      writes={writes}
                     />
                   ),
               )}

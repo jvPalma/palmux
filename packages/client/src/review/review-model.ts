@@ -12,7 +12,7 @@
 import type { ScmAlgorithm, ScmComment, ScmEntry, ScmFileSnapshot } from '@palmux/shared';
 import { withNotes, type FileNotes } from './annotations';
 import { Colorizer, type ColorizerOptions } from './colorize';
-import { placeInSnapshot, type SnapshotPlacement } from './comment-placement';
+import { placeInSnapshot, type SnapshotPlacement } from '@palmux/shared';
 import { draftKey, type DraftTarget } from './comments-store';
 import { FileQueue, snapshotKey, type EvictReason, type FetchSnapshot } from './file-queue';
 import {

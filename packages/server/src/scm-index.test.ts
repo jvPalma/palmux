@@ -2,6 +2,7 @@
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   chmod,
   mkdir,
@@ -12,19 +13,24 @@ import {
   rm,
   stat,
   symlink,
+  utimes,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import type { ScmAlgorithm, ScmFileSnapshot, ScmGroup } from '@palmux/shared';
+import { setGitObserver } from './scm-git';
 import {
   hasSplitIndexExtension,
   indexHooks,
   releaseAllLocks,
   restoreReceipt,
   stageFile,
+  stagePaths,
   unstageFile,
+  unstagePaths,
+  type BatchWrite,
 } from './scm-index';
 import { configureScmCache, readSnapshot, resetScmCache } from './scm-snapshot';
 import { getStatus, invalidateStatus } from './scm-status';
@@ -63,6 +69,7 @@ afterAll(async () => {
 
 afterEach(() => {
   indexHooks.afterLock = null;
+  setGitObserver(null);
   releaseAllLocks();
   resetScmCache();
   configureScmCache({ maxBytes: 64 * 1024 * 1024, ttlMs: 10 * 60 * 1000 });
@@ -124,7 +131,9 @@ async function tokenOf(dir: string, path: string): Promise<string> {
 async function stage(dir: string, path: string) {
   const result = await stageFile({ top: dir, path, token: await tokenOf(dir, path) });
   if (!result.ok) throw new Error(`stage failed (${result.status}): ${result.error}`);
-  return result.result;
+  const { receiptId } = result.result;
+  if (receiptId === null) throw new Error('stage answered no receipt');
+  return { ...result.result, receiptId };
 }
 
 async function expectFailure<T extends { ok: boolean }>(
@@ -630,7 +639,7 @@ describe('restoreReceipt', () => {
     const unstaged = await unstageFile({ top: dir, path: 'b.ts', oldPath: 'a.ts' });
     if (!unstaged.ok) throw new Error(unstaged.error);
     expect(await lsFiles(dir)).not.toBe(renamed);
-    const restored = await restoreReceipt({ top: dir, receiptId: unstaged.result.receiptId });
+    const restored = await restoreReceipt({ top: dir, receiptId: unstaged.result.receiptId ?? '' });
     expect(restored.ok).toBe(true);
     expect(await lsFiles(dir)).toBe(renamed);
   });
@@ -667,7 +676,7 @@ describe('restoreReceipt', () => {
     expect(await porcelain(dir)).toBe(' M a.ts');
 
     await expectFailure(restoreReceipt({ top: dir, receiptId: first.receiptId }), 410, 'token');
-    const redone = await restoreReceipt({ top: dir, receiptId: undone.result.receiptId });
+    const redone = await restoreReceipt({ top: dir, receiptId: undone.result.receiptId ?? '' });
     expect(redone.ok).toBe(true);
     expect(await porcelain(dir)).toBe('M  a.ts');
   });
@@ -693,5 +702,471 @@ describe('restoreReceipt', () => {
     const { receiptId } = await stage(dir, 'a.ts');
     await restoreReceipt({ top: dir, receiptId });
     expect(await readFile(join(dir, 'a.ts'), 'utf8')).toBe('two\n');
+  });
+});
+
+// ── Batch stage and unstage ───────────────────────────────────────────────────
+
+function batchOk(result: BatchWrite) {
+  if (!result.ok) throw new Error(`batch failed (${result.status}): ${result.error}`);
+  expect(result.lockMs).toBeGreaterThanOrEqual(0);
+  return result.result;
+}
+
+/** Records every git call's own arguments, without the global flags or a leading `-c <setting>`. */
+function observeGit(): string[][] {
+  const calls: string[][] = [];
+  setGitObserver((args) => {
+    let at = 0;
+    while (args[at] === '-c') at += 2;
+    calls.push(args.slice(at));
+  });
+  return calls;
+}
+
+/** A hash of every file in the work tree outside `.git`, keyed by its path. */
+async function hashTree(dir: string, rel = ''): Promise<Record<string, string>> {
+  const items = await readdir(join(dir, rel), { withFileTypes: true });
+  const parts = await Promise.all(
+    items.map(async (item): Promise<Record<string, string>> => {
+      const path = rel === '' ? item.name : `${rel}/${item.name}`;
+      if (path === '.git') return {};
+      if (item.isDirectory()) return hashTree(dir, path);
+      return { [path]: createHash('sha256').update(await readFile(join(dir, path))).digest('hex') };
+    }),
+  );
+  return Object.assign({}, ...parts) as Record<string, string>;
+}
+
+/** A repository whose `a.ts` has a merge conflict, with `b.ts` edited in the work tree. */
+async function conflictedRepo(): Promise<string> {
+  const dir = await makeRepo({ 'a.ts': 'base\n', 'b.ts': 'b\n' });
+  await git(dir, 'checkout', '-q', '-b', 'other');
+  await put(dir, 'a.ts', 'other\n');
+  await git(dir, 'commit', '-qam', 'other');
+  await git(dir, 'checkout', '-q', 'main');
+  await put(dir, 'a.ts', 'main\n');
+  await git(dir, 'commit', '-qam', 'main');
+  await git(dir, 'merge', 'other').catch(() => undefined);
+  await put(dir, 'b.ts', 'b edited\n');
+  return dir;
+}
+
+describe('stagePaths', () => {
+  it('stages a modified, a deleted and an untracked file with one git add', async () => {
+    const dir = await makeRepo({ 'm.ts': 'm\n', 'd.ts': 'd\n', 'keep.ts': 'k\n' });
+    await put(dir, 'm.ts', 'm2\n');
+    await rm(join(dir, 'd.ts'));
+    await put(dir, 'new/u.ts', 'u\n');
+    const calls = observeGit();
+
+    const result = batchOk(await stagePaths({ top: dir, paths: ['m.ts', 'd.ts', 'new/u.ts'] }));
+    expect(result.status).toBe('staged');
+    expect(result.done).toEqual(['m.ts', 'd.ts', 'new/u.ts']);
+    expect(result.skipped).toEqual([]);
+    expect(result.receiptId).toBeTruthy();
+    expect(calls.filter((args) => args[0] === 'add')).toHaveLength(1);
+    expect(await porcelain(dir)).toBe('D  d.ts\nM  m.ts\nA  new/u.ts');
+    await expectClean(dir);
+  });
+
+  it('stages a file that became a folder as its deletion alone, and never what the folder holds', async () => {
+    const dir = await makeRepo({ '.gitattributes': '*.bin filter=lfs\n', foo: 'a file\n', 'keep.ts': 'k\n' });
+    const marker = join(dir, '..', `${dir.split('/').at(-1) ?? 'repo'}-filter-ran`);
+    await git(dir, 'config', 'filter.lfs.clean', `touch '${marker}'; cat`);
+    await rm(join(dir, 'foo'));
+    await put(dir, 'foo/bar.ts', 'never named\n');
+    await put(dir, 'foo/x.bin', 'a filtered file no check ever saw\n');
+    const index = await lsFiles(dir);
+
+    const result = batchOk(await stagePaths({ top: dir, paths: ['foo'] }));
+    expect(result.done).toEqual(['foo']);
+    expect(result.skipped).toEqual([]);
+    expect(await git(dir, 'ls-files')).toBe('.gitattributes\nkeep.ts\n');
+    expect(await porcelain(dir)).toBe('D  foo\n?? foo/');
+    await expect(stat(marker)).rejects.toThrow();
+
+    expect((await restoreReceipt({ top: dir, receiptId: result.receiptId ?? '' })).ok).toBe(true);
+    expect(await lsFiles(dir)).toBe(index);
+    await expectClean(dir);
+  });
+
+  // git trusts a cached entry's stat unless the entry is "racy": its mtime is not older than
+  // the index file's. The batch runs git add on a private copy of the index, so the copy has
+  // to carry the index's own mtime or a same-size edit made in the second of the last index
+  // write looks clean and is not staged (seen as a flaky audit test: done=3 of 13).
+  it('stages a same-size edit the index records as racily clean', async () => {
+    // The window is a wall-clock second; it is forced here by moving every time into the past.
+    const dir = await makeRepo({ 'a.txt': 'x\n' });
+    // Hold ctime out of the stat comparison, so the case does not depend on the clock.
+    await git(dir, 'config', 'core.trustctime', 'false');
+    const file = join(dir, 'a.txt');
+    const past = new Date('2020-01-01T00:00:00Z');
+    await utimes(file, past, past);
+    await git(dir, 'update-index', '--refresh');
+    // The index is as old as the entry: git itself treats the entry as racy and reads it.
+    await utimes(join(dir, '.git', 'index'), past, past);
+    await put(dir, 'a.txt', 'y\n');
+    await utimes(file, past, past);
+
+    const result = batchOk(await stagePaths({ top: dir, paths: ['a.txt'] }));
+    expect(result.done).toEqual(['a.txt']);
+    expect(await blobAt(dir, 'a.txt')).toBe('y\n');
+  });
+
+  it('stages a CRLF file under core.autocrlf=true as LF, as git add in a terminal would', async () => {
+    const dir = await makeRepo({ 'seed.txt': 's\n' });
+    await git(dir, 'config', 'core.autocrlf', 'true');
+    await put(dir, 'crlf.txt', 'one\r\ntwo\r\n');
+    batchOk(await stagePaths({ top: dir, paths: ['crlf.txt'] }));
+    expect(await blobAt(dir, 'crlf.txt')).toBe('one\ntwo\n');
+    expect(await readFile(join(dir, 'crlf.txt'), 'utf8')).toBe('one\r\ntwo\r\n');
+  });
+
+  it('skips a path with a filter driver and never runs the filter, and stages the rest', async () => {
+    const dir = await makeRepo({ '.gitattributes': '*.bin filter=lfs\n' });
+    const marker = join(dir, '..', `${dir.split('/').at(-1) ?? 'repo'}-filter-ran`);
+    await git(dir, 'config', 'filter.lfs.clean', `touch '${marker}'; cat`);
+    await put(dir, 'big.bin', 'pretend this is large\n');
+    await put(dir, 'plain.ts', 'p\n');
+
+    const result = batchOk(await stagePaths({ top: dir, paths: ['big.bin', 'plain.ts'] }));
+    expect(result.done).toEqual(['plain.ts']);
+    expect(result.skipped).toEqual([{ path: 'big.bin', reason: 'converted' }]);
+    await expect(stat(marker)).rejects.toThrow();
+    expect(await porcelain(dir)).toBe('A  plain.ts\n?? big.bin');
+
+    // The driver is real: git's own add runs it.
+    await git(dir, 'add', 'big.bin');
+    await expect(stat(marker)).resolves.toBeTruthy();
+  });
+
+  it('classifies under the lock, so a filter named after the status was read never runs', async () => {
+    const dir = await makeRepo({ 'seed.txt': 's\n' });
+    const marker = join(dir, '..', `${dir.split('/').at(-1) ?? 'repo'}-filter-ran`);
+    await git(dir, 'config', 'filter.lfs.clean', `touch '${marker}'; cat`);
+    await put(dir, 'data.bin', 'payload\n');
+    await put(dir, 'plain.ts', 'p\n');
+    indexHooks.afterLock = () => put(dir, '.gitattributes', '*.bin filter=lfs\n');
+
+    const result = batchOk(await stagePaths({ top: dir, paths: ['data.bin', 'plain.ts'] }));
+    expect(result.done).toEqual(['plain.ts']);
+    expect(result.skipped).toEqual([{ path: 'data.bin', reason: 'converted' }]);
+    await expect(stat(marker)).rejects.toThrow();
+    expect(await git(dir, 'ls-files')).toBe('plain.ts\nseed.txt\n');
+  });
+
+  it('skips an unmerged path and stages the others', async () => {
+    const dir = await conflictedRepo();
+    const result = batchOk(await stagePaths({ top: dir, paths: ['a.ts', 'b.ts'] }));
+    expect(result.done).toEqual(['b.ts']);
+    expect(result.skipped).toEqual([{ path: 'a.ts', reason: 'unmerged' }]);
+    expect(await porcelain(dir)).toBe('UU a.ts\nM  b.ts');
+  });
+
+  it('skips a submodule, a nested repository and a path that is no longer changed', async () => {
+    const dir = await makeRepo({ 'seed.txt': 's\n' });
+    const inner = join(dir, 'vendor', 'sub');
+    await mkdir(inner, { recursive: true });
+    await git(inner, 'init', '-q');
+    await put(inner, 'x', '1\n');
+    await git(inner, 'add', 'x');
+    await git(inner, 'commit', '-qm', 'one');
+    await git(dir, 'add', 'vendor/sub');
+    await git(dir, 'commit', '-qm', 'submodule');
+    await put(inner, 'x', '2\n');
+    await git(inner, 'commit', '-qam', 'two');
+    const nested = join(dir, 'nested');
+    await mkdir(nested);
+    await git(nested, 'init', '-q');
+    await put(dir, 'edit.ts', 'e\n');
+    const index = await lsFiles(dir);
+
+    const result = batchOk(
+      await stagePaths({ top: dir, paths: ['vendor/sub', 'nested/', 'seed.txt', 'edit.ts'] }),
+    );
+    expect(result.done).toEqual(['edit.ts']);
+    expect(result.skipped).toEqual([
+      { path: 'nested/', reason: 'nested-repo' },
+      { path: 'seed.txt', reason: 'gone' },
+      { path: 'vendor/sub', reason: 'submodule' },
+    ]);
+    expect((await lsFiles(dir)).split('\n').filter((l) => !l.endsWith('\tedit.ts'))).toEqual(
+      index.split('\n'),
+    );
+  });
+
+  it('answers no receipt when everything was skipped, and leaves the index file alone', async () => {
+    const dir = await makeRepo({ 'seed.txt': 's\n' });
+    const before = await stat(join(dir, '.git', 'index'));
+    const result = batchOk(await stagePaths({ top: dir, paths: ['seed.txt', 'missing.ts'] }));
+    expect(result).toEqual({
+      receiptId: null,
+      status: 'staged',
+      done: [],
+      skipped: [
+        { path: 'seed.txt', reason: 'gone' },
+        { path: 'missing.ts', reason: 'gone' },
+      ],
+    });
+    expect((await stat(join(dir, '.git', 'index'))).mtimeMs).toBe(before.mtimeMs);
+  });
+
+  it('reads a pattern as a name: a*.ts stages only itself', async () => {
+    const dir = await makeRepo({ 'a*.ts': '1\n', 'alpha.ts': '1\n', 'ab.ts': '1\n' });
+    await put(dir, 'a*.ts', '2\n');
+    await put(dir, 'alpha.ts', '2\n');
+    await put(dir, 'ab.ts', '2\n');
+    const result = batchOk(await stagePaths({ top: dir, paths: ['a*.ts'] }));
+    expect(result.done).toEqual(['a*.ts']);
+    expect(await porcelain(dir)).toBe('M  a*.ts\n M ab.ts\n M alpha.ts');
+  });
+
+  it('refuses a malformed request with 400 before running git', async () => {
+    const dir = await makeRepo({ 'a.ts': 'a\n' });
+    const calls = observeGit();
+    const tooMany = Array.from({ length: 5001 }, (_, i) => `f${i}.ts`);
+    await expectFailure(stagePaths({ top: dir, paths: tooMany }), 400);
+    await expectFailure(stagePaths({ top: dir, paths: [] }), 400);
+    await expectFailure(stagePaths({ top: dir, paths: 'a.ts' }), 400);
+    await expectFailure(stagePaths({ top: dir, paths: ['a.ts', '../escape.ts'] }), 400);
+    await expectFailure(stagePaths({ top: dir, paths: ['a.ts', 7] }), 400);
+    await expectFailure(stagePaths({ top: dir, paths: ['dir//'] }), 400);
+    expect(calls).toEqual([]);
+  });
+
+  it('drops a duplicate path', async () => {
+    const dir = await makeRepo({ 'a.ts': 'a\n' });
+    await put(dir, 'a.ts', 'b\n');
+    const result = batchOk(await stagePaths({ top: dir, paths: ['a.ts', 'a.ts'] }));
+    expect(result.done).toEqual(['a.ts']);
+  });
+
+  it('answers 409 busy when another program holds index.lock, and leaves that lock alone', async () => {
+    const dir = await makeRepo({ 'a.ts': 'a\n', 'b.ts': 'b\n' });
+    await put(dir, 'a.ts', 'a2\n');
+    await put(dir, 'b.ts', 'b2\n');
+    await git(dir, 'add', 'b.ts');
+    const lock = join(dir, '.git', 'index.lock');
+    await writeFile(lock, 'held by someone else');
+    const before = await lsFiles(dir);
+    await expectFailure(stagePaths({ top: dir, paths: ['a.ts'] }), 409, 'busy');
+    await expectFailure(unstagePaths({ top: dir, entries: [{ path: 'b.ts' }] }), 409, 'busy');
+    expect(await readFile(lock, 'utf8')).toBe('held by someone else');
+    expect(await lsFiles(dir)).toBe(before);
+  });
+
+  it('undoes every entry it staged with the receipt', async () => {
+    const dir = await makeRepo({ 'm.ts': 'm\n', 'd.ts': 'd\n' });
+    await put(dir, 'm.ts', 'one\n');
+    await git(dir, 'add', 'm.ts');
+    await put(dir, 'm.ts', 'two\n');
+    await rm(join(dir, 'd.ts'));
+    await put(dir, 'u.ts', 'u\n');
+    const index = await lsFiles(dir);
+    const status = await porcelain(dir);
+
+    const result = batchOk(await stagePaths({ top: dir, paths: ['m.ts', 'd.ts', 'u.ts'] }));
+    expect(await porcelain(dir)).toBe('D  d.ts\nM  m.ts\nA  u.ts');
+    const undone = await restoreReceipt({ top: dir, receiptId: result.receiptId ?? '' });
+    expect(undone.ok).toBe(true);
+    expect(await lsFiles(dir)).toBe(index);
+    expect(await porcelain(dir)).toBe(status);
+    await expectClean(dir);
+  });
+
+  it('stages and undoes 100 paths through one listing of the whole index, and nothing else', async () => {
+    const files = Object.fromEntries(Array.from({ length: 120 }, (_, i) => [`f/${i}.ts`, `${i}\n`]));
+    const dir = await makeRepo(files);
+    const names = Array.from({ length: 100 }, (_, i) => `f/${i}.ts`);
+    await Promise.all(names.map((name) => put(dir, name, 'changed\n')));
+    await put(dir, 'f/110.ts', 'outside the batch\n');
+    const index = await lsFiles(dir);
+    const calls = observeGit();
+
+    const result = batchOk(await stagePaths({ top: dir, paths: names }));
+    expect(result.done).toHaveLength(100);
+    const reads = calls.filter((args) => args[0] === 'ls-files');
+    expect(reads.length).toBeGreaterThan(0);
+    expect(reads.every((args) => !args.includes('--'))).toBe(true);
+    expect(await porcelain(dir)).toContain(' M f/110.ts');
+
+    calls.length = 0;
+    const undone = await restoreReceipt({ top: dir, receiptId: result.receiptId ?? '' });
+    expect(undone.ok).toBe(true);
+    expect(await lsFiles(dir)).toBe(index);
+    const writes = calls.filter((args) => args[0] === 'update-index');
+    expect(writes).toEqual([['update-index', '-z', '--index-info']]);
+  });
+});
+
+describe('restoreReceipt with many entries', () => {
+  it('removes entries the write added, in the same single update-index call', async () => {
+    const dir = await makeRepo({ 'm.ts': 'm\n' });
+    await put(dir, 'm.ts', 'm2\n');
+    await put(dir, 'n1.ts', 'n\n');
+    await put(dir, 'n2.ts', 'n\n');
+    const result = batchOk(await stagePaths({ top: dir, paths: ['m.ts', 'n1.ts', 'n2.ts'] }));
+    expect(await porcelain(dir)).toBe('M  m.ts\nA  n1.ts\nA  n2.ts');
+    const calls = observeGit();
+    expect((await restoreReceipt({ top: dir, receiptId: result.receiptId ?? '' })).ok).toBe(true);
+    expect(await porcelain(dir)).toBe(' M m.ts\n?? n1.ts\n?? n2.ts');
+    expect(calls.filter((args) => args[0] === 'update-index')).toHaveLength(1);
+  });
+
+  it('restores in a SHA-256 repository, with a zero oid of that length for a removal', async () => {
+    const dir = await tempDir();
+    await git(dir, 'init', '-q', '--object-format=sha256');
+    await put(dir, 'a.ts', 'a\n');
+    await put(dir, 'b.ts', 'b\n');
+    await git(dir, 'add', '-A');
+    await git(dir, 'commit', '-q', '-m', 'init');
+    await put(dir, 'a.ts', 'a2\n');
+    await rm(join(dir, 'b.ts'));
+    await put(dir, 'c.ts', 'c\n');
+    const index = await lsFiles(dir);
+    expect(index.split(' ')[1]).toHaveLength(64);
+
+    const result = batchOk(await stagePaths({ top: dir, paths: ['a.ts', 'b.ts', 'c.ts'] }));
+    expect(await porcelain(dir)).toBe('M  a.ts\nD  b.ts\nA  c.ts');
+    const undone = await restoreReceipt({ top: dir, receiptId: result.receiptId ?? '' });
+    expect(undone.ok).toBe(true);
+    expect(await lsFiles(dir)).toBe(index);
+  });
+});
+
+describe('unstagePaths', () => {
+  it('returns a modification, an addition and both sides of a rename to HEAD in one restore', async () => {
+    const body = Array.from({ length: 12 }, (_, i) => `line ${i}\n`).join('');
+    const dir = await makeRepo({ 'a.ts': body, 'm.ts': 'm\n' });
+    const head = await lsFiles(dir);
+    await put(dir, 'm.ts', 'm2\n');
+    await put(dir, 'n.ts', 'n\n');
+    await git(dir, 'mv', 'a.ts', 'b.ts');
+    await put(dir, 'b.ts', body.replace('line 5', 'LINE 5'));
+    await git(dir, 'add', 'm.ts', 'n.ts', 'b.ts');
+    const tree = await hashTree(dir);
+    const calls = observeGit();
+
+    const result = batchOk(
+      await unstagePaths({
+        top: dir,
+        entries: [{ path: 'm.ts' }, { path: 'n.ts' }, { path: 'b.ts', oldPath: 'a.ts' }],
+      }),
+    );
+    expect(result.status).toBe('unstaged');
+    expect(result.done).toEqual(['m.ts', 'n.ts', 'b.ts']);
+    expect(result.skipped).toEqual([]);
+    expect(calls.filter((args) => args[0] === 'restore')).toHaveLength(1);
+    expect(await lsFiles(dir)).toBe(head);
+    expect(await hashTree(dir)).toEqual(tree);
+
+    const undone = await restoreReceipt({ top: dir, receiptId: result.receiptId ?? '' });
+    expect(undone.ok).toBe(true);
+    expect(await porcelain(dir)).toBe('R  a.ts -> b.ts\nM  m.ts\nA  n.ts');
+    expect(await hashTree(dir)).toEqual(tree);
+    await expectClean(dir);
+  });
+
+  it('unstages a staged deletion, leaving the file deleted on disk', async () => {
+    const dir = await makeRepo({ 'gone.ts': 'g\n', 'kept.ts': 'k\n' });
+    const head = await lsFiles(dir);
+    await git(dir, 'rm', '-q', 'gone.ts');
+    const result = batchOk(await unstagePaths({ top: dir, entries: [{ path: 'gone.ts' }] }));
+    expect(result.done).toEqual(['gone.ts']);
+    expect(await lsFiles(dir)).toBe(head);
+    expect(await porcelain(dir)).toBe(' D gone.ts');
+  });
+
+  it('removes the entries before the first commit, edited after git add or not', async () => {
+    const dir = await makeRepo({ 'a.ts': 'a\n', 'b.ts': 'b\n' }, false);
+    await git(dir, 'add', 'a.ts', 'b.ts');
+    await put(dir, 'a.ts', 'edited after add\n');
+    const tree = await hashTree(dir);
+
+    const result = batchOk(await unstagePaths({ top: dir, entries: [{ path: 'a.ts' }, { path: 'b.ts' }] }));
+    expect(result.done).toEqual(['a.ts', 'b.ts']);
+    expect(await lsFiles(dir)).toBe('');
+    expect(await porcelain(dir)).toBe('?? a.ts\n?? b.ts');
+    expect(await hashTree(dir)).toEqual(tree);
+  });
+
+  it('skips a path no longer staged and an unmerged one, and unstages the rest', async () => {
+    const dir = await conflictedRepo();
+    await git(dir, 'add', 'b.ts');
+    const result = batchOk(
+      await unstagePaths({
+        top: dir,
+        entries: [{ path: 'a.ts' }, { path: 'b.ts' }, { path: 'never.ts' }],
+      }),
+    );
+    expect(result.done).toEqual(['b.ts']);
+    expect(result.skipped).toEqual([
+      { path: 'a.ts', reason: 'unmerged' },
+      { path: 'never.ts', reason: 'gone' },
+    ]);
+    expect(await porcelain(dir)).toBe('UU a.ts\n M b.ts');
+  });
+
+  it('leaves oldPath alone when it is still in the index, so it is not a rename source', async () => {
+    const dir = await makeRepo({ 'a.ts': 'a\n' });
+    await put(dir, 'b.ts', 'a\n');
+    await git(dir, 'add', 'b.ts');
+    const result = batchOk(await unstagePaths({ top: dir, entries: [{ path: 'b.ts', oldPath: 'a.ts' }] }));
+    expect(result.done).toEqual(['b.ts']);
+    expect(await porcelain(dir)).toBe('?? b.ts');
+  });
+
+  it('refuses malformed entries with 400', async () => {
+    const dir = await makeRepo({ 'a.ts': 'a\n' });
+    await expectFailure(unstagePaths({ top: dir, entries: ['a.ts'] }), 400);
+    await expectFailure(unstagePaths({ top: dir, entries: [{ path: '/abs' }] }), 400);
+    await expectFailure(unstagePaths({ top: dir, entries: [{ path: 'a.ts', oldPath: '..' }] }), 400);
+    const tooMany = Array.from({ length: 5001 }, (_, i) => ({ path: `f${i}` }));
+    await expectFailure(unstagePaths({ top: dir, entries: tooMany }), 400);
+  });
+});
+
+/** Executable hooks that leave a line in `marker` (outside the work tree) whenever git runs one. */
+async function installHooks(dir: string): Promise<string> {
+  const marker = join(dir, '..', `${dir.split('/').at(-1) ?? 'repo'}-hook-ran`);
+  const hooks = join(dir, '.git', 'hooks');
+  await mkdir(hooks, { recursive: true });
+  await Promise.all(
+    ['post-index-change', 'post-checkout'].map((name) =>
+      writeFile(join(hooks, name), `#!/bin/sh\necho ${name} >> '${marker}'\n`, { mode: 0o755 }),
+    ),
+  );
+  return marker;
+}
+
+describe('repository hooks', () => {
+  it('runs none for any write, though every one of them writes an index', async () => {
+    const dir = await makeRepo({ 'a.ts': 'a\n', 'b.ts': 'b\n', 'c.ts': 'c\n' });
+    const marker = await installHooks(dir);
+    await put(dir, 'a.ts', 'a2\n');
+    await put(dir, 'b.ts', 'b2\n');
+    await put(dir, 'n.ts', 'n\n');
+
+    batchOk(await stagePaths({ top: dir, paths: ['a.ts', 'n.ts'] }));
+    const unstaged = batchOk(await unstagePaths({ top: dir, entries: [{ path: 'a.ts' }, { path: 'n.ts' }] }));
+    expect((await restoreReceipt({ top: dir, receiptId: unstaged.receiptId ?? '' })).ok).toBe(true);
+    const { receiptId } = await stage(dir, 'b.ts');
+    expect((await restoreReceipt({ top: dir, receiptId })).ok).toBe(true);
+    expect((await unstageFile({ top: dir, path: 'a.ts' })).ok).toBe(true);
+    await expect(stat(marker)).rejects.toThrow();
+
+    // The hooks are real: git's own add runs one.
+    await put(dir, 'c.ts', 'c2\n');
+    await git(dir, 'add', 'c.ts');
+    expect(await readFile(marker, 'utf8')).toContain('post-index-change');
+  });
+
+  it('runs none for an unstage before the first commit', async () => {
+    const dir = await makeRepo({ 'a.ts': 'a\n' }, false);
+    await git(dir, 'add', 'a.ts');
+    const marker = await installHooks(dir);
+    expect(batchOk(await unstagePaths({ top: dir, entries: [{ path: 'a.ts' }] })).done).toEqual(['a.ts']);
+    await expect(stat(marker)).rejects.toThrow();
   });
 });

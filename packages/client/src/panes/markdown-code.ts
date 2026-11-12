@@ -18,7 +18,7 @@
 // pulls the monaco chunk. A document without one does not, and neither does a
 // terminal-only session.
 
-import { languageOf } from './editor-language';
+import { languageOf } from '@palmux/shared';
 
 /** `language-ts` → `ts`; anything else → null (nothing to colour with). */
 export function langFromClass(className: string): string | null {

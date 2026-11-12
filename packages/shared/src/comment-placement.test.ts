@@ -2,12 +2,8 @@
 // their code"). Every comment is made the way the review makes one: from the
 // side's own lines, with `specAt`-style context, then the file changes under it.
 
-import type {
-  ScmComment,
-  ScmCommentSide,
-  ScmCommentVersion,
-  ScmFileSnapshot,
-} from '@palmux/shared';
+import type { ScmFileSnapshot } from './scm';
+import type { ScmComment, ScmCommentSide, ScmCommentVersion } from './scm-comments';
 import { describe, expect, it } from 'vitest';
 import { splitLines } from './anchor';
 import {

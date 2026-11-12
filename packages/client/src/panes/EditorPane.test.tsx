@@ -10,6 +10,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EditorPane } from './EditorPane';
+import { FileTabPane } from './FileTabPane';
 import {
   DEFAULTS,
   notifySettingsChange,
@@ -18,6 +19,7 @@ import {
   type ClientSettings,
 } from '../settings/settings';
 import { Icon } from '../ui/icons';
+import { hasGoto, requestGoto, resetEditorGoto } from './editor-goto';
 
 // ── fake monaco ───────────────────────────────────────────────────────────────
 let value = '';
@@ -40,7 +42,17 @@ const fakeEditor = {
   onDidFocusEditorText: vi.fn(),
   trigger: vi.fn(),
   focus: vi.fn(),
+  // `palmux open file:line` moves the cursor, and waits for a hidden pane to be laid out.
+  setPosition: vi.fn(),
+  revealPositionInCenter: vi.fn(),
+  getLayoutInfo: vi.fn(() => ({ height: layoutHeight })),
+  onDidLayoutChange: vi.fn((cb: (info: { height: number }) => void) => {
+    layoutListeners.push(cb);
+    return { dispose: () => (layoutListeners = layoutListeners.filter((l) => l !== cb)) };
+  }),
 };
+let layoutHeight = 600;
+let layoutListeners: ((info: { height: number }) => void)[] = [];
 const fakeMonaco = {
   editor: { create: vi.fn(() => fakeEditor) },
   KeyMod: { CtrlCmd: 2048 },
@@ -60,6 +72,9 @@ beforeEach(() => {
   value = '';
   version = 1;
   contentListeners = [];
+  layoutHeight = 600;
+  layoutListeners = [];
+  resetEditorGoto();
   fetchMock = vi.fn(async () => ({ ok: true, status: 200, text: async () => 'stored note' }));
   vi.stubGlobal('fetch', fetchMock);
 });
@@ -249,7 +264,98 @@ describe('EditorPane font size', () => {
     expect(fakeEditor.updateOptions).toHaveBeenLastCalledWith({
       fontSize: 12,
       fontFamily: DEFAULTS.fontFamily,
+      wordWrap: 'on',
     });
+  });
+});
+
+describe('EditorPane word wrap', () => {
+  afterEach(() => localStorage.clear());
+
+  it('creates with wordWrap off when editorWrap is false, and updates live', async () => {
+    saveSettings(sanitize({ ...DEFAULTS, editorWrap: false }));
+    await renderPane();
+    const opts = (
+      fakeMonaco.editor.create.mock.calls[0] as unknown as [unknown, { wordWrap: string }]
+    )[1];
+    expect(opts.wordWrap).toBe('off');
+    const next = sanitize({ ...DEFAULTS, editorWrap: true });
+    saveSettings(next);
+    notifySettingsChange(next);
+    expect(fakeEditor.updateOptions).toHaveBeenCalledWith(
+      expect.objectContaining({ wordWrap: 'on' }),
+    );
+  });
+});
+
+describe('EditorPane onSaved', () => {
+  const ctrlS = () =>
+    fireEvent(window, new KeyboardEvent('keydown', { key: 's', ctrlKey: true, cancelable: true }));
+
+  it('fires after a successful save', async () => {
+    const onSaved = vi.fn();
+    render(<EditorPane tabId="6" active onDirtyChange={vi.fn()} onSaved={onSaved} />);
+    await screen.findByText('saved');
+    simulateEdit('changed');
+    ctrlS();
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+  });
+
+  it('fires on Ctrl+S with a clean buffer, without a PUT', async () => {
+    const onSaved = vi.fn();
+    render(<EditorPane tabId="6" active onDirtyChange={vi.fn()} onSaved={onSaved} />);
+    await screen.findByText('saved');
+    ctrlS();
+    expect(onSaved).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.some((c) => c[1]?.method === 'PUT')).toBe(false);
+  });
+
+  it('does not fire on a refused save', async () => {
+    const onSaved = vi.fn();
+    const onSaveError = vi.fn();
+    render(
+      <EditorPane
+        tabId="6"
+        active
+        onDirtyChange={vi.fn()}
+        onSaved={onSaved}
+        onSaveError={onSaveError}
+      />,
+    );
+    await screen.findByText('saved');
+    fetchMock.mockImplementation(async (_url: string, init?: { method?: string }) =>
+      init?.method === 'PUT'
+        ? { ok: false, status: 500, text: async () => '' }
+        : { ok: true, status: 200, text: async () => '' },
+    );
+    simulateEdit('nope');
+    ctrlS();
+    await waitFor(() => expect(onSaveError).toHaveBeenCalledTimes(2));
+    expect(onSaved).not.toHaveBeenCalled();
+  });
+
+  it('does not fire when a visibilitychange flush finds a clean buffer', async () => {
+    const onSaved = vi.fn();
+    render(<EditorPane tabId="6" active onDirtyChange={vi.fn()} onSaved={onSaved} />);
+    await screen.findByText('saved');
+    const spy = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+    spy.mockRestore();
+    expect(onSaved).not.toHaveBeenCalled();
+  });
+
+  it('fires after an autosave 2xx', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const onSaved = vi.fn();
+      render(<EditorPane tabId="6" active onDirtyChange={vi.fn()} onSaved={onSaved} />);
+      await screen.findByText('saved');
+      simulateEdit('typed');
+      await vi.advanceTimersByTimeAsync(10_000);
+      await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -263,6 +369,54 @@ describe('EditorPane over a file path', () => {
         ? { ok: true, status: 200, json: async () => ({ ok: true }) }
         : { ok: true, status: 200, json: async () => ({ text, path: FILE, size: text.length }) },
     );
+
+  it('puts the cursor where palmux open asked, once the file has loaded, and only once', async () => {
+    serveFile('a\nb\nc');
+    requestGoto(FILE, { line: 3, column: 2 });
+    render(<EditorPane tabId={FILE} filePath={FILE} active onDirtyChange={vi.fn()} />);
+    await screen.findByText('saved');
+    expect(fakeEditor.setPosition).toHaveBeenCalledWith({ lineNumber: 3, column: 2 });
+    expect(fakeEditor.revealPositionInCenter).toHaveBeenCalledWith({ lineNumber: 3, column: 2 });
+    expect(hasGoto(FILE)).toBe(false);
+
+    // An editor already open moves when asked again; no column means the line's start.
+    requestGoto(FILE, { line: 1 });
+    expect(fakeEditor.setPosition).toHaveBeenLastCalledWith({ lineNumber: 1, column: 1 });
+    // Another file's request is left for that file.
+    requestGoto('/other.ts', { line: 9 });
+    expect(fakeEditor.setPosition).toHaveBeenCalledTimes(2);
+    expect(hasGoto('/other.ts')).toBe(true);
+  });
+
+  it('a hidden editor moves its cursor and scrolls once it is laid out', async () => {
+    serveFile('a\nb');
+    layoutHeight = 0;
+    requestGoto(FILE, { line: 2 });
+    render(<EditorPane tabId={FILE} filePath={FILE} active onDirtyChange={vi.fn()} />);
+    await screen.findByText('saved');
+    expect(fakeEditor.revealPositionInCenter).not.toHaveBeenCalled();
+    layoutListeners.forEach((cb) => cb({ height: 0 }));
+    expect(fakeEditor.revealPositionInCenter).not.toHaveBeenCalled();
+    layoutListeners.forEach((cb) => cb({ height: 400 }));
+    expect(fakeEditor.revealPositionInCenter).toHaveBeenCalledWith({ lineNumber: 2, column: 1 });
+    expect(layoutListeners).toHaveLength(0);
+  });
+
+  it('a markdown file asked to go to a line opens in Edit, not Read', async () => {
+    serveFile('# t');
+    requestGoto(FILE, { line: 1 });
+    render(<FileTabPane path={FILE} focused onChangePath={vi.fn()} onDirtyChange={vi.fn()} />);
+    await waitFor(() =>
+      expect(screen.getByTestId('file-pane-edit').getAttribute('data-active')).toBe('true'),
+    );
+  });
+
+  it('a markdown file with no request opens in Read', async () => {
+    serveFile('# t');
+    render(<FileTabPane path={FILE} focused onChangePath={vi.fn()} onDirtyChange={vi.fn()} />);
+    await waitFor(() => expect(fakeMonaco.editor.create).toHaveBeenCalled());
+    expect(screen.getByTestId('file-pane-read').getAttribute('data-active')).toBe('true');
+  });
 
   it('reads the file route and unwraps the JSON envelope', async () => {
     serveFile('on disk');
@@ -303,6 +457,47 @@ describe('EditorPane over a file path', () => {
       expect.anything(),
       expect.objectContaining({ language: 'plaintext' }),
     );
+  });
+
+  // Every file tab stays mounted, and a hidden one in Edit mode used to answer Ctrl+S too: on a
+  // clean buffer that reported a save, which pinned an unrelated preview.
+  it('Ctrl+S belongs to the focused file tab: a hidden one in Edit mode leaves it alone', async () => {
+    serveFile('on disk');
+    const hidden = vi.fn();
+    const shown = vi.fn();
+    const hiddenTab = (
+      <FileTabPane
+        key="a"
+        path="/p/a.ts"
+        focused={false}
+        onChangePath={vi.fn()}
+        onDirtyChange={vi.fn()}
+        onSaved={hidden}
+      />
+    );
+    const shownTab = (
+      <FileTabPane
+        key="b"
+        path="/p/b.ts"
+        focused
+        onChangePath={vi.fn()}
+        onDirtyChange={vi.fn()}
+        onSaved={shown}
+      />
+    );
+    // One at a time: vitest leaves a second concurrent import of the mocked loader pending.
+    const { rerender } = render(<>{hiddenTab}</>);
+    await waitFor(() => expect(fakeMonaco.editor.create).toHaveBeenCalledTimes(1));
+    rerender(
+      <>
+        {hiddenTab}
+        {shownTab}
+      </>,
+    );
+    await waitFor(() => expect(fakeMonaco.editor.create).toHaveBeenCalledTimes(2));
+    fireEvent(window, new KeyboardEvent('keydown', { key: 's', ctrlKey: true, cancelable: true }));
+    expect(shown).toHaveBeenCalledTimes(1);
+    expect(hidden).not.toHaveBeenCalled();
   });
 
   it('Ctrl+S PUTs the buffer to the file route', async () => {

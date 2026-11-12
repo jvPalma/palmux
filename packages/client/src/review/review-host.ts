@@ -7,7 +7,7 @@
 // shown, and whether its pane has focus.
 
 import { createContext, useContext } from 'react';
-import type { ScmAlgorithm } from '@palmux/shared';
+import type { ScmAlgorithm, ScmGroup } from '@palmux/shared';
 import type { ClientSettings, ScmLayoutPref } from '../settings/settings';
 
 /** The file a Source Control row asked the review to scroll to. */
@@ -49,6 +49,15 @@ export interface ReviewHost {
   takeScrollTarget: (url: string) => ReviewScrollTarget | undefined;
   /** The app's toast. With an action it holds for 6 seconds instead of a moment. */
   notify: (message: string, action?: ReviewToastAction) => void;
+  /** Move a single-file review's tab to another file of its group. */
+  showFile: (tabId: string, path: string) => void;
+  /**
+   * Open the continuous review of a group, scrolled to `path` when given, in the project `repo`
+   * names (a paused review's own); absent, the project this device reads.
+   */
+  openReview: (target: { group: ScmGroup; path?: string; repo?: string }) => void;
+  /** Keep a preview tab open. */
+  pinTab: (tabId: string) => void;
 }
 
 export const DEFAULT_REVIEW_HOST: ReviewHost = {
@@ -63,6 +72,9 @@ export const DEFAULT_REVIEW_HOST: ReviewHost = {
   openFile: () => {},
   takeScrollTarget: () => undefined,
   notify: () => {},
+  showFile: () => {},
+  openReview: () => {},
+  pinTab: () => {},
 };
 
 export const ReviewHostContext = createContext<ReviewHost>(DEFAULT_REVIEW_HOST);

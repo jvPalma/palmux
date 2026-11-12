@@ -5,7 +5,13 @@
 // live OSC title > kind default), and the fixed color palette (names on the
 // wire, theme-matched hex here).
 
-import { parseReviewUrl, type TabKind, type TabMeta } from '@palmux/shared';
+import {
+  parseReviewUrl,
+  TAB_COLOR_NAMES,
+  type TabColorName,
+  type TabKind,
+  type TabMeta,
+} from '@palmux/shared';
 import type { IconId } from '../ui/icons';
 
 // Icon NAMES, not glyphs: the strip, the drawer and the sheet each render
@@ -26,38 +32,47 @@ export function kindIcon(kind: TabKind): IconId {
 }
 
 /**
- * Chrome-tab-group style accent palette: the 16 ANSI slots, each a theme-aware
- * CSS var (`--tab-c-ansi<n>`, set by applyThemeTokens) so the SAME persisted
- * slot name renders in the active theme's own ansi16. Older, pre-ANSI16 color
- * names (red, peach, …) are never rewritten in persisted data — they resolve
- * forever through {@link LEGACY_COLOR_SLOTS} / {@link resolveColorSlot}.
+ * The tab and group colour palette: fifteen names, each a theme-aware CSS var
+ * (`--tab-c-<name>`, set by applyThemeTokens from `deriveTabColors`) so the
+ * SAME persisted name renders in the active theme. Names from earlier palettes
+ * (`ansi0`–`ansi15`, and red, peach, … before those) are never rewritten in
+ * persisted data: they resolve forever through {@link OLDER_COLOR_NAMES}.
  */
-export const TAB_COLORS: { name: string; value: string }[] = Array.from({ length: 16 }, (_, n) => ({
-  name: `ansi${n}`,
-  value: `var(--tab-c-ansi${n})`,
+export const TAB_COLORS: { name: TabColorName; value: string }[] = TAB_COLOR_NAMES.map((name) => ({
+  name,
+  value: `var(--tab-c-${name})`,
 }));
 
-/** Pre-ANSI16 color names, forever mapped to their nearest ansi slot. */
-const LEGACY_COLOR_SLOTS: { [name: string]: string } = {
-  red: 'ansi1',
-  green: 'ansi2',
-  yellow: 'ansi3',
-  blue: 'ansi4',
-  mauve: 'ansi5',
-  teal: 'ansi6',
-  gray: 'ansi8',
-  peach: 'ansi9',
-  maroon: 'ansi9',
-  lavender: 'ansi12',
-  pink: 'ansi13',
-  sky: 'ansi14',
+const ANSI_NAMES: TabColorName[] = [
+  'black',
+  'red',
+  'green',
+  'yellow',
+  'blue',
+  'magenta',
+  'cyan',
+  'white',
+];
+
+/** Every older persisted name and the colour it reads as now. A bright ANSI
+ *  slot (8–15) reads as its normal hue, except 8, which was the gray. */
+const OLDER_COLOR_NAMES: { [name: string]: TabColorName } = {
+  ...Object.fromEntries(
+    Array.from({ length: 16 }, (_, n) => [`ansi${n}`, n === 8 ? 'gray' : ANSI_NAMES[n % 8]!]),
+  ),
+  mauve: 'purple',
+  teal: 'cyan',
+  peach: 'orange',
+  maroon: 'crimson-red',
+  lavender: 'light-blue',
+  sky: 'light-blue',
 };
 
-/** A valid slot name as-is, else its legacy mapping, else undefined. */
-export function resolveColorSlot(name: string | undefined): string | undefined {
+/** A palette name as-is, else what an older name reads as now, else undefined. */
+export function resolveColorSlot(name: string | undefined): TabColorName | undefined {
   if (!name) return undefined;
-  if (TAB_COLORS.some((c) => c.name === name)) return name;
-  return LEGACY_COLOR_SLOTS[name];
+  if ((TAB_COLOR_NAMES as readonly string[]).includes(name)) return name as TabColorName;
+  return OLDER_COLOR_NAMES[name];
 }
 
 export function tabColorValue(name: string | undefined): string | undefined {
@@ -90,6 +105,7 @@ function reviewTitle(url: string | undefined): string {
   const parsed = url === undefined ? null : parseReviewUrl(url);
   if (!parsed) return 'review';
   const label = parsed.group === 'staged' ? 'Staged' : 'Changes';
+  if (parsed.file !== undefined) return `${parsed.file.split('/').pop()} (${label})`;
   return `${label} · ${parsed.top.split('/').findLast(Boolean) ?? parsed.top}`;
 }
 

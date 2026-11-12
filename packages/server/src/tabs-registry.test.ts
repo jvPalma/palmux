@@ -481,6 +481,8 @@ describe('tab registry — review tabs', () => {
     ['a NUL in the path', 'changes:/work/pal\0mux'],
     ['a web url', 'https://sb.local'],
     ['a group prefix with different case', 'Changes:/work/palmux'],
+    ['a lone surrogate in a per-file path', 'changes-file:%2Fwork:x\ud800'],
+    ['a lone surrogate in a per-file top', 'changes-file:%2Fwork\udc00:x.ts'],
   ])('refuses a review tab with %s', (_label, url) => {
     const reg = make();
     expect(reg.createTab({ kind: 'review', ...(url !== undefined ? { url } : {}) })).toBeNull();
@@ -757,5 +759,189 @@ describe('tab registry — detached window ownership', () => {
     reg.kill('0');
     expect(reg.createTab({ kind: 'editor' })).toBe('0');
     expect(reg.tabs()[0]).toEqual({ id: '0', kind: 'editor' });
+  });
+});
+
+describe('tab registry — preview tabs', () => {
+  const W = 'wpreview0001';
+  const rev = (reg: SessionRegistry, id: string) => reg.tabs().find((x) => x.id === id);
+
+  it('createTab sets preview only for a review and a url-bearing editor', () => {
+    const reg = make();
+    const ed = reg.createTab({ kind: 'editor', url: '/a/b.ts', preview: true })!;
+    const rv = reg.createTab({ kind: 'review', url: 'changes:/a', preview: true })!;
+    const note = reg.createTab({ kind: 'editor', preview: true })!;
+    const web = reg.createTab({ kind: 'web', url: 'https://sb.local', preview: true })!;
+    const md = reg.createTab({ kind: 'markdown', url: '/a/b.md', preview: true })!;
+    expect(rev(reg, ed)).toMatchObject({ preview: true });
+    expect(rev(reg, rv)).toMatchObject({ preview: true });
+    for (const id of [note, web, md]) expect(rev(reg, id)).not.toHaveProperty('preview');
+    expect(rev(reg, reg.createTab({ kind: 'editor', url: '/a/c.ts' })!)).not.toHaveProperty('preview');
+  });
+
+  it('updateTab pins one way; link-following keeps working on a pinned editor', () => {
+    const reg = make();
+    const id = reg.createTab({ kind: 'editor', url: '/a/b.ts', preview: true })!;
+    reg.updateTab(id, { preview: true as unknown as false });
+    expect(rev(reg, id)).toMatchObject({ preview: true });
+    reg.updateTab(id, { url: '/a/c.ts' });
+    expect(rev(reg, id)).toMatchObject({ preview: true, url: '/a/c.ts' });
+    reg.updateTab(id, { preview: false });
+    expect(rev(reg, id)).not.toHaveProperty('preview');
+    reg.updateTab(id, { url: '/a/d.ts' });
+    expect(rev(reg, id)).toMatchObject({ url: '/a/d.ts' });
+  });
+
+  it.each([
+    ['name', { name: 'x' }],
+    ['empty name', { name: '' }],
+    ['color', { color: 'red' }],
+    ['empty color', { color: '' }],
+  ])('a carried %s pins', (_n, patch) => {
+    const reg = make();
+    const id = reg.createTab({ kind: 'editor', url: '/a/b.ts', preview: true })!;
+    reg.updateTab(id, patch);
+    expect(rev(reg, id)).not.toHaveProperty('preview');
+  });
+
+  it('groupCreate and a groupUpdate join pin; moveToWindow keeps the preview', () => {
+    const reg = make();
+    const a = reg.createTab({ kind: 'editor', url: '/a/a.ts', preview: true })!;
+    const b = reg.createTab({ kind: 'editor', url: '/a/b.ts', preview: true })!;
+    const c = reg.createTab({ kind: 'editor', url: '/a/c.ts', preview: true })!;
+    reg.setWindow([c], W);
+    expect(rev(reg, c)).toMatchObject({ preview: true, window: W });
+    const gid = reg.groupCreate([a], {})!;
+    expect(rev(reg, a)).not.toHaveProperty('preview');
+    expect(rev(reg, b)).toMatchObject({ preview: true });
+    reg.groupUpdate(gid, { addIds: [b] });
+    expect(rev(reg, b)).not.toHaveProperty('preview');
+    expect(rev(reg, c)).toMatchObject({ preview: true });
+  });
+
+  it('replaceTab of the same kind keeps the id and changes the url', () => {
+    const reg = make();
+    const id = reg.createTab({ kind: 'editor', url: '/a/b.ts', preview: true })!;
+    let n = 0;
+    reg.onListChanged(() => n++);
+    expect(reg.replaceTab(id, { kind: 'editor', url: '/a/c.ts' }, undefined)).toBe(id);
+    expect(n).toBe(1);
+    expect(rev(reg, id)).toMatchObject({ url: '/a/c.ts', preview: true });
+  });
+
+  it('replaceTab of another kind swaps in place with one broadcast and persists no `replaces`', () => {
+    const store = memoryTabsStore();
+    const reg = make(store);
+    reg.createTab({ kind: 'dashboard' }); // 0
+    const p = reg.createTab({ kind: 'editor', url: '/a/b.ts', preview: true })!; // 1
+    reg.createTab({ kind: 'dashboard' }); // 2
+    reg.reorder(['0', p, '2']);
+    let n = 0;
+    let broadcast: ReturnType<SessionRegistry['tabs']> = [];
+    reg.onListChanged(() => {
+      n++;
+      broadcast = reg.tabs();
+    });
+    const next = reg.replaceTab(p, { kind: 'review', url: 'changes:/a' }, undefined)!;
+    expect(next).not.toBe(p);
+    expect(n).toBe(1);
+    expect(reg.ids()).toEqual(['0', next, '2']);
+    expect(rev(reg, p)).toBeUndefined();
+    expect(broadcast.find((x) => x.id === next)).toMatchObject({
+      kind: 'review',
+      url: 'changes:/a',
+      preview: true,
+      replaces: p,
+    });
+    // The hint rides the swap's own broadcast only.
+    expect(rev(reg, next)).not.toHaveProperty('replaces');
+    const saved = store.snapshot().find((t) => t.id === next)!;
+    expect(saved).toMatchObject({ preview: true });
+    expect(saved).not.toHaveProperty('replaces');
+    expect(store.snapshot().some((t) => t.id === p)).toBe(false);
+  });
+
+  it('replaceTab on a pinned, absent or other-window tab opens a new preview and leaves it', () => {
+    const reg = make();
+    const pinned = reg.createTab({ kind: 'editor', url: '/a/b.ts' })!;
+    const n1 = reg.replaceTab(pinned, { kind: 'editor', url: '/a/c.ts' }, undefined)!;
+    expect(n1).not.toBe(pinned);
+    expect(rev(reg, pinned)).toMatchObject({ url: '/a/b.ts' });
+    expect(rev(reg, n1)).toMatchObject({ url: '/a/c.ts', preview: true });
+    const n2 = reg.replaceTab('99', { kind: 'editor', url: '/a/d.ts' }, undefined)!;
+    expect(rev(reg, n2)).toMatchObject({ url: '/a/d.ts', preview: true });
+    const prev = reg.createTab({ kind: 'editor', url: '/a/e.ts', preview: true })!;
+    const n3 = reg.replaceTab(prev, { kind: 'editor', url: '/a/f.ts' }, W)!;
+    expect(n3).not.toBe(prev);
+    expect(rev(reg, prev)).toMatchObject({ url: '/a/e.ts' });
+    expect(rev(reg, n3)).toMatchObject({ url: '/a/f.ts', window: W, preview: true });
+  });
+
+  it('replaceTab answers the holder of a review url, and refuses a bad spec', () => {
+    const reg = make();
+    const held = reg.createTab({ kind: 'review', url: 'changes:/a' })!;
+    const p = reg.createTab({ kind: 'editor', url: '/a/b.ts', preview: true })!;
+    let n = 0;
+    reg.onListChanged(() => n++);
+    expect(reg.replaceTab(p, { kind: 'review', url: 'changes:/a' }, undefined)).toBe(held);
+    expect(n).toBe(0);
+    expect(rev(reg, p)).toBeDefined();
+    expect(reg.replaceTab(p, { kind: 'editor', url: 'relative.ts' }, undefined)).toBeNull();
+    expect(reg.replaceTab(p, { kind: 'review', url: 'nope' }, undefined)).toBeNull();
+    expect(
+      reg.replaceTab(p, { kind: 'review', url: 'changes-file:%2Fa:x\ud800' }, undefined),
+    ).toBeNull();
+  });
+
+  it('updateTab ignores a per-file review url with a lone surrogate', () => {
+    const reg = make();
+    const id = reg.createTab({ kind: 'review', url: 'changes:/a' })!;
+    expect(reg.updateTab(id, { url: 'changes-file:%2Fa:x\ud800' })).toBe(true);
+    expect(rev(reg, id)).toMatchObject({ url: 'changes:/a' });
+  });
+
+  it('a window-owned preview of another kind keeps its window', () => {
+    const reg = make();
+    const p = reg.createTab({ kind: 'editor', url: '/a/b.ts', preview: true, window: W })!;
+    let broadcast: ReturnType<SessionRegistry['tabs']> = [];
+    reg.onListChanged(() => {
+      broadcast = reg.tabs();
+    });
+    const next = reg.replaceTab(p, { kind: 'review', url: 'staged:/a' }, W)!;
+    expect(broadcast.find((x) => x.id === next)).toMatchObject({ window: W, replaces: p });
+    expect(rev(reg, next)).toMatchObject({ window: W });
+  });
+
+  it('restores a persisted preview, and drops the flag on a web entry', () => {
+    const reg = make(
+      memoryTabsStore([
+        { id: '0', kind: 'editor', url: '/a/b.ts', preview: true },
+        { id: '1', kind: 'web', url: 'https://sb.local' },
+      ]),
+    );
+    expect(rev(reg, '0')).toMatchObject({ preview: true });
+    expect(rev(reg, '1')).not.toHaveProperty('preview');
+  });
+
+  it('the file store keeps preview only on a review and a url-bearing editor', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'palmux-preview-'));
+    writeFileSync(
+      join(dir, 'tabs.json'),
+      JSON.stringify([
+        { id: '0', kind: 'web', url: 'https://sb.local', preview: true },
+        { id: '1', kind: 'editor', preview: true },
+        { id: '2', kind: 'editor', url: '/a/b.ts', preview: true },
+        { id: '3', kind: 'review', url: 'changes:/a', preview: 'yes' },
+        { id: '4', kind: 'review', url: 'changes:/a', preview: true },
+      ]),
+    );
+    const loaded = createTabsStore(dir).load();
+    expect(loaded.map((t) => [t.id, t.preview === true])).toEqual([
+      ['0', false],
+      ['1', false],
+      ['2', true],
+      ['3', false],
+      ['4', true],
+    ]);
   });
 });

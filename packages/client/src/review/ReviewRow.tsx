@@ -17,7 +17,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react';
-import type { ScmEntry, ScmGroup } from '@palmux/shared';
+import { SCM_STATUS_LABEL, type ScmGroup } from '@palmux/shared';
 import { pressMove } from '../panes/press';
 import { Button, IconButton, type RowComponentProps } from '../ui';
 import { Icon } from '../ui/icons';
@@ -78,20 +78,13 @@ export interface ReviewRowProps {
   onToggle: (path: string) => void;
   onExpand: (path: string, gap: GapRow, direction: GapDirection) => void;
   onOpenFile: (path: string) => void;
+  /** How many comments each file holds; a file header with some offers to copy them. */
+  commentCounts: ReadonlyMap<string, number>;
+  onCopyFileComments: (path: string) => void;
   onRetry: (path: string) => void;
   /** Report a row's laid-out height; returns the way to stop. */
   observe: (element: HTMLElement) => () => void;
 }
-
-const STATUS_LABEL: Record<ScmEntry['status'], string> = {
-  M: 'Modified',
-  A: 'Added',
-  D: 'Deleted',
-  R: 'Renamed',
-  T: 'Type changed',
-  U: 'Conflicted',
-  '?': 'Untracked',
-};
 
 const splitPath = (path: string): { dir: string; name: string } => {
   const cut = path.lastIndexOf('/');
@@ -212,14 +205,17 @@ const RowButton = ({ compact, variant, children, ...props }: RowButtonProps) =>
     </Button>
   );
 
-const ReviewButton = ({
+/** Reviewed or Unstage for one file. The file header and the current-file bar draw the same button over the same `writes`, so both show one running state. */
+export const ReviewButton = ({
   path,
   writes,
   compact,
+  testId,
 }: {
   path: string;
   writes: ReviewWrites;
   compact: boolean;
+  testId?: string;
 }) => {
   const { blocker, busy } = writes.stateOf(path);
   const staged = writes.group === 'staged';
@@ -235,7 +231,7 @@ const ReviewButton = ({
           : 'Stage this file as you saw it, and go to the next')
       }
       data-reason={blocker ?? undefined}
-      data-testid={staged ? 'review-file-unstage' : 'review-file-reviewed'}
+      data-testid={testId ?? (staged ? 'review-file-unstage' : 'review-file-reviewed')}
       {...pressMove(() => writes.run(path))}
     >
       <Icon name={staged ? 'undo' : 'check'} size={14} />
@@ -249,22 +245,28 @@ const FileHeader = ({
   repo,
   compact,
   writes,
+  commentCount,
   onToggle,
   onOpenFile,
+  onCopyFileComments,
 }: {
   row: FileHeaderRow;
   repo: string;
   compact: boolean;
   writes: ReviewWrites;
+  commentCount: number;
   onToggle: (path: string) => void;
   onOpenFile: (path: string) => void;
+  onCopyFileComments: (path: string) => void;
 }) => {
   const { dir, name } = splitPath(row.path);
   const renamed = row.oldPath !== undefined && row.oldPath !== row.path;
-  const label = STATUS_LABEL[row.status];
+  const label = SCM_STATUS_LABEL[row.status];
   const openFile = pressMove(() =>
     onOpenFile(repo === '/' ? `/${row.path}` : `${repo}/${row.path}`),
   );
+  const copyLabel = `Copy comments for ${row.path}`;
+  const copyComments = pressMove(() => onCopyFileComments(row.path));
   return (
     <div className="rv-sticky rv-head-inner">
       <button
@@ -300,6 +302,27 @@ const FileHeader = ({
         </span>
       )}
       <ReviewButton path={row.path} writes={writes} compact={compact} />
+      {commentCount > 0 &&
+        (compact ? (
+          <RowButton
+            compact
+            aria-label={copyLabel}
+            title={copyLabel}
+            data-testid="review-copy-file-comments"
+            {...copyComments}
+          >
+            <Icon name="copy" size={14} />
+          </RowButton>
+        ) : (
+          <IconButton
+            label={copyLabel}
+            size="sm"
+            data-testid="review-copy-file-comments"
+            {...copyComments}
+          >
+            <Icon name="copy" size={14} />
+          </IconButton>
+        ))}
       {compact ? (
         <RowButton
           compact
@@ -669,6 +692,8 @@ export const ReviewRow = ({
   onToggle,
   onExpand,
   onOpenFile,
+  commentCounts,
+  onCopyFileComments,
   onRetry,
   observe,
 }: RowComponentProps<ReviewRowProps>) => {
@@ -721,8 +746,10 @@ export const ReviewRow = ({
           repo={repo}
           compact={compact}
           writes={writes}
+          commentCount={commentCounts.get(row.path) ?? 0}
           onToggle={onToggle}
           onOpenFile={onOpenFile}
+          onCopyFileComments={onCopyFileComments}
         />
       )}
       {row.type === 'notice' && (

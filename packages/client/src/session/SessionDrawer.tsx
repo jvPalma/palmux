@@ -942,8 +942,9 @@ export const SessionDrawer = ({
         style={Object.keys(rowStyle).length ? rowStyle : undefined}
       >
         <button
-          className="drawer-session"
+          className={`drawer-session${tab.preview ? ' preview' : ''}`}
           data-testid={`drawer-session-${tab.id}`}
+          aria-label={tab.preview ? `${displayTitle(tab)}, preview` : undefined}
           aria-current={item.active ? 'true' : undefined}
           onKeyDown={rowKeyDown(key)}
           {...rowProps(key)}

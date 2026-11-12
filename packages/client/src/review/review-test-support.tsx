@@ -421,9 +421,10 @@ export function mountReview(options: MountOptions = {}) {
     scmStatusStore.setActiveRepo(options.active ?? REPO);
     commentsStore.setActiveRepo(options.active ?? REPO);
   }
+  let current = options.tab ?? tab();
   const element = (visible: boolean) => (
     <Harness host={host}>
-      <ReviewPane tab={options.tab ?? tab()} visible={visible} focused />
+      <ReviewPane tab={current} visible={visible} focused />
     </Harness>
   );
   const result = render(element(options.visible ?? true));
@@ -432,6 +433,11 @@ export function mountReview(options: MountOptions = {}) {
     opened,
     ...result,
     show: (visible: boolean) => result.rerender(element(visible)),
+    /** The tab as the next broadcast shows it (a single-file review moved to another file). */
+    setTab: (next: TabMeta) => {
+      current = next;
+      result.rerender(element(true));
+    },
   };
 }
 

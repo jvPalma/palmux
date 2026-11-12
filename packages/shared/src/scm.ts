@@ -94,9 +94,67 @@ export interface ScmError {
 }
 
 export interface ScmWriteResult {
-  receiptId: string;
+  /** null when an Undo leaves nothing to redo (a discard's Undo). */
+  receiptId: string | null;
   status: 'staged' | 'unstaged' | 'restored';
 }
+
+/** Why a batch stage, unstage or discard left a path alone. */
+export type ScmSkipReason =
+  | 'converted'
+  | 'unmerged'
+  | 'submodule'
+  | 'nested-repo'
+  | 'gone'
+  | 'changed'
+  | 'symlink'
+  | 'special'
+  | 'intent-to-add'
+  | 'rename'
+  | 'failed';
+
+export interface ScmSkip {
+  path: string;
+  reason: ScmSkipReason;
+}
+
+/** The answer of `/scm/stage-paths`, `/scm/unstage-paths` and `/scm/discard`. */
+export interface ScmBatchResult {
+  /** null when nothing changed. */
+  receiptId: string | null;
+  status: 'staged' | 'unstaged' | 'discarded';
+  done: string[];
+  skipped: ScmSkip[];
+}
+
+/** The most paths one batch request may name. */
+export const SCM_BATCH_LIMIT = 5000;
+
+/** What the client says of each skip reason. */
+/** The word for each status letter: a list row's title and the review's header. */
+export const SCM_STATUS_LABEL: Record<ScmEntry['status'], string> = {
+  M: 'Modified',
+  A: 'Added',
+  D: 'Deleted',
+  R: 'Renamed',
+  T: 'Type changed',
+  U: 'Conflicted',
+  '?': 'Untracked',
+};
+
+export const SCM_SKIP_LABEL: Record<ScmSkipReason, string> = {
+  converted: 'needs a git filter',
+  unmerged: 'unmerged',
+  submodule: 'a submodule',
+  'nested-repo': 'a nested repository',
+  gone: 'no longer changed',
+  changed: 'changed since you confirmed',
+  symlink: 'a symbolic link',
+  special: 'not a regular file',
+  'intent-to-add': 'added with intent to add',
+  rename: 'a rename',
+  failed: 'could not be written',
+};
 
 export function isScmGroup(v: unknown): v is ScmGroup {
   return v === 'staged' || v === 'changes';
@@ -111,12 +169,49 @@ export function reviewUrl(group: ScmGroup, top: string): string {
   return `${group}:${top}`;
 }
 
-/** Inverse of `reviewUrl`; null for anything that is not a group prefix followed by an absolute path. */
-export function parseReviewUrl(url: string): { group: ScmGroup; top: string } | null {
+/** The `url` of a single-file review: `<group>-file:<enc(top)>:<enc(path)>`. */
+export function fileReviewUrl(group: ScmGroup, top: string, path: string): string {
+  return `${group}-file:${encodeURIComponent(top)}:${encodeURIComponent(path)}`;
+}
+
+/** The rules of the server's `checkRelPath`: a relative path with no empty, `.`, `..` or `.git` component. */
+export function isReviewFilePath(path: string): boolean {
+  if (path.trim() === '' || path.includes('\0') || path.startsWith('/')) return false;
+  return path
+    .split('/')
+    .every((c) => c !== '' && c !== '.' && c !== '..' && c.toLowerCase() !== '.git');
+}
+
+/** Ill-formed UTF-16: under the `u` flag a surrogate pair is one code point, so only a lone half matches. */
+const LONE_SURROGATE = /\p{Surrogate}/u;
+
+/**
+ * Inverse of `reviewUrl` and `fileReviewUrl`; null for anything else. `file` is set only for the
+ * per-file form.
+ */
+export function parseReviewUrl(url: string): { group: ScmGroup; top: string; file?: string } | null {
   const colon = url.indexOf(':');
   if (colon < 0) return null;
-  const group = url.slice(0, colon);
-  const top = url.slice(colon + 1);
-  if (!isScmGroup(group) || !top.startsWith('/')) return null;
-  return { group, top };
+  const prefix = url.slice(0, colon);
+  const rest = url.slice(colon + 1);
+  if (prefix.endsWith('-file')) {
+    const group = prefix.slice(0, -5);
+    if (!isScmGroup(group)) return null;
+    const sep = rest.indexOf(':');
+    if (sep < 0) return null;
+    let top: string;
+    let file: string;
+    try {
+      top = decodeURIComponent(rest.slice(0, sep));
+      file = decodeURIComponent(rest.slice(sep + 1));
+    } catch {
+      return null;
+    }
+    // A raw lone surrogate decodes untouched, and `fileReviewUrl` could not encode it back.
+    if (LONE_SURROGATE.test(top) || LONE_SURROGATE.test(file)) return null;
+    if (!top.startsWith('/') || !isReviewFilePath(file)) return null;
+    return { group, top, file };
+  }
+  if (!isScmGroup(prefix) || !rest.startsWith('/')) return null;
+  return { group: prefix, top: rest };
 }

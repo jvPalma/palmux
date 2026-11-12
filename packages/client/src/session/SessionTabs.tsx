@@ -12,7 +12,6 @@
 // callbacks; the group model + view state live in App.
 
 import {
-  Fragment,
   memo,
   useEffect,
   useRef,
@@ -66,6 +65,8 @@ interface SessionTabsProps {
   /** Chrome's bulk closes ("other tabs" / "to the right") behind ONE confirm. */
   onCloseMany?: ((ids: string[]) => void) | undefined;
   onRename: (id: string, name: string) => void;
+  /** Keep a preview tab open (pin it). */
+  onPin?: ((id: string) => void) | undefined;
   onRecolor: (id: string, color: string) => void;
   /** Desktop only: move this tab into a new pane beside its own (`row` = to the right, `column` = below). */
   onSplit?: ((id: string, orientation: 'row' | 'column') => void) | undefined;
@@ -164,39 +165,30 @@ export interface TabGrouping {
   onMoveGroup?: ((gid: string, index: number, anchor?: GroupEdge) => void) | undefined;
 }
 
-/** The 16 ANSI swatches split into the two labeled picker rows. */
-const SWATCH_ROWS: { label: string; colors: typeof TAB_COLORS }[] = [
-  { label: 'normal', colors: TAB_COLORS.slice(0, 8) },
-  { label: 'bright', colors: TAB_COLORS.slice(8, 16) },
-];
-
 interface SwatchRowsProps {
-  /** Testid prefix, e.g. `menu-color` → `menu-color-ansi3`. */
+  /** Testid prefix, e.g. `menu-color` → `menu-color-light-blue`. */
   testidPrefix: string;
-  /** Currently selected slot (resolved from a slot OR legacy color name). */
+  /** Currently selected slot (resolved from a palette OR older color name). */
   selectedSlot: string | undefined;
   onPick: (name: string) => void;
 }
 
-/** Two labeled rows of ANSI swatches, shared by the tab and group pickers. */
-export const SwatchRows = ({ testidPrefix, selectedSlot, onPick }: SwatchRowsProps) =>
-  SWATCH_ROWS.map((row) => (
-    <Fragment key={row.label}>
-      <span className="swatch-row-label">{row.label}</span>
-      <div className="swatch-row">
-        {row.colors.map((c) => (
-          <button
-            key={c.name}
-            className={`tab-swatch${selectedSlot === c.name ? ' selected' : ''}`}
-            style={{ background: c.value }}
-            aria-label={`Color ${c.name}`}
-            data-testid={`${testidPrefix}-${c.name}`}
-            onClick={() => onPick(c.name)}
-          />
-        ))}
-      </div>
-    </Fragment>
-  ));
+/** One row of the palette's swatches, shared by the tab and group pickers. */
+export const SwatchRows = ({ testidPrefix, selectedSlot, onPick }: SwatchRowsProps) => (
+  <div className="swatch-row">
+    {TAB_COLORS.map((c) => (
+      <button
+        key={c.name}
+        className={`tab-swatch${selectedSlot === c.name ? ' selected' : ''}`}
+        style={{ background: c.value }}
+        aria-label={`Color ${c.name}`}
+        title={c.name}
+        data-testid={`${testidPrefix}-${c.name}`}
+        onClick={() => onPick(c.name)}
+      />
+    ))}
+  </div>
+);
 
 export const SessionTabs = memo(function SessionTabs({
   paneId,
@@ -210,6 +202,7 @@ export const SessionTabs = memo(function SessionTabs({
   onClose,
   onCloseMany,
   onRename,
+  onPin,
   onRecolor,
   onSplit,
   onPopout,
@@ -697,11 +690,13 @@ export const SessionTabs = memo(function SessionTabs({
     return (
       <div
         key={tab.id}
-        className={`ctab${active ? ' active' : ''}${tab.groupId ? ' grouped' : ''}${dropMark}${joinArmedIndex === tabIndex ? ' join-armed' : ''}`}
+        className={`ctab${active ? ' active' : ''}${tab.groupId ? ' grouped' : ''}${tab.preview ? ' preview' : ''}${dropMark}${joinArmedIndex === tabIndex ? ' join-armed' : ''}`}
         style={Object.keys(style).length ? style : undefined}
         data-testid={`session-tab-${tab.id}`}
         role="tab"
         aria-selected={active}
+        title={tab.preview ? `${displayTitle(tab)} — preview (double-click to keep open)` : undefined}
+        aria-label={tab.preview ? `${displayTitle(tab)}, preview` : undefined}
         draggable={!!onDrag}
         onDragStart={(e) => {
           e.dataTransfer.setData(TAB_DND_TYPE, tab.id);
@@ -745,7 +740,7 @@ export const SessionTabs = memo(function SessionTabs({
           if ((e.target as HTMLElement).closest('.ctab-kill')) return;
           onSwitch(tab.id);
         }}
-        onDoubleClick={() => startRename(tab)}
+        onDoubleClick={() => (tab.preview ? onPin?.(tab.id) : startRename(tab))}
         onContextMenu={(e) => openMenu(e, tab.id)}
       >
         {accent && <span className="ctab-dot" aria-hidden="true" />}
@@ -848,6 +843,19 @@ export const SessionTabs = memo(function SessionTabs({
           style={{ left: menu.x, top: menu.y }}
           onPointerDown={(e) => e.stopPropagation()}
         >
+          {menuTab.preview && (
+            <button
+              className="tab-menu-item"
+              data-testid="menu-keep-open"
+              onClick={() => {
+                setMenu(null);
+                onPin?.(menuTab.id);
+              }}
+            >
+              <Icon name="pin" />
+              Keep open
+            </button>
+          )}
           <button
             className="tab-menu-item"
             data-testid="menu-rename"

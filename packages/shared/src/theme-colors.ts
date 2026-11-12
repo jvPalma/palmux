@@ -310,6 +310,137 @@ export function deriveAccents(p: ColorProfile): Record<AccentName, number> {
   return { ...base, ...p.accents };
 }
 
+// ── Tab colours ───────────────────────────────────────────────────────────────
+
+/** The tab/group colour names, in picker order. Persisted on the wire as-is. */
+export const TAB_COLOR_NAMES = [
+  'white',
+  'gray',
+  'pink',
+  'magenta',
+  'purple',
+  'blue',
+  'light-blue',
+  'cyan',
+  'green',
+  'lime',
+  'yellow',
+  'orange',
+  'red',
+  'crimson-red',
+  'black',
+] as const;
+export type TabColorName = (typeof TAB_COLOR_NAMES)[number];
+
+const toHsl = (n: number): [number, number, number] => {
+  const [r, g, b] = toRgb(n).map((v) => v / 255) as [number, number, number];
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  if (max === min) return [0, 0, l];
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  const h =
+    max === r ? (g - b) / d + (g < b ? 6 : 0) : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [h * 60, s, l];
+};
+
+const fromHsl = (h: number, s: number, l: number): number => {
+  const hh = ((h % 360) + 360) % 360;
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((hh / 60) % 2) - 1));
+  const m = l - c / 2;
+  const [r, g, b] =
+    hh < 60
+      ? [c, x, 0]
+      : hh < 120
+        ? [x, c, 0]
+        : hh < 180
+          ? [0, c, x]
+          : hh < 240
+            ? [0, x, c]
+            : hh < 300
+              ? [x, 0, c]
+              : [c, 0, x];
+  return toNum((r + m) * 255, (g + m) * 255, (b + m) * 255);
+};
+
+/** `t` of the way from `a` to `b` in HSL, hue along the shorter arc. An RGB mix
+ *  of two saturated hues goes grey in the middle; this keeps the saturation. */
+const hueBetween = (a: number, b: number, t: number): number => {
+  const [h1, s1, l1] = toHsl(a);
+  const [h2, s2, l2] = toHsl(b);
+  let dh = h2 - h1;
+  if (dh > 180) dh -= 360;
+  if (dh < -180) dh += 360;
+  return fromHsl(h1 + dh * t, s1 + (s2 - s1) * t, l1 + (l2 - l1) * t);
+};
+
+const lighten = (n: number, dl: number): number => {
+  const [h, s, l] = toHsl(n);
+  return fromHsl(h, s, Math.max(0, Math.min(1, l + dl)));
+};
+
+/** Each chromatic ANSI anchor's hue band and the hue it is turned to when a
+ *  theme's slot falls outside it. Wide on purpose: Gruvbox's teal-ish blue
+ *  (183) and green-ish aqua (122) are that theme's character and stay. Only a
+ *  slot that is another hue altogether moves (Ayu Dark's magenta is orange, 50,
+ *  which made purple green and pink orange). */
+const ANCHOR_BANDS = {
+  red: [320, 30, 0],
+  yellow: [25, 75, 50],
+  green: [55, 170, 120],
+  cyan: [115, 215, 180],
+  blue: [175, 275, 220],
+  magenta: [240, 350, 300],
+} as const;
+
+const inBand = (n: number, band: readonly [number, number, number]): number => {
+  const [h, s, l] = toHsl(n);
+  const [from, to, canonical] = band;
+  const inside = from <= to ? h >= from && h <= to : h >= from || h <= to;
+  return s === 0 || inside ? n : fromHsl(canonical, s, l);
+};
+
+/**
+ * The fifteen tab colours of a profile. The eight ANSI hues are the theme's own
+ * slots 0–7 (no bright slot: many themes repeat the normal one there, so a
+ * bright swatch drew the same colour twice), each kept inside its hue band so a
+ * name never draws another hue. Gray is the midpoint of black and white,
+ * because slot 8 sits on slot 0 in several themes (Solarized). The other six sit
+ * between two anchors in HUE, with a lightness nudge where two of them share a
+ * neighbour (crimson darker, pink lighter). Where a theme's own slot is already
+ * the in-between hue (Catppuccin's magenta is pink) the two stay close: the
+ * anchors are the theme's, by choice.
+ */
+export function deriveTabColors(p: ColorProfile): Record<TabColorName, number> {
+  const a = p.ansi16;
+  const [black, white] = [a[0]!, a[7]!];
+  const red = inBand(a[1]!, ANCHOR_BANDS.red);
+  const green = inBand(a[2]!, ANCHOR_BANDS.green);
+  const yellow = inBand(a[3]!, ANCHOR_BANDS.yellow);
+  const blue = inBand(a[4]!, ANCHOR_BANDS.blue);
+  const magenta = inBand(a[5]!, ANCHOR_BANDS.magenta);
+  const cyan = inBand(a[6]!, ANCHOR_BANDS.cyan);
+  return {
+    white,
+    gray: mix(black, white, 0.5),
+    pink: lighten(hueBetween(magenta, red, 0.5), 0.1),
+    magenta,
+    purple: hueBetween(blue, magenta, 0.5),
+    blue,
+    'light-blue': lighten(hueBetween(blue, cyan, 0.5), 0.06),
+    cyan,
+    green,
+    lime: hueBetween(green, yellow, 0.5),
+    yellow,
+    orange: hueBetween(red, yellow, 0.5),
+    red,
+    'crimson-red': lighten(hueBetween(red, magenta, 0.2), -0.1),
+    black,
+  };
+}
+
 /**
  * The seven UI tokens. base/text come straight from bg/fg; surface (raised UI)
  * always moves TOWARD the fg for visible borders; mantle recesses; subtext dims

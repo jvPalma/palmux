@@ -10,8 +10,7 @@
 // grammar, an empty side and a side over the line cap never load it at all.
 
 import type { ScmFileSnapshot } from '@palmux/shared';
-import { languageOf } from '../panes/editor-language';
-import { splitLines } from './anchor';
+import { languageOf, splitLines } from '@palmux/shared';
 import type { DiffSide } from './rows';
 
 /** Above this a side stays plain; the 1 MB snapshot limit is already behind it. */

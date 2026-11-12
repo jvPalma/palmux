@@ -7,6 +7,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { act, fireEvent, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { parse, type Rule } from 'postcss';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -21,6 +22,7 @@ import {
   oldNumber,
   scrollTo,
   scroller,
+  setBodyWidth,
   settle,
   setup,
   snapshot,
@@ -1013,5 +1015,321 @@ describe('the soft keyboard after a comment', () => {
     await settle();
     await save();
     expect(kbd).toHaveFocus();
+  });
+});
+
+// ── Copy, Resolve and Clear all ──────────────────────────────────────────────
+
+describe('Copy comments, Resolve and Clear all', () => {
+  const writeText = vi.fn<(text: string) => Promise<void>>();
+  const deletes = () => server.requests('/scm/comments').filter((r) => r.method === 'DELETE');
+
+  beforeEach(() => {
+    writeText.mockReset();
+    writeText.mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    });
+    vi.stubGlobal('ClipboardItem', undefined);
+  });
+
+  /** Three comments in two files: two on a.ts, one on b.ts. */
+  async function openThree() {
+    server.comments = [
+      stored(42, 42),
+      stored(10, 11, { id: 'a2', body: 'second on a' }),
+      stored(5, 5, { id: 'b1', path: 'b.ts', body: 'only on b' }),
+    ];
+    server.rev = 3;
+    server.status[REPO] = statusBody({
+      changes: [entry('a.ts'), entry('b.ts')],
+    });
+    server.files['a.ts'] = editedAt('a.ts', 42, 50);
+    server.files['b.ts'] = editedAt('b.ts', 42, 50);
+    const pane = mountReview();
+    await screen.findByTestId('review-list');
+    await settle();
+    return pane;
+  }
+
+  /** The Clear all menu item empties the fake's list, which it does not do for `all=1` itself. */
+  const clearsOnAll = () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string, init?: RequestInit) => {
+        const u = new URL(url, 'http://palmux');
+        if (
+          u.pathname === '/scm/comments' &&
+          init?.method === 'DELETE' &&
+          u.searchParams.has('all')
+        ) {
+          server.comments = [];
+          server.rev++;
+        }
+        return server.fetch(url, init);
+      }),
+    );
+  };
+
+  const openMenu = async () => {
+    await userEvent.click(screen.getByTestId('review-view-options'));
+  };
+
+  describe('Copy from the review', () => {
+    it('is a labelled button on a desktop bar that copies the whole document', async () => {
+      const pane = await openThree();
+      const button = screen.getByTestId('review-copy-comments');
+      expect(button).toHaveAccessibleName('Copy comments');
+      expect(button).toBeEnabled();
+      await act(async () => {
+        fireEvent.click(button);
+      });
+      await settle();
+      expect(writeText).toHaveBeenCalledTimes(1);
+      const text = writeText.mock.calls[0]?.[0] ?? '';
+      expect(text).toMatch(/^# Review comments/);
+      expect(text).toContain('second on a');
+      expect(text).toContain('only on b');
+      expect(pane.toasts.map((t) => t.message)).toEqual(['Copied 3 comments']);
+    });
+
+    it('is disabled while the project has no comments', async () => {
+      await open();
+      expect(screen.getByTestId('review-copy-comments')).toBeDisabled();
+    });
+
+    it('says so when the clipboard refuses', async () => {
+      writeText.mockRejectedValue(new Error('denied'));
+      const exec = vi.fn(() => false);
+      Object.defineProperty(document, 'execCommand', {
+        value: exec,
+        configurable: true,
+      });
+      const pane = await openThree();
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('review-copy-comments'));
+      });
+      await settle();
+      expect(pane.toasts.map((t) => t.message)).toEqual(['Could not copy the comments']);
+    });
+
+    it('is an item of the View options menu on a narrow bar', async () => {
+      setBodyWidth(390);
+      const pane = await openThree();
+      expect(screen.queryByTestId('review-copy-comments')).toBeNull();
+      await openMenu();
+      await act(async () => {
+        await userEvent.click(screen.getByTestId('review-view-menu-copy-comments'));
+      });
+      await settle();
+      expect(writeText.mock.calls[0]?.[0]).toMatch(/^# Review comments/);
+      expect(pane.toasts.map((t) => t.message)).toEqual(['Copied 3 comments']);
+    });
+
+    it('is a disabled menu item on a narrow bar with no comments', async () => {
+      setBodyWidth(390);
+      await open();
+      await openMenu();
+      expect(screen.getByTestId('review-view-menu-copy-comments')).toHaveAttribute(
+        'aria-disabled',
+        'true',
+      );
+    });
+  });
+
+  describe('One file’s comments', () => {
+    it('has no button on a file without comments', async () => {
+      server.comments = [stored(42, 42)];
+      server.rev = 1;
+      server.status[REPO] = statusBody({
+        changes: [entry('a.ts'), entry('b.ts')],
+      });
+      server.files['a.ts'] = editedAt('a.ts', 42, 50);
+      server.files['b.ts'] = editedAt('b.ts', 42, 50);
+      mountReview();
+      await screen.findByTestId('review-list');
+      await settle();
+      const buttons = screen.getAllByTestId('review-copy-file-comments');
+      expect(buttons).toHaveLength(1);
+      expect(buttons[0]).toHaveAccessibleName('Copy comments for a.ts');
+    });
+
+    it('copies only that file’s section', async () => {
+      const pane = await openThree();
+      const button = screen.getByRole('button', {
+        name: 'Copy comments for a.ts',
+      });
+      await act(async () => {
+        fireEvent.click(button);
+      });
+      await settle();
+      const text = writeText.mock.calls[0]?.[0] ?? '';
+      expect(text).toMatch(/^# Review comments/);
+      expect(text).toContain('note on 42');
+      expect(text).toContain('second on a');
+      expect(text).not.toContain('only on b');
+      expect(pane.toasts.map((t) => t.message)).toEqual(['Copied 2 comments']);
+    });
+
+    it('is a compact row button on a phone', async () => {
+      document.documentElement.dataset['mobile'] = 'true';
+      try {
+        await openThree();
+        const button = screen.getByRole('button', {
+          name: 'Copy comments for b.ts',
+        });
+        expect(button).toHaveAttribute('data-testid', 'review-copy-file-comments');
+      } finally {
+        delete document.documentElement.dataset['mobile'];
+      }
+    });
+  });
+
+  describe('Resolve and undo', () => {
+    it('deletes without asking, and Undo stores the same comment again', async () => {
+      server.comments = [stored(42, 42)];
+      server.rev = 1;
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+      const original = stored(42, 42);
+      const pane = await open();
+      expect(screen.getByTestId('review-comment-resolve')).toHaveAccessibleName('Resolve');
+      fireEvent.click(screen.getByTestId('review-comment-resolve'));
+      await settle();
+      expect(confirm).not.toHaveBeenCalled();
+      expect(deletes()).toHaveLength(1);
+      expect(deletes()[0]?.query['id']).toBe('s42');
+      expect(screen.queryByTestId('review-comment')).toBeNull();
+      expect(pane.toasts.map((t) => t.message)).toEqual(['Comment resolved']);
+      expect(pane.toasts[0]?.action?.label).toBe('Undo');
+
+      await act(async () => {
+        pane.toasts[0]?.action?.onClick();
+      });
+      await settle();
+      expect(posts()).toHaveLength(1);
+      expect(posts()[0]?.body).toEqual({
+        path: 'a.ts',
+        version: 'worktree',
+        side: 'new',
+        start: 42,
+        end: 42,
+        lines: original.lines,
+        before: original.before,
+        after: original.after,
+        body: 'note on 42',
+      });
+      expect(screen.getByTestId('review-comment')).toHaveTextContent('note on 42');
+    });
+
+    it('Undo after the device moved to another project restores into the original one', async () => {
+      server.comments = [stored(42, 42)];
+      server.rev = 1;
+      server.status[OTHER] = statusBody({ changes: [entry('a.ts')] }, OTHER);
+      const pane = await open();
+      fireEvent.click(screen.getByTestId('review-comment-resolve'));
+      await settle();
+      act(() => {
+        scmStatusStore.setActiveRepo(OTHER);
+        commentsStore.setActiveRepo(OTHER);
+      });
+      await settle();
+      await act(async () => {
+        pane.toasts[0]?.action?.onClick();
+      });
+      await settle();
+      expect(posts()).toHaveLength(1);
+      expect(posts()[0]?.query['repo']).toBe(REPO);
+      expect(posts()[0]?.body).toMatchObject({ path: 'a.ts', start: 42, body: 'note on 42' });
+    });
+
+    it('says so when the delete fails, and offers no Undo', async () => {
+      server.comments = [stored(42, 42)];
+      server.rev = 1;
+      const pane = await open();
+      server.commentRefusals.push({
+        status: 500,
+        body: { error: 'source control request failed' },
+      });
+      fireEvent.click(screen.getByTestId('review-comment-resolve'));
+      await settle();
+      expect(screen.getByTestId('review-notice')).toHaveTextContent(
+        'source control request failed',
+      );
+      expect(pane.toasts).toEqual([]);
+      expect(screen.getByTestId('review-comment')).toBeInTheDocument();
+    });
+
+    it('is not offered on a draft, and Delete still asks', async () => {
+      server.comments = [stored(42, 42)];
+      server.rev = 1;
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+      await open();
+      fireEvent.click(screen.getByTestId('review-comment-edit'));
+      expect(screen.queryByTestId('review-comment-resolve')).toBeNull();
+      fireEvent.click(screen.getByTestId('review-comment-cancel'));
+      fireEvent.click(screen.getByTestId('review-comment-delete'));
+      expect(confirm).toHaveBeenCalledWith('Delete this comment?');
+    });
+  });
+
+  describe('Clear all', () => {
+    it('asks naming the count, then deletes every comment', async () => {
+      clearsOnAll();
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+      setBodyWidth(390);
+      await openThree();
+      await openMenu();
+      await act(async () => {
+        await userEvent.click(screen.getByTestId('review-view-menu-clear-comments'));
+      });
+      await settle();
+      expect(confirm).toHaveBeenCalledWith('Delete all 3 comments in app? This cannot be undone.');
+      expect(deletes()).toHaveLength(1);
+      expect(deletes()[0]?.query['all']).toBe('1');
+      expect(screen.queryByTestId('review-comment')).toBeNull();
+    });
+
+    it('deletes nothing when cancelled', async () => {
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+      setBodyWidth(390);
+      await openThree();
+      await openMenu();
+      await act(async () => {
+        await userEvent.click(screen.getByTestId('review-view-menu-clear-comments'));
+      });
+      await settle();
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(deletes()).toHaveLength(0);
+      expect(server.comments).toHaveLength(3);
+    });
+
+    it('is a disabled item with no comments', async () => {
+      setBodyWidth(390);
+      await open();
+      await openMenu();
+      expect(screen.getByTestId('review-view-menu-clear-comments')).toHaveAttribute(
+        'aria-disabled',
+        'true',
+      );
+    });
+
+    it('says so when the delete fails', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      setBodyWidth(390);
+      await openThree();
+      server.commentRefusals.push({
+        status: 500,
+        body: { error: 'source control request failed' },
+      });
+      await openMenu();
+      await act(async () => {
+        await userEvent.click(screen.getByTestId('review-view-menu-clear-comments'));
+      });
+      await settle();
+      expect(screen.getByTestId('review-notice')).toHaveTextContent(
+        'source control request failed',
+      );
+    });
   });
 });

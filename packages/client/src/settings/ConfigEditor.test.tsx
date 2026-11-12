@@ -36,6 +36,7 @@ const monacoFake = vi.hoisted(() => {
     host: null as HTMLElement | null,
     undoStack: [] as string[],
     cursor: { line: 1, column: 1 },
+    createOpts: null as Record<string, unknown> | null,
   };
   const model = {
     onDidChangeContent: (cb: () => void) => state.listeners.push(cb),
@@ -62,8 +63,9 @@ const monacoFake = vi.hoisted(() => {
   };
   const monaco = {
     editor: {
-      create: (host: HTMLElement, opts: { value: string }) => {
+      create: (host: HTMLElement, opts: { value: string } & Record<string, unknown>) => {
         state.created += 1;
+        state.createOpts = opts;
         state.host = host;
         state.value = opts.value;
         state.listeners = [];
@@ -328,6 +330,12 @@ describe('an initial Form → Raw', () => {
     act(() => monacoFake.type('{"port": 44041}'));
     expect(screen.getByTestId('config-save')).toBeEnabled();
     expect(monacoFake.state.created).toBe(1);
+  });
+
+  it('keeps wrapping config.json, whatever editorWrap says', async () => {
+    mount('form');
+    await loaded();
+    expect(monacoFake.state.createOpts).toMatchObject({ wordWrap: 'on' });
   });
 
   it('works when Raw is chosen before the file has arrived', async () => {

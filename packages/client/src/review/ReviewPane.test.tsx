@@ -13,6 +13,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import userEvent from '@testing-library/user-event';
 import { useMemo, useState, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { fileReviewUrl } from '@palmux/shared';
 import type {
   ColorProfile,
   ScmEntry,
@@ -33,7 +34,13 @@ import {
 } from './review-host';
 import { ReviewPane } from './ReviewPane';
 import { reviewApiFor } from './review-registry';
-import { browserScrolling } from './review-test-support';
+import {
+  browserScrolling,
+  mountReview,
+  setup as setupWrites,
+  teardown as teardownWrites,
+  type FakeServer,
+} from './review-test-support';
 
 // ── Monaco ──────────────────────────────────────────────────────────────────
 const monaco = vi.hoisted(() => ({
@@ -339,6 +346,8 @@ function mount(options: Options = {}) {
     spy,
     ...result,
     show: (visible: boolean, tick = 0) => result.rerender(element(visible, tick)),
+    /** The tab as the next broadcast shows it. */
+    setTab: (next: TabMeta) => result.rerender(element(true, 0, next)),
   };
 }
 
@@ -743,6 +752,9 @@ describe('side-by-side and unified layouts', () => {
         // The code size: a minus and a plus, neither of which closes the menu.
         { label: 'Smaller code', role: 'menuitem', checked: false, disabled: false },
         { label: 'Larger code', role: 'menuitem', checked: false, disabled: false },
+        // The project has no comments here, so neither comment command can run.
+        { label: 'Copy comments', role: 'menuitem', checked: false, disabled: true },
+        { label: 'Clear all comments', role: 'menuitem', checked: false, disabled: true },
       ]);
       await userEvent.click(screen.getByTestId('review-view-menu-algorithm-patience'));
       await settle();
@@ -2195,6 +2207,29 @@ describe('a review opened for a file scrolls to it', () => {
       }
     });
 
+    it('toggleWrap flips wrap in a unified review and writes nothing in side-by-side', async () => {
+      bigGroup();
+      const pane = mount({ host: { layout: 'unified', wrap: true } });
+      await screen.findByTestId('review-list');
+      await settleView();
+      let answer: unknown;
+      act(() => {
+        answer = reviewApiFor('7')?.toggleWrap();
+      });
+      expect(answer).toBe('off');
+      expect(pane.spy.preferences).toContainEqual({ scmWrap: false });
+      cleanup();
+      bigGroup();
+      const split = mount({ host: { layout: 'split' } });
+      await screen.findByTestId('review-list');
+      await settleView();
+      act(() => {
+        answer = reviewApiFor('7')?.toggleWrap();
+      });
+      expect(answer).toBe('split');
+      expect(split.spy.preferences).toEqual([]);
+    });
+
     it('steps to the next and previous file’s header from there', async () => {
       bigGroup();
       const pane = mount({ visible: false });
@@ -2560,5 +2595,243 @@ describe('the code font size', () => {
     await settle();
     // Not 61, and not 20: an estimate at the new size, until the browser measures again.
     expect(gap()).toBe(18);
+  });
+});
+
+// ── A single-file review ─────────────────────────────────────────────────────
+
+describe('A single-file review', () => {
+  const group = (count: number) => Array.from({ length: count }, (_, i) => `f${i + 1}.ts`);
+  const fileTab = (path: string, preview = false): TabMeta => ({
+    ...tab(fileReviewUrl('changes', REPO, path)),
+    ...(preview ? { preview: true as const } : {}),
+  });
+  const position = () => screen.getByTestId('review-current').textContent;
+
+  async function openFile(path: string, count = 53) {
+    server.status[REPO] = statusBody({ changes: group(count).map((p) => entry(p)) });
+    for (const p of group(count)) server.files[p] = snapshot(p);
+    const pane = mount({ tab: fileTab(path) });
+    await screen.findByTestId('review-list');
+    await settle();
+    return pane;
+  }
+
+  it('lists one file of 53, fetches one, and reports position 3 of 53', async () => {
+    await openFile('f3.ts');
+    expect(paths()).toEqual(['f3.ts']);
+    expect(server.requests.map((r) => r.path)).toEqual(['f3.ts']);
+    expect(position()).toContain('f3.ts');
+    expect(position()).toContain('3 / 53');
+  });
+
+  it('swaps the rows when the url moves to another file, with ONE mount', async () => {
+    const pane = await openFile('f3.ts', 6);
+    const frame = screen.getByTestId('review-pane-7');
+    pane.setTab(fileTab('f4.ts'));
+    await settle();
+    expect(paths()).toEqual(['f4.ts']);
+    expect(screen.getByTestId('review-pane-7')).toBe(frame);
+    expect(position()).toContain('4 / 6');
+    // The model is the group's: f3 stays loaded and is not asked for again.
+    expect(server.requests.filter((r) => r.path === 'f3.ts')).toHaveLength(1);
+  });
+
+  it('keeps the one file and counts one more when a file joins the group', async () => {
+    await openFile('f3.ts', 6);
+    server.status[REPO] = statusBody({
+      changes: [...group(6), 'g.ts'].map((p) => entry(p)),
+      attrEpoch: 'e1',
+    });
+    scmStatusStore.refresh();
+    await settle();
+    expect(paths()).toEqual(['f3.ts']);
+    expect(position()).toContain('3 / 7');
+  });
+
+  it('lands on the new file header after a file change', async () => {
+    const pane = await openFile('f3.ts', 6);
+    scrollTo(5);
+    pane.setTab(fileTab('f4.ts'));
+    await settle();
+    expect(scroller().scrollTop).toBe(offsetOf(fileRow('f4.ts')));
+  });
+
+  it('says so, with Open review, when the file is no longer in the group', async () => {
+    const pane = await openFile('f3.ts', 6);
+    server.status[REPO] = statusBody({
+      changes: group(6)
+        .filter((p) => p !== 'f3.ts')
+        .map((p) => entry(p)),
+      attrEpoch: 'e1',
+    });
+    scmStatusStore.refresh();
+    await settle();
+    expect(screen.getByTestId('review-message').textContent).toBe('No longer changed');
+    expect(screen.getByTestId('rv-gone-open-review')).toBeInTheDocument();
+    // The next url clears it.
+    pane.setTab(fileTab('f4.ts'));
+    await settle();
+    expect(screen.queryByTestId('rv-gone-open-review')).toBeNull();
+    expect(paths()).toEqual(['f4.ts']);
+  });
+
+  it('does not take a scroll target: the url already names the file', async () => {
+    const pane = await openFile('f3.ts', 6);
+    expect(pane.spy.takes).toEqual([]);
+  });
+});
+
+// ── The current-file bar ─────────────────────────────────────────────────────
+// The bar above the list names the file at the top and, outside the mobile layer,
+// offers the file's two actions, so a long file does not need its header on screen.
+
+describe('the current-file bar offers the file’s actions', () => {
+  let fake: FakeServer;
+  beforeEach(() => {
+    fake = setupWrites();
+    browserScrolling();
+  });
+  afterEach(teardownWrites);
+
+  const sized = (path: string) => snapshot(path, { token: `tok-${path}-1` });
+  /** One long hunk, so the file's header leaves the view well before the file does. */
+  const long = (path: string, count = 60) =>
+    snapshot(path, {
+      token: `tok-${path}-1`,
+      hunks: [
+        hunk(Array.from({ length: count }, (_, i): ['ctx', string] => ['ctx', `line ${i + 1}`])),
+      ],
+    });
+  const bar = () => screen.getByTestId('review-current');
+  const stageRequests = () => fake.requests('/scm/stage');
+
+  async function open(paths: string[], make: (p: string) => ScmFileSnapshot = sized) {
+    fake.status[REPO] = statusBody({ changes: paths.map((p) => entry(p)) });
+    for (const p of paths) fake.files[p] = make(p);
+    const pane = mountReview();
+    await screen.findByTestId('review-list');
+    await settle();
+    return pane;
+  }
+
+  /** The server's bookkeeping: a staged file leaves Changes. */
+  function movesToStaged() {
+    fake.onWrite = (kind, body) => {
+      if (kind !== 'stage') return;
+      const status = fake.status[REPO];
+      if (!status) return;
+      fake.status[REPO] = {
+        ...status,
+        changes: status.changes.filter((e) => e.path !== body['path']),
+        staged: [...status.staged, entry(String(body['path']))],
+      };
+    };
+  }
+
+  it('still offers Reviewed and Open file for a file whose header has scrolled away', async () => {
+    await open(['a.ts', 'b.ts'], long);
+    scrollTo(offsetOf(fileRow('a.ts')) + 600);
+    await settle();
+    expect(paths()).not.toContain('a.ts');
+    expect(bar()).toHaveTextContent('a.ts');
+    expect(within(bar()).getByTestId('review-current-reviewed')).toBeEnabled();
+    expect(within(bar()).getByTestId('review-current-open')).toBeEnabled();
+    expect(within(bar()).getByTestId('review-current-state')).toHaveTextContent('Modified');
+    expect(within(bar()).getByTestId('review-current-counts')).toHaveTextContent('+1−1');
+  });
+
+  it('changes with the file at the top', async () => {
+    const pane = await open(['a.ts', 'b.ts'], long);
+    scrollTo(offsetOf(fileRow('a.ts')) + 600);
+    await settle();
+    expect(bar()).toHaveTextContent('a.ts');
+    scrollTo(10_000_000);
+    await settle();
+    expect(bar()).toHaveTextContent('b.ts');
+    expect(bar()).toHaveTextContent('2 / 2');
+    fireEvent.click(within(bar()).getByTestId('review-current-open'));
+    expect(pane.opened).toEqual([`${REPO}/b.ts`]);
+  });
+
+  it('stages from the bar, offers Undo and goes to the next file', async () => {
+    movesToStaged();
+    const pane = await open(['a.ts', 'b.ts', 'c.ts']);
+    await act(async () => {
+      fireEvent.click(within(bar()).getByTestId('review-current-reviewed'));
+    });
+    await settle();
+    expect(stageRequests()).toHaveLength(1);
+    expect(stageRequests()[0]?.body).toEqual({ path: 'a.ts', token: 'tok-a.ts-1' });
+    expect(pane.toasts[0]?.message).toBe('Reviewed a.ts');
+    expect(pane.toasts[0]?.action?.label).toBe('Undo');
+    expect(paths()).toEqual(['b.ts', 'c.ts']);
+    expect(bar()).toHaveTextContent('b.ts');
+  });
+
+  it('shows one running state on the bar and the header, and stages once', async () => {
+    movesToStaged();
+    await open(['a.ts', 'b.ts']);
+    let release!: () => void;
+    fake.hold = new Promise((resolve) => {
+      release = resolve;
+    });
+    const inBar = within(bar()).getByTestId('review-current-reviewed');
+    const inHeader = within(fileRow('a.ts')).getByTestId('review-file-reviewed');
+    fireEvent.click(inBar);
+    await settle();
+    expect(inBar).toBeDisabled();
+    expect(inHeader).toBeDisabled();
+    fireEvent.click(inBar);
+    fireEvent.click(inHeader);
+    release();
+    await settle();
+    expect(stageRequests()).toHaveLength(1);
+  });
+
+  it('is disabled with the loading reason while the file has not loaded', async () => {
+    fake.status[REPO] = statusBody({ changes: [entry('a.ts')] });
+    fake.files['a.ts'] = () => new Promise(() => {});
+    mountReview();
+    await screen.findByTestId('review-list');
+    await settle();
+    const button = within(bar()).getByTestId('review-current-reviewed');
+    expect(button).toBeDisabled();
+    expect(button.getAttribute('title')).toMatch(/not loaded yet/);
+  });
+
+  it('offers Unstage in a Staged review', async () => {
+    fake.status[REPO] = statusBody({ staged: [entry('a.ts')] });
+    fake.files['a.ts'] = snapshot('a.ts', { group: 'staged' });
+    mountReview({ tab: tab(`staged:${REPO}`) });
+    await screen.findByTestId('review-list');
+    await settle();
+    expect(within(bar()).getByTestId('review-current-unstage')).toBeEnabled();
+    expect(within(bar()).queryByTestId('review-current-reviewed')).toBeNull();
+    expect(within(bar()).getByTestId('review-current-open')).toBeEnabled();
+  });
+
+  it('has no Open file for a deleted file', async () => {
+    fake.status[REPO] = statusBody({ changes: [entry('gone.ts', { status: 'D' })] });
+    fake.files['gone.ts'] = snapshot('gone.ts');
+    mountReview();
+    await screen.findByTestId('review-list');
+    await settle();
+    expect(within(bar()).getByTestId('review-current-open')).toBeDisabled();
+  });
+
+  it('on a phone is the path and the position and nothing else', async () => {
+    document.documentElement.dataset['mobile'] = 'true';
+    await open(['a.ts', 'b.ts']);
+    const testIds = [...bar().querySelectorAll('[data-testid]')].map((el) =>
+      el.getAttribute('data-testid'),
+    );
+    expect(testIds).toEqual([]);
+    expect([...bar().children].map((el) => el.className)).toEqual([
+      'rv-current-path',
+      'rv-current-pos',
+    ]);
+    expect(bar()).toHaveTextContent('a.ts');
+    expect(bar()).toHaveTextContent('1 / 2');
   });
 });

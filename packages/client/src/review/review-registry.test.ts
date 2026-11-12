@@ -12,6 +12,7 @@ const api = (): ReviewApi => ({
   nextFile: vi.fn(),
   prevFile: vi.fn(),
   reviewCurrent: vi.fn(),
+  toggleWrap: vi.fn(() => 'on' as const),
 });
 
 beforeEach(() => resetReviewRegistry());

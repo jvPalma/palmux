@@ -153,6 +153,18 @@ afterEach(() => vi.useRealTimers());
 // next and swallow its first click. A keydown clears it.
 afterEach(() => void fireEvent.keyDown(document));
 
+describe('preview rows', () => {
+  it('marks a preview row with the class and a label without the number', () => {
+    renderDrawer({ tabs: [...TABS, { id: '7', kind: 'editor', url: '/a/notes.md', preview: true }] });
+    const r = screen.getByTestId('drawer-session-7');
+    expect(r).toHaveClass('preview');
+    expect(r).toHaveAttribute('aria-label', 'notes.md, preview');
+    const pinned = screen.getByTestId('drawer-session-0');
+    expect(pinned).not.toHaveClass('preview');
+    expect(pinned).not.toHaveAttribute('aria-label');
+  });
+});
+
 describe('rows', () => {
   const row = (id: string) => screen.getByTestId(`drawer-session-${id}`);
 
@@ -199,11 +211,11 @@ describe('rows', () => {
     }
   });
 
-  it('paints a coloured tab on its dot only: the row sets --tab-accent and nothing fills with it', () => {
+  it('paints a coloured tab on its dot only (an older ansi name reads as its hue): the row sets --tab-accent and nothing fills with it', () => {
     renderDrawer({ current: '1' });
     const coloured = row('1').closest('.drawer-row') as HTMLElement;
     expect(coloured).toHaveClass('active');
-    expect(coloured.style.getPropertyValue('--tab-accent')).toBe('var(--tab-c-ansi6)');
+    expect(coloured.style.getPropertyValue('--tab-accent')).toBe('var(--tab-c-cyan)');
     // The uncoloured tab sets nothing, so its dot falls back to the neutral.
     const plain = row('0').closest('.drawer-row') as HTMLElement;
     expect(plain.style.getPropertyValue('--tab-accent')).toBe('');
@@ -826,8 +838,8 @@ describe('framed groups: the leaf classes', () => {
         expect(style.getPropertyValue('--group-accent'), id).toBe(tabColorValue('ansi3'));
         expect(style.getPropertyValue('--group-ink'), id).toBe(tabColorInk('ansi3'));
       }
-      expect(tabColorValue('ansi3')).toBe('var(--tab-c-ansi3)');
-      expect(tabColorInk('ansi3')).toBe('var(--tab-c-ansi3-ink)');
+      expect(tabColorValue('ansi3')).toBe('var(--tab-c-yellow)');
+      expect(tabColorInk('ansi3')).toBe('var(--tab-c-yellow-ink)');
       const plain = (leafOf('drawer-session-9') as HTMLElement).style;
       expect(plain.getPropertyValue('--group-accent')).toBe('');
       expect(plain.getPropertyValue('--group-ink')).toBe('');
@@ -5001,14 +5013,14 @@ describe('row gestures', () => {
       hold();
       up(tabRow('3'), 50, 280);
       // What the sheet put under the finger: a colour swatch.
-      const swatch = screen.getByTestId('sheet-color-ansi4');
+      const swatch = screen.getByTestId('sheet-color-blue');
       tail(swatch);
       expect(onRecolor).not.toHaveBeenCalled();
       expect(screen.getByTestId('tab-sheet')).toBeInTheDocument();
 
       tapAgain(swatch);
       expect(onRecolor).toHaveBeenCalledTimes(1);
-      expect(onRecolor).toHaveBeenCalledWith('3', 'ansi4');
+      expect(onRecolor).toHaveBeenCalledWith('3', 'blue');
     });
 
     // A mouse's pointerdown is prevented, so the browser sends it no mousedown or

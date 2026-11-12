@@ -33,7 +33,7 @@ feel like Termux. Full TypeScript stack — no Go, no Cloud Workstations couplin
 Server→client: `ready` (carries `maxUploadBytes` + `webApps`), `settings`, `extraKeys`, `sessions`
 (carries `ids`/`titles` **and** `tabs: TabMeta[]`), `snapshot`, `fonts`, `exit`, `scmComments`
 (`{ repo, rev }`, see "Source Control"). Client→server:
-`resize`, `settings`, `extraKeys`, `kill`, `createTab`, `updateTab`. File upload is out-of-band
+`resize`, `settings`, `extraKeys`, `kill`, `createTab`, `updateTab`, `replaceTab` (see "Preview tabs"). File upload is out-of-band
 over `POST /upload?session=<id>&filename=<name>` (not a WS frame), returning `{ path }`.
 `settings`/`extraKeys` payloads are **opaque** to the server — it persists and rebroadcasts them; the
 client owns the schema. No protobuf.
@@ -69,6 +69,55 @@ artifacts are served same-origin from `~/.config/palmux/artifacts/` at `/artifac
 (cookie-gated, traversal-guarded). Client panes (`client/src/panes/`) stay mounted while their tab
 exists (iframe/editor state preserved); Monaco is a lazy chunk (`monaco-loader.ts`) so terminal-only
 use downloads none of it.
+
+**Preview tabs** (`openspec/changes/preview-tabs/`, D1–D9). A file opened from the Explorer, a Source
+Control file click and an Open file action are PREVIEW opens: they land in the focused pane's preview tab,
+whose title is italic (the only CSS change, `tab-strip-css.test.ts` holds it) and whose accessible name ends
+in ", preview". The next preview open in that pane replaces it, so browsing ten files leaves one tab. Only
+`editor` tabs of a file and `review` tabs can be previews; a terminal from `+` never is.
+- **The flag is SERVER state** (`TabMeta.preview?: true`, owner decision): every window and device shows the
+  same tab as a preview, it persists to `tabs.json`, and an edit in any window pins it for all. A per-window
+  flag was rejected because a main window shows every main tab, so a replace in one window swapped the file
+  under another device's editor. Pinning is ONE-WAY: `updateTab { preview: false }` pins, `{ preview: true }`
+  is ignored, and a name, a colour, `groupCreate` and a group join pin on the server. `moveToWindow` does
+  not (the server cannot tell a reclaim from a drag).
+- **A replacement is one message and one render** (owner, session 1: no tab may arrive, leave or let a
+  neighbour show for even a frame). `replaceTab { id: P, kind, url }` is one registry call with one
+  broadcast and one `tabCreated`: the same kind changes P's url and keeps its id; another kind puts a new
+  preview N at P's order index with `replaces: P` and removes P without a broadcast of its own. A P that is
+  pinned, gone or held by another window is left alone and a new preview is created instead, so a tab
+  another window pinned a moment earlier is never lost and the client has no refusal to detect. That is
+  VS Code's `EditorGroupModel.replaceEditor` (read as behaviour evidence, no code ported). `replaces` rides
+  only the swap's own broadcast (the registry drops it right after) and is never persisted. On the client
+  `reconcile` step 0 swaps P's `TabRef` for N in the SAME leaf slot and keeps it active, before the
+  drop-and-re-pick step, so the close rule has nothing to do; `keepReplaces` carries the hint for two
+  broadcasts handled before one render (the swap and the pin that clears it). The flat (mobile) path moves
+  `sessionIdRef` P → N inside the `sessions` handler before the controller sees the broadcast. Rejected: kill
+  + create + reorder (three broadcasts, and an unconditional kill of a tab pinned meanwhile), create then a
+  conditional kill (two), reusing P's id as another kind (it would weaken reconcile's recycled-id guard).
+- **`openPreview` (App)** shows a target that already has a tab, pinned or not; otherwise it replaces the
+  pane's active tab if that is a preview, else its last preview in strip order, never one dirty in this
+  window, and sends `createTab { preview: true }` when there is none. `pendingPreviewRef` (one entry per
+  leaf: `sent*`, `latest*`, `pinLatest`) makes two opens before the first answer cost one tab: the answer is
+  matched by CONTENT (`tabCreated` names an id, looked up in `tabsRef`), a second open only rewrites
+  `latest*`, and a match sends at most one follow-up `replaceTab`. No answer in 5 s toasts "Could not open
+  <name>".
+- **What pins** (`App.pinTab`, at most one `updateTab` per tab until a broadcast shows it pinned, re-sent on
+  every `ready`, "Not connected — try again" when the send fails): a double-click on the pill (a pinned
+  pill's double-click still renames), a POINTER double-click on the source row (`detail === 2`, so two Enter
+  presses never pin; Source Control rows activate through `pressMove` and carry a native `onDoubleClick`),
+  the first dirty transition, a 2xx save or Ctrl+S on a clean buffer (only the focused pane's shown file
+  editor handles Ctrl+S), Keep open (`menu-keep-open`, `tab-sheet-keep-open`), opening the comment composer
+  in a review preview, and a move to another pane. Not pins: a window move, Reviewed, Unstage and next file
+  in a review preview, a same-pane drop, a cross-window drop, an autosave or visibility flush of a clean
+  buffer.
+- **The race, accepted:** a `replaceTab` that lands before another window's first keystroke loses that one
+  round trip of typing, and that window toasts "<name> was replaced by another window before your edit was
+  saved".
+- **Compatibility (D9):** `previewSupportedRef` is false until a `ready` carries `previewTabs: true`; until
+  then every open is pinned and no `preview` field or `replaceTab` is sent. An old client drops `preview`
+  and `replaces` and sees a kind-change swap as a close plus a create until it reloads. A rollback to 1.2.x
+  turns previews into pinned tabs. It needs the 1.3.0 server restart, which costs every live terminal.
 
 **The URL is not the session. The app lives at `/`.** Which tab a window shows is BROWSER-LOCAL
 state (`session/window-selection.ts`, `sessionStorage['palmux-window-tab']`, plus a device-wide
@@ -834,8 +883,8 @@ one heading style at the wrong size and no hierarchy. Every Collapsible is a sec
 rule is the heading of Settings and of the New-tab chooser; the others wear the same style by
 restating it, because they are plain elements and not Collapsibles — the Explorer root header
 (`.ft-sect-trigger`, whose path beside the name steps down by weight 400 and the theme's dim ANSI
-slot), the Dictation history label (`.dictation-group`), the swatch captions
-(`.swatch-row-label`), the theme browser's Dark / Light labels, and `.dash-label`, which nothing
+slot), the Dictation history label (`.dictation-group`), the theme browser's Dark / Light labels,
+and `.dash-label`, which nothing
 renders today and is kept in step so a reuse cannot bring the old style back. No
 `text-transform: uppercase` remains in any client stylesheet; a keycap or badge that genuinely
 needs one is named in the test's `ALLOWED` map with the reason, so it is a decision somebody made.
@@ -964,16 +1013,23 @@ apart, so it is gone. Every tab is a bordered pill on ONE centre line (`.session
 `flex: 1 1 auto`, so a title shows in full while there is room and the strip scrolls only once every
 pill is at its minimum. The look is defined ONCE, as `--pill-*` custom properties on `.session-tabs, .drawer-sessions`
 (the mobile drawer's rows are the same pills) derived from the eight tokens — a colour literal would not follow a theme change.
-**Active is a fill and a ring, never a colour.** The active pill takes
+**Active is a fill and a ring; colour only follows it.** The active pill takes
 `color-mix(surface, text 10.5%)` (fill step 1.5 × 7%), a 1.5px ring at 60% text, full-strength text
 and weight 600. Inactive text is 85% toward mantle with no fill at rest, and hover fills only a pill
 that is NOT active. The fill clears
 one surface step off the strip in every built-in theme; `tab-strip-css.test.ts` checks the numbers,
 because the CSS only names a mix, and mixing the surface TOWARD the text moves it away from the
-mantle on a light theme as well as a dark one. A tab's colour is a 7px dot (`.ctab-dot`) before the
-title and nothing else — `--tab-accent` is read by the dot rule alone. Colour used to carry state (a
-fill, a tint, a top border) and, in the old fused split pill, a saturated member colour
-out-shouted its focused half. The kind icon renders for non-terminal kinds
+mantle on a light theme as well as a dark one. A tab's colour is an 11px BAR (`.ctab-dot`, the
+class kept) flush with the pill's left edge and nothing else — `--tab-accent` is read by the bar
+rule alone. It is the pill's inner height (`calc(var(--ctl-h) - 2px)`, so it follows the 36px phone
+height), pulled over the pill's padding (`calc(-1 * var(--sp-2))`) and rounded at
+`calc(var(--r-2) - 1px)`, concentric inside the 1px border. It is at 40% on an inactive pill and full
+strength on the active one (owner, 2026-11-11): on a COLOURED tab the colour is now also an active
+cue, beside the fill and ring that every tab still gets. A black bar on a dark theme or a white one on
+a light theme is close to invisible at 40%: accepted. The join cue (`.join-armed`) is an INSET ring and
+a child paints over an inset shadow, so the bar is `visibility: hidden` while a pill is armed. Colour used to carry state alone (a fill, a
+tint, a top border) and, in the old fused split pill, a saturated member colour out-shouted its
+focused half; the bar is a dim stripe, not a fill. The kind icon renders for non-terminal kinds
 only (`kindIcon`). The active pill differs from the rest in fill, ring and text ONLY — no height,
 padding, margin or border change — or the taller active tab comes back and, on a centred strip, the
 pill shifts a pixel on every switch.
@@ -1209,6 +1265,13 @@ and the tips panel fell back to `ui-monospace` while the terminal and the editor
 the configured face — visible as a code block in the wrong font beside an editor in
 the right one. App now sets it from `settings.fontFamily`, pre-paint in `main.tsx`
 too so a restored markdown tab does not flash the fallback.
+
+**Editor wrap is a per-device setting, `editorWrap`** (default on, LOCAL, an "Editor word wrap" switch in
+Settings), and `Alt+Z` (`toggleWrap`) flips it. `wordWrap` left `editorLayoutOptions`, so a width crossing no
+longer re-sends it; `EditorPane` applies it at create and through `updateOptions` on a settings change, and
+`ConfigEditor` sets `wordWrap: 'on'` itself so config.json keeps wrapping whatever the setting says. In a
+review the same chord flips `scmWrap` (`ReviewApi.toggleWrap`), and a side-by-side review always wraps and
+says so. The markdown viewer is out of scope: its code blocks keep scrolling sideways.
 
 **Monaco's gutter chrome is priced by PANE width, not by device**
 (`panes/editor-layout.ts`). Measured on a 390px phone: the text got 319px and the
@@ -1841,7 +1904,10 @@ cannot get from it, and the places where measurement overruled the design.
 | `GET` / `POST` / `PATCH` / `DELETE /scm/comments?repo=[&id=]` | comment CRUD; `id` for PATCH and DELETE, the body is the comment (POST) or a patch (PATCH) |
 | `POST /scm/stage?repo=` `{ path, token }` | stage the snapshot the token names |
 | `POST /scm/unstage?repo=` `{ path, oldPath? }` | return the entry to HEAD |
-| `POST /scm/restore?repo=` `{ receiptId }` | undo (or redo) one of palmux's own writes |
+| `POST /scm/stage-paths?repo=` `{ paths }` | stage up to 5,000 paths as they are on disk (the list's Stage / Stage all) |
+| `POST /scm/unstage-paths?repo=` `{ entries: { path, oldPath? }[] }` | return up to 5,000 entries to HEAD (Unstage / Unstage all) |
+| `POST /scm/discard?repo=` `{ entries: { path, fp }[] }` | put work tree files back to their index version, delete untracked ones |
+| `POST /scm/restore?repo=` `{ receiptId }` | undo (or redo) one of palmux's own writes: an `r` receipt is an index write, a `d` receipt a discard |
 
 `repo` is the project's identity on every request: it must be absolute and EQUAL its own `git rev-parse
 --show-toplevel` after `realpath` (`checkRepo`), so `…/app/src` is refused with a 400 that names the top
@@ -1852,7 +1918,7 @@ empty, `.`, `..` or `.git` component and a NUL (`checkRelPath`; the walk below n
 module's own status, and `code` is a `ScmErrorCode`: 400 for every repo or path refusal and a token that
 does not belong to its path; 403 for a path through a symlink; 409 `busy | changed | conflict | df` (and
 a merge-conflicted file, no code); 410 `token` for an expired or unknown token or receipt; 413 for git
-output over the cap; 501 `unsupported` for a submodule, a split index, or a work tree this host cannot
+output over the cap and for a discard of a file over 64 MiB; 501 `unsupported` for a submodule, a split index, or a work tree this host cannot
 read safely; 504 for a git timeout. `scmRoute` wraps every handler so that a throw (the comment store's
 validation, a filesystem fault) is still JSON: a fault is logged with its detail and answers `500
 { error: 'source control request failed' }`, which names no path. The not-found handler answers an
@@ -1944,8 +2010,9 @@ context and carries one extra key, `convert` (`off | on | binary | crlf-in-index
 record and not part of what staging compares: staging compares the `check-attr` values plus
 `core.autocrlf` and `core.eol`.
 
-**The three writes, and the only ones.** Stage, unstage and undo change only the index entries of the
-paths they name, never the work tree and never a commit. **Stage writes what was SHOWN.** The reader keeps
+**The index writes.** Stage, unstage, the two batch writes and their Undo change only the index entries of the
+paths they name, never the work tree and never a commit; the discard (below) is the one write that touches the
+work tree, and nothing writes a commit. **Stage writes what was SHOWN.** The reader keeps
 every served work tree side in a memory-only cache (64 MB, 10 minutes absolute from creation, LRU by
 bytes) under an opaque `token` binding the repository, path, mode, canonical bytes' id and the `attrs`
 context. `POST /scm/stage` looks the token up (410 `token` if it expired or was evicted; 400 if it
@@ -1960,7 +2027,9 @@ only where it is a real rename source (absent from the index, present in HEAD) a
 **Every write is one transaction under git's own lock protocol** (`scm-index.ts`): create `index.lock`
 (`git rev-parse --git-path index` + `.lock`) with `O_CREAT | O_EXCL`; if it exists the answer is 409
 `busy` AT ONCE and nothing waits, retries or deletes a lock. Holding it, copy the index to a private temp
-file, read every affected path's BEFORE entries from that copy (`GIT_INDEX_FILE=<tmp> ls-files -s -z`),
+file WITH THE INDEX'S OWN TIMES (`utimes`, B13: git content-checks an entry only while it is no older than the
+index file, so a fresh copy made a same-size edit from the second of the last index write look clean, and a batch
+stage answered "Nothing staged"), read every affected path's BEFORE entries from that copy (`GIT_INDEX_FILE=<tmp> ls-files -s -z`),
 apply `update-index --add --cacheinfo <mode>,<oid>,<path>` or `--force-remove` (`--add` because the entry
 may be absent: an untracked file, a staged deletion being unstaged, an Undo after a removal), read the
 AFTER entries, write the copy into the lock file, fsync and rename it over the index, which is git's own
@@ -1983,6 +2052,93 @@ runs the same transaction, requires every path's CURRENT entry to equal the rece
 writes the BEFORE, else 409 `conflict` ("nothing was undone"). The client never supplies a mode, an oid
 or a path to restore, so restore can only reinstate entries palmux itself recorded. A successful restore
 consumes the receipt and answers a fresh one, which is how redo works; a refusal does not spend it.
+A receipt with more than one entry is restored through ONE `update-index -z --index-info` (a removal is mode
+`0` and a zero oid of the receipt's oid length, so a sha256 repository works); unlike the single-path path it
+cannot answer `df`, because `--index-info` replaces a file with a directory instead of refusing.
+
+**The batch writes take the file as it is ON DISK, not a snapshot** (`scm-row-actions`, D5 and B4–B11). The
+list's Stage, Stage all, Unstage and Unstage all go to `stagePaths` / `unstagePaths` in `scm-index.ts`, inside
+the same lock transaction (`transact`, whose middle step is now a `change(before, copy)` callback, and which
+returns `lockMs` for the audit line). Stage runs `git add --pathspec-from-file=- --pathspec-file-nul` on the
+private index copy, so git's own clean conversion applies (a CRLF checkout stages LF), and it classifies every
+path first, UNDER the lock (B11, so a `.gitattributes` written meanwhile cannot start a clean filter): a path
+whose attributes name a `filter`, `working-tree-encoding` or `ident` is skipped `converted` and no filter command
+ever runs; `merge` entries are `unmerged`, a trailing `/` is `nested-repo`, a mode `160000` entry `submodule`, a
+path no longer in Changes `gone`, and only regular files and symlinks reach `git add` (B4: `git add foo` with
+`foo` now a folder would stage `foo/bar`, which nobody named), while a path that is a folder or missing on disk
+but has a stage-0 entry is staged as a deletion. Unstage is `restore --staged` from HEAD, or `rm --cached -r -q
+-f --ignore-unmatch` on an unborn HEAD (B6: without `-f` git refuses every entry edited after `git add`). Every
+index-writing command carries `-c core.hooksPath=/dev/null` (B5: `GIT_INDEX_FILE` does not stop
+`post-index-change`), stale paths are checked inside the lock and skipped `gone` (B7: one unmatched pathspec
+makes `git add` exit 128 and stage nothing), and both need git ≥ 2.26 (`gitVersion()`, else 501
+`unsupported`). A batch is 1 to 5,000 unique paths (`SCM_BATCH_LIMIT`, else 400), runs under a 60 s timeout
+(`GIT_BATCH_TIMEOUT_MS`), and answers `ScmBatchResult`: the paths written, the skips with their reason
+(`ScmSkipReason`, labelled by `SCM_SKIP_LABEL`) and a `receiptId` that is `null` when nothing changed, so a toast
+of "Nothing staged" carries no Undo. `ready.scmBatchWrites` gates the whole client surface: a client with no
+flag renders no row action, as an older server would need.
+
+**Discard is the only write to the work tree, and no git command performs it** (`scm-discard.ts`, D6, D7 and
+B1–B3, B10, B12). `discardPaths` runs under the same per-repository queue (`serialised`), probes every entry
+BEFORE reading the status (B2: read the other way round, an edit landing in between became the confirmed
+version), and refuses an entry whose listed `fp` no longer matches as `changed`. A tracked file returns to its
+INDEX version, so a staged change stays staged; an untracked file or folder is deleted, and the folders the
+discard emptied go with it, while a sibling holding an ignored file stays. The index version is read RAW with
+`cat-file blob`, and the one conversion a checkout would still apply, LF → CRLF, is palmux's own
+(`checkoutBytes`, a port of git 2.43's `convert.c` held equal to `checkout-index` by a 720-case test): B10
+replaced `checkout-index` and then `cat-file --filters`, because every git checkout path reads the WORK TREE's
+`.gitattributes` at the moment it runs, so a `.gitattributes` restored earlier in the same batch let a later
+file be smudged (an LFS driver ran) or `ident`-expanded. A path is skipped `converted` when EITHER the work
+tree's or the index's attributes (`check-attr --cached`) name a filter, an encoding or `ident`, before the size
+check; every `.gitattributes` is written first and each write group re-reads `check-attr`. The write goes through
+the descriptor walk the snapshot reader uses: a temp file `.palmux-<16 hex>` (independent of the name's length)
+is created beside the name through the parent descriptor with `O_EXCL | O_NOFOLLOW` (`0o777` for `100755`,
+`0o666` otherwise, so the umask applies as git's does), a last `lstat` is taken, and it is swapped in through
+`/proc/self/fd/<parent>` by `rename` over an expected file or a hard `link` for an expected-absent one; a link
+on the path is `symlink`, a file moved at that last look `changed`, a FIFO or device `special`, a submodule
+`submodule`. A file over 64 MiB (`DISCARD_LIMIT_BYTES`) refuses the whole request with 413 and changes nothing.
+The before bytes of every changed file are stored, and `git cat-file -e` of each before oid holds before the
+first write. **The receipt is a `d` id in a store of its own**, 20 receipts for 10 minutes
+(`DISCARD_RECEIPT_MAX`, `DISCARD_RECEIPT_MS`), never evicted by the 64 MB index cache. `restoreDiscard`
+compares every file with the receipt's after-state, then writes each one back with its bytes and mode,
+recreating missing folders and removing the ones the discard created (deepest first, stopping at
+`ENOTEMPTY`); it re-checks each file right before writing it (B3), so a file edited or recreated during the
+Undo stops it with 409 `conflict` and keeps the edit, the files already restored stay restored, the receipt
+keeps the rest, and the message counts them ("1 of 2 were restored, and Undo keeps the rest."), which the
+client shows as is. A successful Undo consumes the receipt (a second one is 410 `token`), an unknown or expired
+one is 410, another project's 400. **`/scm/restore` dispatches by prefix**: `r` → `restoreReceipt`, `d` →
+`restoreDiscard`, any other non-blank id 410 `token`, and a blank one keeps the existing 400. **Every batch
+write, discard and discard Undo prints one audit line** (`auditScm`, `console.info`), for a success and a refusal
+alike, a refused `repo` included (B8, control characters replaced): `scm: stage-paths repo=… done=… skipped=…
+receipt=… lockMs=… ms=… paths=…` with at most ten paths and `(+n)`; `scm: discard … receipt=d…`;
+`scm: restore-discard … restored=… kept=… status=… code=… ms=…` (files put back, files the receipt still keeps); a
+refusal is `scm: <op> refused repo=… requested=… status=… code=… ms=… error="…"`. An index Undo (`r`) stays unaudited. **Limits, accepted:** palmux never
+refreshes the index's stat data after a discard, so a file whose size the checkout changes (an LF blob written
+as CRLF) reads ` M` in `git status` until git refreshes it; an `autocrlf` with a k/m/g suffix reads as false;
+`readStatus` itself still runs clean filters through `git status`, as the poll always has.
+
+**Each row of the Source Control list carries its actions** (`scm/row-actions.ts`, `SourceControlView.tsx`,
+D2–D4, D9, D10). A file, folder or virtual row is a `.scm-item` wrapper holding the main button (its classes,
+`pressMove`, test ids and keyboard handling unchanged) and a `.scm-actions` group of small icon buttons
+(`scm-action-open`, `-stage`, `-unstage`, `-discard`), shown on hover and on `:focus-within` and never under
+`data-mobile`; the name truncates before them. `rowActions(group, row, ctx)` decides what a row offers: Merge →
+Open file; Staged file → Open file, Unstage; Staged folder → Unstage all; Changes file → Open file, Stage,
+Discard; Changes folder → Stage all, Discard all, where a folder collects every entry of its group under
+`<folder>/`, collapsed descendants included. Discard is last, behind a separator, and `data-danger`. Open file is
+disabled on a deleted file ("The file is deleted") and folder actions while the status is truncated, with the
+reason as the title. Open file is `openFileTab(path, { preview: true })` (a preview editor tab, not a diff). The
+same items are a kit `ContextMenu` (`scm-menu-*`) on right-click and on a long-press; the row's press guard and
+`consumeGesture` keep the long-press's release from opening a review and a right-click on an inline action from
+running it (B9), and a vertical swipe that starts on a row still pans the list (measured at 390x844 with touch
+emulation). A discard confirms first with `discardConfirmText` (up to ten names, "…and n more", and how many
+untracked files will be deleted) and posts each entry's listed `fp`. Every answer goes into the write log
+(`via: 'list'`, `count`, `skipped`) and the window's toast (`describeWrites`: "Staged a.ts", "Staged 40 files",
+"Staged 38 files, skipped 2 (needs a git filter)", "Discarded 3 files, skipped link.ts (a symbolic link)", and
+each reason with its count when they differ), whose Undo runs `undoWrites` over the recent writes, newest first;
+a 410 on a discard receipt there says "This Undo has expired" and forgets it in the discard log too. **A discard can be undone later from the project bar**: `scm/discard-log.ts` keeps
+the project's last discard receipt in `localStorage` for 10 minutes (`DISCARD_UNDO_MS`, a `storage` listener
+keeps windows in step), and `scm-undo-discard` ("Undo last discard (3 files)") shows while it is younger, survives a
+reload, and hides on success or a 410 ("This Undo has expired"); a 409 keeps it. Both Undo routes forget a spent
+receipt in the write log and the discard log.
 
 **Comments live outside the repository, under the config dir's `.cache/`** (`scm-comments.ts`). One file
 per project, `<configDir>/.cache/scm/<sha256(top) first 16 hex>.json`, shaped `{ v: 1, repo, rev,
@@ -2032,7 +2188,7 @@ review pane must use the control socket and never attach by id; widen the whitel
 `scm` view on a desktop and the drawer's fourth segment on a phone, and it only lists: a row hands
 `{ group, path, oldPath }` to its host (`onOpenFile`), and the diff is a `review` tab in the content
 area, never drawn inside a 300px dock. It starts with NO project. A project is an absolute path the
-user types, validated by `/scm/repo` and stored as the canonical top that answer returns; nothing is
+user types (or the work tree top `palmux git` names for its shell's directory, the one explicit exception), validated by `/scm/repo` and stored as the canonical top that answer returns; nothing is
 inferred from the server's cwd, a terminal or an open file. **`scmRepos` is SYNCED** (canonicalised
 with `normalizePin`: the paths are on the server's filesystem, so the same list is right on every
 device, like `explorerPins`) and **`scmActiveRepo`, `scmLayout`, `scmAlgorithm`, `scmWrap` and
@@ -2050,6 +2206,22 @@ mounted pane has no other way to hear that its tab was chosen again for another 
 `tabCreated` only clears the New-tab page and navigates to the answered id; with editor groups the
 hook's `show` activates a tab a pane already holds where it is, so the idempotent answer never
 duplicates or moves a live review (`workspaceController.test.ts` pins the two effects).
+
+**A Source Control click opens ONE file's diff** (preview-tabs D2, D6), in the focused pane's preview tab:
+a single-file review, url `changes-file:<enc(top)>:<enc(path)>` or `staged-file:…` (`fileReviewUrl` /
+`parseReviewUrl` in shared; `encodeURIComponent` escapes every `:`, so the first `:` after the prefix is the
+separator), titled `<basename> (Changes)` / `(Staged)`. It is the SAME review pane with a file filter, not a
+second pane: `ReviewView` is keyed `${tab.id}|${group}|${top}` and takes `file` as a prop, so moving the tab
+to another file of the group swaps rows with one mount and reuses the model's loaded snapshots. The
+`.rv-current` bar shows `n / N` from the UNFILTERED list; next and previous file, and Reviewed and Unstage
+on success, move the tab through the group with `host.showFile` (an `updateTab` of its url, "Could not open
+the next file" after 2 s with no broadcast); at the end it shows "No more files in <group>" and a file that
+left the group shows "No longer changed", each with an Open review button. The continuous review of the
+whole group opens from the group header's Open review button (`scm-open-review-<group>`, in the kit
+Collapsible's `actions` slot, a sibling of the Radix trigger so no button nests and a click never toggles
+the group). Without server support a click opens the continuous review at the file, as before. **Rollback
+and the deploy window:** an old server restores the tab as-is, and a window still on the 1.2 bundle titles
+it "review" and reads "This review has no valid address." until it is closed or that window reloads.
 
 **Each group is a folder TREE by default, and the tree lists files in the review's order**
 (`scm/scm-tree.ts`; the same `SourceControlView` draws it in the dock and in the drawer). `scmTree`
@@ -2092,7 +2264,9 @@ rows and a 12px indent a level; and, when 32px rows looked the same to him, "nee
 and `--scm-gap` (`--sp-2`), and `:root[data-mobile='true'] .scm-view` restates the three for a phone as
 `calc(var(--ctl-h) - var(--sp-3))` (24px), `--sp-2` (8px a level) and `--sp-1` (4px between a row's chevron,
 glyph and name). The rows, the folder rows and the virtual list's height cap all read them, so they cannot
-disagree, and the desktop is exactly what it was (28px, 12px, 8px). **There is no gap between rows**: a row
+disagree. The desktop is compact too since `scm-row-actions` (D1): `calc(var(--ctl-h) - var(--sp-1))` (24px),
+`--sp-2` (8px a level) and `--sp-1` (4px), where it was 28px, 12px and 8px, so a file row, a folder row and a
+group header are 24px on both (measured in Chromium at 1440 and at 390x844). **There is no gap between rows**: a row
 and a folder row declare no margin, the plain list is an unstyled box and the virtual one only caps its
 height, so the pitch is the row's height (a test holds that). The text was already the body size, `--fs-2`
 (12px), so a row's text is unchanged and the saving is the height and the indent. A file four folders deep
@@ -2105,13 +2279,16 @@ stylesheet but `ui.css` that sizes a kit control, and `--ctl-h` may not be redec
 has the step: `Collapsible` takes `size="xs"` (`.ui-collapsible-trigger-xs`, `calc(var(--ctl-h) - var(--sp-3))`,
 one step below the small one Button and IconButton have), and `GroupSection` asks for it only in the mobile
 layer, through `useMobileLayer` (`review/review-density.ts`, the `data-mobile` flag the review's compact rows
-read). On a phone a header is 24px, the rows' own height; on a desktop it stays `--ctl-h` (28px), which is the
-rows' height there. The view has to KNOW, unlike the rows, because a kit control's height is a class the kit
+read). On a phone a header is 24px, the rows' own height; on a desktop `GroupSection` asks for `size="sm"`
+(`.ui-collapsible-trigger-sm`, `calc(var(--ctl-h) - var(--sp-1))`, 24px there), the desktop rows' height. The view has to KNOW, unlike the rows, because a kit control's height is a class the kit
 owns, never a property a consumer sets. **The guard learned the step**: `scale.test.ts`'s `boxOf` is the table
 of kit steps (`-sm` is `--ctl-h` less 4px, `.ui-seg-item` less 6px), and `-xs` is `--ctl-h` less 12px (24px on
 a phone, 16px on a desktop where nothing opts in). That one line is the only edit to the guard; without it a
 new kit step cannot exist, and the alternative was sizing a kit control from `scm.css`, which is what the guard
-is there to stop. An earlier build opted into `size="sm"` (32px, the small step), which is gone.
+is there to stop. The phone never uses `sm` (it would be 32px there); `boxOf` resolves the Collapsible's `-sm`
+like Button's, `--ctl-h` less 4px. **The header's Open review button follows the same step** (`IconButton`
+`size="xs"`, `.ui-icon-btn-xs`, on a phone; `sm` on a desktop): the header is a flex row, so a 32px `sm` button
+beside a 24px trigger made it 32px (measured at 390x844 after the change shipped; 24px since).
 
 **The review pane is a flat array of rows on one `VirtualList`** (`review/ReviewPane.tsx`; what it
 keeps that is not React state is `review-model.ts`, and React sees a version number and the rows).
@@ -2252,7 +2429,7 @@ visible row's file, side, line number and pixel offset, scanning up to 12 rows b
 headers and gaps come first, or the file's header when a placeholder is at the top, which stays and so
 opens the view onto the first lines of what loaded. When a snapshot is REPLACED the model calls
 `onReplace` while both texts are at hand, and `relocateAnchor` finds the line again with the same function
-that places a comment (`anchor.ts`): every exact match of the line's text is scored by how many of three
+that places a comment (`shared/anchor.ts`): every exact match of the line's text is scored by how many of three
 context lines either side agree, then by distance from the old number, and **the old position gets no
 head start**, because a `}` or a blank line left at the old number must never beat the real line ten
 rows down; a tie is not a guess. A deleted line falls back to the nearest surviving line of its hunk, then
@@ -2382,6 +2559,9 @@ removed project is never made active, and with several panes only the focused pa
 comments store holds the active project's comments only: a comment saved from a paused review would land
 in the other project.
 
+**`toggleWrap` is Alt+Z**, wired only while the active tab is an `editor` or a `review`, so on a terminal the
+chord reaches the shell (ESC z). An Alt+letter chord the OS turns into a symbol (Option+Z gives `Ω` on a Mac)
+matches by `e.code` when Ctrl and AltGraph are not held (`chordFromEvent`); AltGr characters are unchanged.
 **Six chords, and they are letters, not F7** (`keybindings.ts`): Ctrl+Alt+G `openSourceControl`,
 Ctrl+Alt+J / Ctrl+Alt+Shift+J `scmNextChange` / `scmPrevChange`, Ctrl+Alt+N / Ctrl+Alt+Shift+N
 `scmNextFile` / `scmPrevFile`, and Ctrl+Alt+Enter `scmReviewed`. VS Code's F7 is out because GNOME takes
@@ -2463,9 +2643,17 @@ line, so a one-line comment is one tap and Comment), Enter or Space on a focused
 Shift to widen. The editor is a real `<textarea>` so the soft keyboard and IME work as anywhere; Escape
 cancels it, and focus returns to `#mobile-kbd` after a save or cancel only if that held focus when the
 draft opened (recorded per draft in the pane, since the editor unmounts). Delete asks once, and only for
-a non-empty body. **Export** (`export-md.ts`, "Copy comments" in the view) writes files in path order, a
-comment as `**L10–14** (new)`, a fenced block in the file's language holding the STORED lines (the fence
-one backtick longer than any run in the code), then the body. `copy-comments.ts` reads the snapshot of
+a non-empty body; **Resolve** (`review-comment-resolve`) deletes without asking and the write toast's
+Undo stores the same comment again (a new id), and **Clear all** (`DELETE /scm/comments?all=1`,
+`deleteAllComments`, one write under the file's mutex, broadcast like any write) asks once, naming the
+count. **Export** (`shared/export-md.ts`, "Copy comments" in the Source Control view's `scm-comments-bar`,
+the review's top bar and, per file, the file header) is an AGENT document: a `# Review comments` title,
+a two-line instruction naming the project top, `## <path>` per file in path order, each comment headed
+`### <path>:L<start>-L<end> (<side>)<mark>` (`:L<n>` for one line, ASCII hyphen), a fenced block in the
+file's language holding the STORED lines (the fence one backtick longer than any run in the code), then
+the body; no comments is `''`. The exporter, placement, anchoring, the language table and the marks
+(`shared/comment-marks.ts`, `read` injected) live in `@palmux/shared` so `palmux comments` runs the SAME
+code on the server: one document for the button and the CLI. `commentMarks` reads the snapshot of
 each group a file is in and places the comments exactly as the review does, so the copy and the screen
 cannot disagree: a comment is "(outdated)" only if it anchors in NONE of its file's groups, and a file in no
 group, or a read that failed, marks nothing, because "unknown" must not be reported as "outdated".
@@ -2848,6 +3036,46 @@ user-facing interaction.
   the rest still go. A request with an `Origin` is refused (403): only the CLI posts here, and a
   cross-site browser POST would carry the cookie. No terminal on the tty, or none attached: 409.
   The old `packages/cli` + `focusTab` design is on branch `jvPalma/dev` (6db54ba), not here.
+  **`palmux open <file>...`, `palmux git` and `palmux comments`** (`openspec/changes/palmux-cli-commands`,
+  D1–D10) extend the same route. `open` and `git` ride the same DATA socket (D1: that socket IS the
+  caller's window, detached ones included; `app.terminalSocket(id)` replaced `sendToTerminal`). Unlike
+  `download` they are ANSWERED (D2): the server sends `cliOpen {requestId, paths}` / `cliGit {requestId,
+  repo}`, the pane hands it to App and sends `cliResult {requestId, results, note?}` back on the SAME
+  socket, and an answer counts only from the socket the frame went on; nothing within 3 s
+  (`CLI_ANSWER_MS`) is `504 no palmux window answered within 3 s`, because a window on an older bundle
+  drops an unknown frame and fire-and-forget would exit 0 having done nothing. `open` paths are refused
+  on the SERVER before any frame (`regularFile` and the editor cap, D4); the window opens each pinned
+  (`openFileTab(path, {preview: false})`, `'held'` → `open in another window`). `git` resolves the top on
+  the server (`resolveRepo`) and the WINDOW writes the settings (D5, `addScmProject`), because the active
+  project is per device and a server write would race a window's stale save; a detached window answers
+  `note: 'this window has no Source Control panel'`. `comments` needs no tty (D6): `listComments`,
+  `getStatus` and the shared `commentsMarkdown` with `readSnapshot({…, keepToken: false})`, so a CLI loop
+  never fills the staging-token cache. Every reply carries `commands` (D8) and the CLI says the server
+  "predates" a command it does not list; a JSON reply with no `commands` is the 1.2 server, which knows
+  `download` only. One `palmux: cli <cmd> tty=<tty> -> <status> <outcome>` line per request (D10), never
+  file contents or comment text. `-v`/`--version`/`version` print `APP_VERSION` (imported lazily in
+  `palmux-cli-main.ts`, because `version.ts` runs `git` at load) and never post; `-h`/`--help` anywhere
+  before `--` prints the usage; any other `-x` before `--` is `unknown option` + usage, exit 2; `--` makes
+  every later argument a path (`-` alone is an operand).
+  **`open file:line[:col]`, `open --wait`, `web` and `status`** (owner, 2026-11-09, after `code`'s
+  `-g`, `-w` and `--status`). `open` tries each argument as typed first and strips a `:N[:M]` suffix
+  only when that is not a file, so a file named `notes:12` opens as itself; the position rides
+  `cliOpen.goto` (an older bundle drops it and opens at the top), App parks it in
+  `panes/editor-goto.ts` (keyed by path), the file's `EditorPane` takes it once Monaco holds the text
+  (or at once when it is open, and scrolls a hidden pane on its first non-zero layout), and its
+  `FileTabPane` switches Read to Edit. `web` normalises on the SERVER (`webTarget`: a bare port is
+  `http://localhost:<port>/`, a scheme-less host gets `http://`, only http(s) passes) and sends
+  `cliWeb`; the window selects the web tab on that url or `createTab`s one, and a tab another window
+  holds is `open in another window`. `status` answers `APP_VERSION` and the terminal on the tty
+  (`id`, `window`, whether a socket is attached); the CLI prints its own version first, so it still
+  says something when the server is down or predates the command. **`--wait` polls the SERVER's tab
+  list, never a window**: after `open`, the CLI loops `POST /cli { cmd: 'wait', paths, appear? }`,
+  each held up to 20 s (`CLI_WAIT_MS`, checked every 100 ms) until no `editor` tab in any window has
+  that url. One long request was rejected: undici's `fetch` gives up on headers after 300 s. The
+  first request carries `appear`, which gives a file with no tab 5 s (`CLI_APPEAR_MS`) to be created,
+  because the window answers `open` on its data socket while its `createTab` travels on the control
+  socket. An unreachable server is retried once a second for 60 s (tabs survive a restart). The
+  registry's `onListChanged` has one slot (`broadcastSessions`), which is why `wait` polls `tabs()`.
 - **Inline images** (`@xterm/addon-image` + `terminal/image-support.ts`, `settings.inlineImages`,
   DEFAULT ON): real pixels in the terminal — **SIXEL** and **iTerm2 IIP**, drawn onto the addon's own
   `xterm-image-layer` canvas above the WebGL one (verified live: `timg -ps` renders in colour with
@@ -3189,16 +3417,39 @@ null once the process is gone, so nothing after the exit could find it.
   `deriveUiTokens(profile)` computes the seven `--t-*` UI tokens (base/mantle/surface/text/subtext/
   accent/accent-alt) — luminance-aware shade direction (light themes darken surface), canonical
   Catppuccin values pinned via per-profile `ui` overrides so the DEFAULT stays pixel-identical.
-  Tab colors are the theme's OWN 16 ANSI slots: `applyThemeTokens` emits `--tab-c-ansi<N>` +
-  a luminance-flipped `--tab-c-ansi<N>-ink` per slot straight from `profile.ansi16` (plus
-  `--t-accent-ink`), `color-scheme` on `:root` — called PRE-PAINT in main.tsx (no flash) and on
+  `applyThemeTokens` emits `--tab-c-ansi<N>` + a luminance-flipped `--tab-c-ansi<N>-ink` per slot
+  straight from `profile.ansi16` (Source Control, dictation and the config editor colour text from
+  those), the fifteen tab colours `--tab-c-<name>` + `-ink` from `deriveTabColors` (shared), plus
+  `--t-accent-ink` and `color-scheme` on `:root` — called PRE-PAINT in main.tsx (no flash) and on
   a change of the RESOLVED theme id via an App useLayoutEffect (useTerminal only owns the xterm canvas
   theme now; see "One RESOLVED theme id").
-  `TAB_COLORS` (tab-meta.ts) is the 16 `ansi0`–`ansi15` slots; the 12 LEGACY names persisted in old
-  tabs.json/groups.json resolve FOREVER via a static name→slot map in `resolveColorSlot` (no data
-  rewrite; the server still assigns legacy names as group defaults). On the strip a tab colour is a
-  7px dot and never marks the active pill (the pill's own fill and ring do); the picker is two
-  labeled rows (normal/bright) of theme-resolved swatches; a group colour is the 1px frame of its
+  **Tab colours are fifteen NAMES** (owner, 2026-11-11): white, gray, pink, magenta, purple, blue,
+  light-blue, cyan, green, lime, yellow, orange, red, crimson-red, black (`TAB_COLOR_NAMES` in
+  shared, `TAB_COLORS` in tab-meta.ts), in one picker row with no normal/bright split. The bright
+  slots went because many themes repeat the normal colour there (Catppuccin's ansi9 IS ansi1), so a
+  bright swatch drew the same colour twice. `deriveTabColors` anchors the eight ANSI hues on the
+  theme's own slots 0–7, takes gray as the midpoint of black and white (slot 8 sits on slot 0 in
+  Solarized), and puts the other six BETWEEN two anchors in HSL hue (orange red→yellow, lime
+  green→yellow, light-blue blue→cyan, purple blue→magenta, pink magenta→red lighter, crimson-red
+  red→magenta darker). Each chromatic anchor is first held inside a wide hue band (`ANCHOR_BANDS`;
+  outside it the slot is turned to the band's canonical hue, keeping its saturation and lightness),
+  because Ayu Dark's magenta slot is orange (50°) and made purple green and pink orange; the bands
+  are wide enough that Gruvbox's teal-ish blue (183°) and green-ish aqua (122°) stay. Measured first:
+  reusing `deriveAccents` (whose mauve is ansi5) put two names on one colour in EVERY built-in theme
+  (purple on magenta in ten, pink on magenta in the two Catppuccins). A test holds each derived name
+  inside its hue band in every built-in theme, and another holds every built-in theme to
+  fifteen colours at least 15 RGB units apart; the closest pair is Catppuccin's magenta~pink (18),
+  because that theme's magenta slot is already pink, which the anchoring keeps by choice. **What would
+  invalidate that floor:** a new built-in theme whose own slots collide, or a change of the anchors.
+  Every older persisted name resolves FOREVER through `OLDER_COLOR_NAMES` in `resolveColorSlot`, with
+  no data rewrite: `ansi0`–`ansi15` read as their hue (a bright slot as its normal hue, 8 as gray), and
+  the pre-ANSI names as their nearest colour (peach→orange, maroon→crimson-red, mauve→purple,
+  teal→cyan, sky and lavender→light-blue; red, green, yellow, blue, gray and pink are names already).
+  The server still assigns those pre-ANSI names as group defaults and needed no change. A window on an
+  older bundle shows a new name uncoloured until it reloads. On the strip a tab colour is the left
+  bar described in the tab-strip paragraph. The context menus size to their content, so their swatch
+  row is capped at eight a line (`.tab-menu .swatch-row`); a phone's sheet keeps its own width. A group
+  colour is the 1px frame of its
   cluster plus the always-filled chip (`--group-accent` / `--group-ink`), unchanged by which member
   is active. (`deriveAccents` still exists in shared for other consumers but the client no longer
   emits its 12 vars.)

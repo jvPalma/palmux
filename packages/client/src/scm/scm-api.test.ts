@@ -3,14 +3,18 @@ import type { ScmCommentInput, ScmEntry, ScmStatus } from '@palmux/shared';
 import {
   createScmComment,
   deleteScmComment,
+  discardScmPaths,
   fetchScmComments,
   fetchScmRepo,
   fetchScmStatus,
+  parseBatchResult,
   parseCommentList,
   parseStatus,
   restoreScmWrite,
   stageScmFile,
+  stageScmPaths,
   unstageScmFile,
+  unstageScmPaths,
   updateScmComment,
 } from './scm-api';
 
@@ -301,5 +305,114 @@ describe('the index writes', () => {
       ok: false,
       message: 'Unexpected answer from the server',
     });
+  });
+});
+
+describe('a restore with nothing to redo', () => {
+  it('accepts a null receipt, which is how a discard’s Undo answers', async () => {
+    stubFetch(() => reply({ receiptId: null, status: 'restored' }));
+    expect(await restoreScmWrite('/work/app', 'd1')).toEqual({
+      ok: true,
+      value: { receiptId: null, status: 'restored' },
+    });
+  });
+
+  it('still refuses an answer with no receipt field at all', async () => {
+    stubFetch(() => reply({ status: 'restored' }));
+    expect(await restoreScmWrite('/work/app', 'd1')).toMatchObject({ ok: false });
+  });
+});
+
+const batch = (over: Record<string, unknown> = {}) => ({
+  receiptId: 'r1',
+  status: 'staged',
+  done: ['a.ts'],
+  skipped: [{ path: 'b.ts', reason: 'converted' }],
+  ...over,
+});
+
+describe('the batch writes', () => {
+  it('stages many paths: one POST with { paths } to /scm/stage-paths', async () => {
+    const fn = stubFetch(() => reply(batch()));
+    expect(await stageScmPaths('/work/app', ['a.ts', 'b '])).toEqual({
+      ok: true,
+      value: batch(),
+    });
+    const [url, init] = fn.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/scm/stage-paths?repo=%2Fwork%2Fapp');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(String(init.body))).toEqual({ paths: ['a.ts', 'b '] });
+  });
+
+  it('unstages many entries, rename sources included, to /scm/unstage-paths', async () => {
+    const fn = stubFetch(() => reply(batch({ status: 'unstaged' })));
+    const entries = [{ path: 'b.ts', oldPath: 'a.ts' }, { path: 'c.ts' }];
+    expect(await unstageScmPaths('/work/app', entries)).toMatchObject({ ok: true });
+    const [url, init] = fn.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/scm/unstage-paths?repo=%2Fwork%2Fapp');
+    expect(JSON.parse(String(init.body))).toEqual({ entries });
+  });
+
+  it('discards entries with the fingerprint the reader confirmed, to /scm/discard', async () => {
+    const fn = stubFetch(() => reply(batch({ status: 'discarded', skipped: [] })));
+    const entries = [{ path: 'a.ts', fp: 'fp1' }];
+    expect(await discardScmPaths('/work/app', entries)).toMatchObject({
+      ok: true,
+      value: { status: 'discarded' },
+    });
+    const [url, init] = fn.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/scm/discard?repo=%2Fwork%2Fapp');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(String(init.body))).toEqual({ entries });
+  });
+
+  it('accepts a null receipt: nothing changed', async () => {
+    stubFetch(() => reply(batch({ receiptId: null, done: [] })));
+    expect(await stageScmPaths('/work/app', ['b.ts'])).toMatchObject({
+      ok: true,
+      value: { receiptId: null, done: [] },
+    });
+  });
+
+  it.each([
+    ['not an object', 'nope'],
+    ['no status', batch({ status: undefined })],
+    ['a status of the single-file writes', batch({ status: 'restored' })],
+    ['a numeric receipt', batch({ receiptId: 3 })],
+    ['no receipt field', batch({ receiptId: undefined })],
+    ['done that is not a list of paths', batch({ done: [1] })],
+    ['skipped that is not a list', batch({ skipped: 'b.ts' })],
+    ['a skip with no path', batch({ skipped: [{ reason: 'gone' }] })],
+    ['a skip with a reason nobody labels', batch({ skipped: [{ path: 'b', reason: 'bored' }] })],
+    ['a skip named like an object member', batch({ skipped: [{ path: 'b', reason: 'toString' }] })],
+  ])('refuses %s', async (_name, body) => {
+    stubFetch(() => reply(body));
+    expect(await stageScmPaths('/work/app', ['a.ts'])).toMatchObject({
+      ok: false,
+      message: 'Unexpected answer from the server',
+    });
+  });
+
+  it.each([
+    ['/scm/stage-paths', () => stageScmPaths('/work/app', ['a.ts'])],
+    ['/scm/unstage-paths', () => unstageScmPaths('/work/app', [{ path: 'a.ts' }])],
+    ['/scm/discard', () => discardScmPaths('/work/app', [{ path: 'a.ts', fp: 'f' }])],
+  ] as const)('keeps the code of a 409 from %s', async (_route, call) => {
+    stubFetch(() => reply({ error: 'busy', code: 'busy' }, 409));
+    expect(await call()).toEqual({ ok: false, message: 'busy', httpStatus: 409, code: 'busy' });
+  });
+
+  it('reads a network failure as no answer', async () => {
+    stubFetch(() => Promise.reject(new Error('offline')));
+    expect(await discardScmPaths('/work/app', [{ path: 'a.ts', fp: 'f' }])).toEqual({
+      ok: false,
+      message: 'Cannot reach palmux',
+      httpStatus: 0,
+    });
+  });
+
+  it('parseBatchResult answers the shape as sent, and null for junk', () => {
+    expect(parseBatchResult(batch())).toEqual(batch());
+    expect(parseBatchResult(null)).toBeNull();
   });
 });

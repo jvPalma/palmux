@@ -9,14 +9,13 @@
 // Finding is `anchorLines`, the function scroll anchoring uses too, so a comment
 // and a scroll position agree about where code went.
 
+import type { ScmFileSnapshot, ScmGroup } from './scm';
 import type {
   ScmComment,
   ScmCommentInput,
   ScmCommentSide,
   ScmCommentVersion,
-  ScmFileSnapshot,
-  ScmGroup,
-} from '@palmux/shared';
+} from './scm-comments';
 import { anchorLines, DEFAULT_CONTEXT, splitLines } from './anchor';
 
 /** One side of the review's file pair: its text as lines, and which version of the file that is. */

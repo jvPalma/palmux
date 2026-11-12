@@ -37,6 +37,8 @@ export interface ClientSettings {
    *  apart from the terminal's. null = never set: the editor then follows the
    *  terminal and the review keeps its own default size. Never synced. */
   codeFontSize: number | null;
+  /** Per-device, local-only: word wrap in the file/note editor. Never synced. */
+  editorWrap: boolean;
   fontFamily: string;
   /** The picked theme in `fixed` mode. In `system` mode it is only what the
    *  server exports (tmux, delta, Claude): this client writes it when its own
@@ -121,6 +123,7 @@ export const FONT_PRESETS: { label: string; value: string }[] = [
 export const DEFAULTS: ClientSettings = {
   fontSize: 14,
   codeFontSize: null,
+  editorWrap: true,
   fontFamily: DEFAULT_FONT_STACK,
   themeId: DEFAULT_THEME_ID,
   themeMode: 'fixed',
@@ -252,6 +255,7 @@ export function sanitize(s: ClientSettings): ClientSettings {
       typeof s.codeFontSize === 'number' && Number.isFinite(s.codeFontSize)
         ? clampFontSize(Math.round(s.codeFontSize))
         : null,
+    editorWrap: typeof s.editorWrap === 'boolean' ? s.editorWrap : true,
     scrollback: clamp(Math.round(s.scrollback) || DEFAULTS.scrollback, 0, 100000),
     cursorStyle: (['block', 'underline', 'bar'] as const).includes(s.cursorStyle)
       ? s.cursorStyle

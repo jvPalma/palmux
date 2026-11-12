@@ -72,6 +72,13 @@ vi.mock('../terminal/TerminalPane', () => ({
 // The iframe stand-in. PaneHost is real, so what the test holds is the node PaneHost keeps mounted.
 vi.mock('../panes/WebPane', () => ({ WebPane: () => <div data-testid="web-node" /> }));
 
+// File tab stand-in: exposes the onSaved PaneHost wires so a test can fire it.
+vi.mock('../panes/FileTabPane', () => ({
+  FileTabPane: ({ onSaved }: { onSaved?: () => void }) => (
+    <button data-testid="file-node" onClick={onSaved} />
+  ),
+}));
+
 const { GroupsView } = await import('./GroupsView');
 
 type Props = ComponentProps<typeof GroupsView>;
@@ -148,6 +155,20 @@ afterEach(() => {
   seen.clear();
   refit.mockClear();
   vi.unstubAllGlobals();
+});
+
+describe('GroupsView onPinTab', () => {
+  it('reaches PaneHost: a saved file tab pins its own id', () => {
+    const tabs: TabMeta[] = [meta('0'), { id: '1', kind: 'editor', url: '/a/b.ts' }];
+    const layout = singleLeaf(
+      tabs.map((t) => ref(t.id, t.kind)),
+      '1',
+    );
+    const onPinTab = vi.fn();
+    render(<GroupsView {...props(layout, tabs, { onPinTab })} />);
+    screen.getByTestId('file-node').click();
+    expect(onPinTab).toHaveBeenCalledWith('1');
+  });
 });
 
 describe('GroupsView terminal identity', () => {

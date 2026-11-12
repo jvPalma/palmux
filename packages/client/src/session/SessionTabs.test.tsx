@@ -18,6 +18,7 @@ import {
 } from './SessionTabs';
 import { Icon } from '../ui/icons';
 import { TabSheet } from './TabSheet';
+import { TAB_COLORS } from './tab-meta';
 
 const TABS: TabMeta[] = [
   { id: '0', kind: 'terminal', title: 'vim' },
@@ -73,8 +74,8 @@ describe('rendering', () => {
     expect(screen.getByTestId('session-tab-1').querySelector('.ctab-icon')?.textContent).toBe('');
   });
 
-  // Colour is an identity dot before the title and nothing else: it never fills
-  // the pill and never marks it as the active one.
+  // Colour is an identity bar before the title and nothing else: it never fills
+  // the pill. It is dimmed on an inactive pill (tab-strip-css.test.ts holds that).
   it('draws a colour dot only for a coloured tab, active or not', () => {
     renderTabs({ current: '2' });
     const dot = (id: string) => screen.getByTestId(`session-tab-${id}`).querySelector('.ctab-dot');
@@ -98,16 +99,16 @@ describe('rendering', () => {
     // A colored tab gets --tab-accent inline; an uncolored one falls back to the
     // CSS default (no inline var).
     expect(screen.getByTestId('session-tab-1').style.getPropertyValue('--tab-accent')).toBe(
-      'var(--tab-c-ansi9)',
+      'var(--tab-c-orange)',
     );
     expect(screen.getByTestId('session-tab-0').style.getPropertyValue('--tab-accent')).toBe('');
   });
 
   it('a colored tab carries the theme-aware accent + ink vars (legacy name mapped)', () => {
-    renderTabs(); // tab 1 = peach → ansi9 slot
+    renderTabs(); // tab 1 = peach → orange
     const tab = screen.getByTestId('session-tab-1').style;
-    expect(tab.getPropertyValue('--tab-accent')).toBe('var(--tab-c-ansi9)');
-    expect(tab.getPropertyValue('--tab-ink')).toBe('var(--tab-c-ansi9-ink)');
+    expect(tab.getPropertyValue('--tab-accent')).toBe('var(--tab-c-orange)');
+    expect(tab.getPropertyValue('--tab-ink')).toBe('var(--tab-c-orange-ink)');
   });
 
   it('merges a not-yet-broadcast current id as a terminal tab', () => {
@@ -550,11 +551,11 @@ describe('inline rename', () => {
 });
 
 describe('context menu', () => {
-  it('right-click → swatch sends the ansi slot name; ∅ clears it', () => {
+  it('right-click → swatch sends the colour name; ∅ clears it', () => {
     const p = renderTabs();
     fireEvent.contextMenu(screen.getByTestId('session-tab-1'));
-    fireEvent.click(screen.getByTestId('menu-color-ansi2'));
-    expect(p.onRecolor).toHaveBeenCalledWith('1', 'ansi2');
+    fireEvent.click(screen.getByTestId('menu-color-crimson-red'));
+    expect(p.onRecolor).toHaveBeenCalledWith('1', 'crimson-red');
     expect(screen.queryByTestId('tab-menu')).toBeNull(); // menu closed
 
     fireEvent.contextMenu(screen.getByTestId('session-tab-1'));
@@ -562,22 +563,22 @@ describe('context menu', () => {
     expect(p.onRecolor).toHaveBeenCalledWith('1', '');
   });
 
-  it('offers all sixteen ansi swatches (two labeled rows) + clear', () => {
+  it('offers the fifteen palette swatches in one row + clear', () => {
     renderTabs();
     fireEvent.contextMenu(screen.getByTestId('session-tab-1'));
-    for (let n = 0; n < 16; n += 1) {
-      expect(screen.getByTestId(`menu-color-ansi${n}`)).toBeTruthy();
-    }
+    for (const c of TAB_COLORS) expect(screen.getByTestId(`menu-color-${c.name}`)).toBeTruthy();
+    expect(document.querySelectorAll('.tab-menu .swatch-row')).toHaveLength(1);
+    expect(screen.queryByTestId('menu-color-ansi9')).toBeNull();
     expect(screen.getByTestId('menu-color-none')).toBeTruthy();
-    fireEvent.click(screen.getByTestId('menu-color-ansi14'));
+    fireEvent.click(screen.getByTestId('menu-color-light-blue'));
     expect(screen.queryByTestId('tab-menu')).toBeNull();
   });
 
-  it('highlights the mapped slot for a LEGACY-colored tab', () => {
-    renderTabs(); // tab 1 = peach → ansi9
+  it('highlights the swatch an older colour name reads as now', () => {
+    renderTabs(); // tab 1 = peach → orange
     fireEvent.contextMenu(screen.getByTestId('session-tab-1'));
-    expect(screen.getByTestId('menu-color-ansi9').className).toContain('selected');
-    expect(screen.getByTestId('menu-color-ansi2').className).not.toContain('selected');
+    expect(screen.getByTestId('menu-color-orange').className).toContain('selected');
+    expect(screen.getByTestId('menu-color-red').className).not.toContain('selected');
   });
 
   it('menu Close routes to onClose', () => {
@@ -592,6 +593,56 @@ describe('context menu', () => {
     fireEvent.contextMenu(screen.getByTestId('session-tab-0'));
     fireEvent.click(screen.getByTestId('menu-rename'));
     expect(screen.getByTestId('tab-rename-input')).toBeTruthy();
+  });
+});
+
+describe('preview tabs', () => {
+  const PREVIEW: TabMeta[] = [
+    { id: '0', kind: 'terminal', title: 'vim' },
+    { id: '5', kind: 'editor', url: '/a/notes.md', preview: true },
+  ];
+
+  it('marks a preview with the class, title and label; a pinned pill gets none', () => {
+    renderTabs({ tabs: PREVIEW, allTabs: PREVIEW });
+    const pill = screen.getByTestId('session-tab-5');
+    expect(pill).toHaveClass('preview');
+    expect(pill).toHaveAttribute('title', 'notes.md — preview (double-click to keep open)');
+    expect(pill).toHaveAttribute('aria-label', 'notes.md, preview');
+    const pinned = screen.getByTestId('session-tab-0');
+    expect(pinned).not.toHaveClass('preview');
+    expect(pinned).not.toHaveAttribute('title');
+    expect(pinned).not.toHaveAttribute('aria-label');
+  });
+
+  it('double-click on a preview pins it and opens no rename field', () => {
+    const onPin = vi.fn();
+    const p = renderTabs({ tabs: PREVIEW, allTabs: PREVIEW, onPin });
+    fireEvent.doubleClick(screen.getByTestId('session-tab-5'));
+    expect(onPin).toHaveBeenCalledWith('5');
+    expect(screen.queryByTestId('tab-rename-input')).toBeNull();
+    expect(p.onRename).not.toHaveBeenCalled();
+  });
+
+  it('double-click on a pinned pill still renames', () => {
+    const onPin = vi.fn();
+    renderTabs({ tabs: PREVIEW, allTabs: PREVIEW, onPin });
+    fireEvent.doubleClick(screen.getByTestId('session-tab-0'));
+    expect(onPin).not.toHaveBeenCalled();
+    expect(screen.getByTestId('tab-rename-input')).toBeTruthy();
+  });
+
+  it('Keep open is the first menu item, only for a preview, and pins', () => {
+    const onPin = vi.fn();
+    renderTabs({ tabs: PREVIEW, allTabs: PREVIEW, onPin });
+    fireEvent.contextMenu(screen.getByTestId('session-tab-0'));
+    expect(screen.queryByTestId('menu-keep-open')).toBeNull();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.contextMenu(screen.getByTestId('session-tab-5'));
+    const menu = screen.getByTestId('tab-menu');
+    expect(menu.children[0]).toBe(screen.getByTestId('menu-keep-open'));
+    expect(menu.children[1]).toBe(screen.getByTestId('menu-rename'));
+    fireEvent.click(screen.getByTestId('menu-keep-open'));
+    expect(onPin).toHaveBeenCalledWith('5');
   });
 });
 
@@ -1207,8 +1258,8 @@ describe('tab groups', () => {
     renderGroups();
     const member = screen.getByTestId('session-tab-1'); // color blue, group green
     expect(member.className).toContain('grouped');
-    expect(member.style.getPropertyValue('--tab-accent')).toBe('var(--tab-c-ansi4)');
-    expect(member.style.getPropertyValue('--group-accent')).toBe('var(--tab-c-ansi2)');
+    expect(member.style.getPropertyValue('--tab-accent')).toBe('var(--tab-c-blue)');
+    expect(member.style.getPropertyValue('--group-accent')).toBe('var(--tab-c-green)');
   });
 
   // The cluster is the frame: one wrapper holds the chip and every visible member
@@ -1221,7 +1272,7 @@ describe('tab groups', () => {
       'session-tab-0',
       'session-tab-1',
     ]);
-    expect(cluster.style.getPropertyValue('--group-accent')).toBe('var(--tab-c-ansi2)');
+    expect(cluster.style.getPropertyValue('--group-accent')).toBe('var(--tab-c-green)');
     expect(screen.getByTestId('session-tab-2').closest('.group-cluster')).toBeNull();
   });
 
@@ -1277,8 +1328,8 @@ describe('tab groups', () => {
   it('the group menu ungroups, closes-all, and recolors', () => {
     const p = renderGroups();
     fireEvent.contextMenu(screen.getByTestId('group-chip-gaa111'));
-    fireEvent.click(screen.getByTestId('group-color-ansi1'));
-    expect(p.onGroupRecolor).toHaveBeenCalledWith('gaa111', 'ansi1');
+    fireEvent.click(screen.getByTestId('group-color-red'));
+    expect(p.onGroupRecolor).toHaveBeenCalledWith('gaa111', 'red');
 
     fireEvent.contextMenu(screen.getByTestId('group-chip-gaa111'));
     fireEvent.click(screen.getByTestId('group-menu-ungroup'));

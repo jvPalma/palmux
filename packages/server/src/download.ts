@@ -38,7 +38,8 @@ const err = (status: 400 | 404 | 413, message: string): DownloadResolution => ({
   message,
 });
 
-const expandHome = (p: string): string =>
+/** A leading `~` or `~/` is the server's home; `~user` is left alone. */
+export const expandHome = (p: string): string =>
   p === '~' || p.startsWith('~/') ? homedir() + p.slice(1) : p;
 
 /** The static directory prefix of a glob (segments before the first magic one). */

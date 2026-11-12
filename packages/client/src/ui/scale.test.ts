@@ -1396,6 +1396,7 @@ describe('scale guard — kit control heights', () => {
       expect(KIT_CONTROL.test(subjectOf('.ui-icon-btn svg'))).toBe(false);
       expect(boxOf('.ui-btn-sm', 28)).toBe(24);
       expect(boxOf('.ui-collapsible-trigger-xs', 36)).toBe(24);
+      expect(boxOf('.ui-collapsible-trigger-sm', 28)).toBe(24);
       expect(boxOf('.ui-icon-btn-sm', 36)).toBe(32);
       expect(boxOf('.ui-seg-item', 36)).toBe(30);
       expect(boxOf('.ui-seg', 36)).toBe(36);
@@ -1451,7 +1452,6 @@ describe('scale guard — the end state', () => {
     ).toEqual([
       'dictation/dictation-view.css  .rec-toast-bar  border-radius',
       'dictation/dictation-view.css  .rec-toast-wave  gap',
-      'index.css  .ctab-dot  height',
       'index.css  .dh-text  max-height',
       'index.css  .drawer-dot  height',
       'index.css  .drawer-row.drop-before::before, .drawer-row.drop-after::after  border-radius',

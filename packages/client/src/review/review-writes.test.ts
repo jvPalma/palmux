@@ -2,11 +2,13 @@
 // "A staged file can be unstaged"): the transparent retry on an expired token, the
 // refusals each with its own words, and Undo.
 
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ScmFileSnapshot, ScmWriteResult } from '@palmux/shared';
+import { readLastDiscard, recordDiscard } from '../scm/discard-log';
 import type { ScmFetchResult } from '../scm/scm-api';
 import {
   describeFailure,
+  describeNoChange,
   describeWrites,
   draftBlocker,
   reviewBlocker,
@@ -179,6 +181,27 @@ describe('what each refusal says', () => {
       describeFailure({ ok: false, message: 'x', httpStatus: 410, code: 'token' }, 'undo'),
     ).toBe('Undo is no longer available.');
   });
+
+  it('words a refused discard, or its Undo, by the files and not the index', () => {
+    const refusal = (code: 'busy' | 'conflict' | 'token' | 'changed', message = 'x') =>
+      describeFailure({ ok: false, message, httpStatus: 409, code }, 'discard');
+    expect(refusal('conflict')).toBe('The files changed since the discard');
+    // The server's own count of what it put back is kept.
+    const partial =
+      'The files changed since the discard; 1 of 2 were restored, and Undo keeps the rest.';
+    expect(refusal('conflict', partial)).toBe(partial);
+    expect(refusal('token')).toBe('This Undo has expired');
+    expect(refusal('changed')).toBe(
+      'The files changed since you confirmed; nothing was discarded.',
+    );
+    expect(refusal('busy')).toBe(
+      describeFailure({ ok: false, message: 'x', httpStatus: 409, code: 'busy' }, 'stage'),
+    );
+    // Every other action keeps its wording.
+    expect(
+      describeFailure({ ok: false, message: 'x', httpStatus: 409, code: 'conflict' }, 'undo'),
+    ).toBe('The index changed since; nothing was undone.');
+  });
 });
 
 describe('A file palmux cannot snapshot', () => {
@@ -330,5 +353,211 @@ describe('describeWrites', () => {
     expect(describeWrites([logged('r1'), logged('r2', { action: 'unstage' }), logged('r3')])).toBe(
       'Staged 2 files, unstaged 1 file',
     );
+  });
+
+  it('says Staged, not Reviewed, for one file staged from the list', () => {
+    expect(describeWrites([logged('r1', { name: 'a.ts', via: 'list' })])).toBe('Staged a.ts');
+    expect(describeWrites([logged('r1', { name: 'a.ts', via: 'list', count: 1 })])).toBe(
+      'Staged a.ts',
+    );
+  });
+
+  it('names a discard', () => {
+    expect(describeWrites([logged('d1', { name: 'a.ts', action: 'discard' })])).toBe(
+      'Discarded a.ts',
+    );
+  });
+
+  it('names the count of a write that changed many files', () => {
+    expect(describeWrites([logged('r1', { name: 'src', via: 'list', count: 40 })])).toBe(
+      'Staged 40 files',
+    );
+    expect(describeWrites([logged('r1', { action: 'unstage', via: 'list', count: 3 })])).toBe(
+      'Unstaged 3 files',
+    );
+  });
+
+  it('sums the counts per action, staged then unstaged then discarded', () => {
+    expect(
+      describeWrites([
+        logged('d1', { action: 'discard', count: 2 }),
+        logged('r1', { count: 40, via: 'list' }),
+        logged('u1', { action: 'unstage' }),
+      ]),
+    ).toBe('Staged 40 files, unstaged 1 file, discarded 2 files');
+    expect(
+      describeWrites([
+        logged('r1', { count: 40, via: 'list' }),
+        logged('d1', { action: 'discard', count: 2 }),
+      ]),
+    ).toBe('Staged 40 files, discarded 2 files');
+    expect(
+      describeWrites([logged('d1', { action: 'discard' }), logged('d2', { action: 'discard' })]),
+    ).toBe('Discarded 2 files');
+  });
+
+  it('appends the skips, with the reason when every skip has the same one', () => {
+    expect(
+      describeWrites([
+        logged('r1', {
+          count: 38,
+          via: 'list',
+          skipped: [
+            { path: 'a', reason: 'converted' },
+            { path: 'b', reason: 'converted' },
+          ],
+        }),
+      ]),
+    ).toBe('Staged 38 files, skipped 2 (needs a git filter)');
+  });
+
+  it('gives each reason with its count when they differ, summed across writes', () => {
+    expect(
+      describeWrites([
+        logged('r1', {
+          count: 5,
+          skipped: [
+            { path: 'a', reason: 'converted' },
+            { path: 'c', reason: 'converted' },
+          ],
+        }),
+        logged('r2', { count: 5, skipped: [{ path: 'b', reason: 'gone' }] }),
+      ]),
+    ).toBe('Staged 10 files, skipped 3 (needs a git filter: 2, no longer changed: 1)');
+  });
+
+  it('names the one file a batch skipped', () => {
+    expect(
+      describeWrites([
+        logged('d1', {
+          action: 'discard',
+          count: 3,
+          via: 'list',
+          skipped: [{ path: 'src/lib/link.ts', reason: 'symlink' }],
+        }),
+      ]),
+    ).toBe('Discarded 3 files, skipped link.ts (a symbolic link)');
+  });
+
+  it('appends the skips to a one-file write too', () => {
+    expect(
+      describeWrites([
+        logged('r1', { name: 'a.ts', via: 'list', skipped: [{ path: 'b', reason: 'unmerged' }] }),
+      ]),
+    ).toBe('Staged a.ts, skipped b (unmerged)');
+  });
+});
+
+describe('describeNoChange', () => {
+  it('says nothing changed, for each action', () => {
+    expect(describeNoChange('stage', [])).toBe('Nothing staged');
+    expect(describeNoChange('unstage', [])).toBe('Nothing unstaged');
+    expect(describeNoChange('discard', [])).toBe('Nothing discarded');
+  });
+
+  it('gives the skip suffix of the other toasts', () => {
+    expect(
+      describeNoChange('stage', [
+        { path: 'a', reason: 'converted' },
+        { path: 'b', reason: 'converted' },
+      ]),
+    ).toBe('Nothing staged, skipped 2 (needs a git filter)');
+    expect(
+      describeNoChange('discard', [
+        { path: 'a', reason: 'gone' },
+        { path: 'b', reason: 'changed' },
+      ]),
+    ).toBe('Nothing discarded, skipped 2 (no longer changed: 1, changed since you confirmed: 1)');
+  });
+});
+
+describe('Undo of a discard', () => {
+  it('says the files changed since the discard when its receipt conflicts', async () => {
+    const restore = restoring(refused(409, 'conflict'));
+    expect(await undoWrites(restore, [logged('d1', { action: 'discard' })])).toEqual({
+      kind: 'notice',
+      undone: 0,
+      message: 'The files changed since the discard',
+    });
+  });
+
+  it("keeps the server's count when an Undo of a discard stopped part way", async () => {
+    const partial =
+      'The files changed since the discard; 1 of 2 were restored, and Undo keeps the rest.';
+    const restore = restoring(refused(409, 'conflict', partial));
+    expect(await undoWrites(restore, [logged('d1', { action: 'discard' })])).toEqual({
+      kind: 'notice',
+      undone: 0,
+      message: partial,
+    });
+  });
+
+  it('says an expired discard receipt has expired, and takes the project bar’s Undo away', async () => {
+    localStorage.clear();
+    recordDiscard('/work/app', { receiptId: 'd1', at: Date.now(), count: 2 });
+    const restore = restoring(refused(410, 'token'));
+    expect(await undoWrites(restore, [logged('d1', { action: 'discard' })])).toEqual({
+      kind: 'notice',
+      undone: 0,
+      message: 'This Undo has expired',
+    });
+    expect(readLastDiscard('/work/app')).toBeNull();
+  });
+
+  it('keeps the index wording for an expired index receipt', async () => {
+    expect(await undoWrites(restoring(refused(410, 'token')), [logged('r1')])).toMatchObject({
+      message: 'Undo is no longer available.',
+    });
+  });
+
+  it('uses the discard wording only for the write that conflicted', async () => {
+    // Newest first: the discard is undone, then the stage conflicts.
+    const stageConflicts = restoring(ok('x', 'restored'), refused(409, 'conflict'));
+    expect(
+      await undoWrites(stageConflicts, [logged('r1'), logged('d1', { action: 'discard' })]),
+    ).toMatchObject({
+      undone: 1,
+      message: 'Undid 1 of 2. The index changed since for the rest, so they were left as they are.',
+    });
+    // The stage is undone, then the discard conflicts.
+    const discardConflicts = restoring(ok('x', 'restored'), refused(409, 'conflict'));
+    expect(
+      await undoWrites(discardConflicts, [logged('d1', { action: 'discard' }), logged('r1')]),
+    ).toMatchObject({ undone: 1, message: 'Undid 1 of 2. The files changed since the discard' });
+  });
+});
+
+describe('Undo of a discard, wherever it runs, takes the project bar’s Undo away', () => {
+  // The review's toast can hold a discard the list made: both share the window's write log.
+  beforeEach(() => localStorage.clear());
+  const discard = logged('d1', { action: 'discard' });
+
+  it('forgets the project’s last discard once its receipt is restored', async () => {
+    recordDiscard('/work/app', { receiptId: 'd1', at: Date.now(), count: 2 });
+    expect(await undoWrites(restoring(), [discard, logged('r1')])).toEqual({
+      kind: 'done',
+      undone: 2,
+    });
+    expect(readLastDiscard('/work/app')).toBeNull();
+  });
+
+  it('keeps it when the restore is refused, so the project bar can try again later', async () => {
+    recordDiscard('/work/app', { receiptId: 'd1', at: Date.now(), count: 2 });
+    await undoWrites(restoring(refused(409, 'conflict')), [discard]);
+    expect(readLastDiscard('/work/app')).toMatchObject({ receiptId: 'd1' });
+  });
+
+  it('keeps a newer discard, and touches nothing for a stage', async () => {
+    recordDiscard('/work/app', { receiptId: 'd2', at: Date.now(), count: 1 });
+    await undoWrites(restoring(), [discard, logged('r1')]);
+    expect(readLastDiscard('/work/app')).toMatchObject({ receiptId: 'd2' });
+  });
+
+  it('forgets it in the project that issued the receipt', async () => {
+    recordDiscard('/work/app', { receiptId: 'd1', at: Date.now(), count: 2 });
+    recordDiscard('/work/lib', { receiptId: 'd3', at: Date.now(), count: 1 });
+    await undoWrites(restoring(), [logged('d3', { action: 'discard', repo: '/work/lib' })]);
+    expect(readLastDiscard('/work/lib')).toBeNull();
+    expect(readLastDiscard('/work/app')).toMatchObject({ receiptId: 'd1' });
   });
 });

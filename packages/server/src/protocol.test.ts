@@ -293,6 +293,55 @@ describe('parseClientMessage', () => {
     expect(parseClientMessage(encodeClientMessage(msg))).toEqual(msg);
   });
 
+  it('keeps preview flags only in their valid form', () => {
+    const create = (preview: unknown) =>
+      parseClientMessage(JSON.stringify({ type: 'createTab', kind: 'review', url: 'changes:/a', preview }));
+    expect(create(true)).toEqual({ type: 'createTab', kind: 'review', url: 'changes:/a', preview: true });
+    expect(create('yes')).toEqual({ type: 'createTab', kind: 'review', url: 'changes:/a' });
+    expect(create(false)).toEqual({ type: 'createTab', kind: 'review', url: 'changes:/a' });
+    const update = (preview: unknown) =>
+      parseClientMessage(JSON.stringify({ type: 'updateTab', id: '1', preview }));
+    expect(update(false)).toEqual({ type: 'updateTab', id: '1', preview: false });
+    expect(update(true)).toEqual({ type: 'updateTab', id: '1' });
+  });
+
+  it('accepts replaceTab only with a string id, an editor or review kind and a string url', () => {
+    const msg: ClientMessage = { type: 'replaceTab', id: '4', kind: 'editor', url: '/a/b.ts' };
+    expect(parseClientMessage(encodeClientMessage(msg))).toEqual(msg);
+    const bad = (f: Record<string, unknown>) =>
+      parseClientMessage(JSON.stringify({ type: 'replaceTab', id: '4', kind: 'review', url: 'x', ...f }));
+    expect(bad({})).not.toBeNull();
+    expect(bad({ kind: 'web' })).toBeNull();
+    expect(bad({ id: 4 })).toBeNull();
+    expect(bad({ url: 5 })).toBeNull();
+  });
+
+  it('parses preview, replaces and previewTabs on the server side', () => {
+    const sessions = (tab: Record<string, unknown>) =>
+      parseServerMessage(
+        JSON.stringify({ type: 'sessions', ids: ['1'], titles: {}, tabs: [{ id: '1', kind: 'editor', ...tab }] }),
+      );
+    const tabOf = (m: ServerMessage | null) => (m?.type === 'sessions' ? m.tabs?.[0] : undefined);
+    expect(tabOf(sessions({ preview: true, replaces: '4' }))).toEqual({
+      id: '1',
+      kind: 'editor',
+      preview: true,
+      replaces: '4',
+    });
+    expect(tabOf(sessions({ preview: 'yes', replaces: 4 }))).toEqual({ id: '1', kind: 'editor' });
+    expect(tabOf(sessions({ preview: false }))).toEqual({ id: '1', kind: 'editor' });
+    const ready = parseServerMessage(JSON.stringify({ type: 'ready', cols: 1, rows: 1, previewTabs: true }));
+    expect(ready).toMatchObject({ previewTabs: true });
+  });
+
+  it('keeps scmBatchWrites only when it is true', () => {
+    const ready = (extra: Record<string, unknown>) =>
+      parseServerMessage(JSON.stringify({ type: 'ready', cols: 1, rows: 1, ...extra }));
+    expect(ready({ scmBatchWrites: true })).toMatchObject({ scmBatchWrites: true });
+    expect(ready({ scmBatchWrites: 'yes' })).not.toHaveProperty('scmBatchWrites');
+    expect(ready({})).not.toHaveProperty('scmBatchWrites');
+  });
+
   it('returns null for createTab with an unknown kind (forgiving drop, not a crash)', () => {
     expect(parseClientMessage(JSON.stringify({ type: 'createTab', kind: 'popup' }))).toBeNull();
     expect(parseClientMessage(JSON.stringify({ type: 'createTab' }))).toBeNull();
@@ -524,5 +573,64 @@ describe('detached windows — client messages', () => {
       );
       expect(parsed).toEqual({ type: 'createTab', kind: 'editor' });
     }
+  });
+});
+
+describe('palmux CLI frames', () => {
+  it('round-trips cliOpen and keeps only non-empty string paths', () => {
+    const msg: ServerMessage = { type: 'cliOpen', requestId: 'r1', paths: ['/a.ts', '/b.md'] };
+    expect(parseServerMessage(encodeServerMessage(msg))).toEqual(msg);
+    expect(
+      parseServerMessage(JSON.stringify({ type: 'cliOpen', requestId: 'r1', paths: ['/a', 3, ''] })),
+    ).toEqual({ type: 'cliOpen', requestId: 'r1', paths: ['/a'] });
+  });
+
+  it('drops a cliOpen with no paths, or without a string requestId', () => {
+    expect(parseServerMessage(JSON.stringify({ type: 'cliOpen', requestId: 'r1', paths: [] }))).toBeNull();
+    expect(parseServerMessage(JSON.stringify({ type: 'cliOpen', requestId: 'r1', paths: '/a' }))).toBeNull();
+    expect(parseServerMessage(JSON.stringify({ type: 'cliOpen', requestId: 7, paths: ['/a'] }))).toBeNull();
+  });
+
+  it('round-trips cliGit and drops one without a string repo or requestId', () => {
+    const msg: ServerMessage = { type: 'cliGit', requestId: 'r2', repo: '/work/app' };
+    expect(parseServerMessage(encodeServerMessage(msg))).toEqual(msg);
+    expect(parseServerMessage(JSON.stringify({ type: 'cliGit', requestId: 'r2' }))).toBeNull();
+    expect(parseServerMessage(JSON.stringify({ type: 'cliGit', repo: '/work/app' }))).toBeNull();
+  });
+
+  it('round-trips cliResult with its note and per-path errors', () => {
+    const msg: ClientMessage = {
+      type: 'cliResult',
+      requestId: 'r1',
+      results: [
+        { path: '/a.ts', ok: true },
+        { path: '/b.ts', ok: false, error: 'open in another window' },
+      ],
+      note: 'this window has no Source Control panel',
+    };
+    expect(parseClientMessage(encodeClientMessage(msg))).toEqual(msg);
+  });
+
+  it('drops a cliResult entry whose ok is not a boolean, and keeps the rest', () => {
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: 'cliResult',
+          requestId: 'r1',
+          results: [
+            { path: '/a.ts', ok: 'yes' },
+            { path: '/b.ts', ok: true, error: 5 },
+            'junk',
+            { ok: true },
+          ],
+          note: 3,
+        }),
+      ),
+    ).toEqual({ type: 'cliResult', requestId: 'r1', results: [{ path: '/b.ts', ok: true }] });
+  });
+
+  it('drops a cliResult without a requestId or a results array', () => {
+    expect(parseClientMessage(JSON.stringify({ type: 'cliResult', results: [] }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({ type: 'cliResult', requestId: 'r', results: {} }))).toBeNull();
   });
 });

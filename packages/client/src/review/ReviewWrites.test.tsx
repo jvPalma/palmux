@@ -5,7 +5,7 @@
 
 import { act, fireEvent, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ScmFileSnapshot } from '@palmux/shared';
+import { fileReviewUrl, type ScmFileSnapshot, type TabMeta } from '@palmux/shared';
 import { scmStatusStore } from '../scm/status-store';
 import {
   FakeServer,
@@ -807,5 +807,125 @@ describe('on a phone the file header’s chips stage and unstage like the kit’
     await press(unstage('a.ts'));
     expect(writes('unstage')).toHaveLength(1);
     expect(writes('unstage')[0]?.body).toEqual({ path: 'a.ts' });
+  });
+});
+
+// ── Reviewed in a single-file review ─────────────────────────────────────────
+
+describe('Reviewed in a single-file review', () => {
+  const fileTab = (
+    path: string,
+    group: 'changes' | 'staged' = 'changes',
+    preview = false,
+  ): TabMeta => ({
+    ...tab(fileReviewUrl(group, REPO, path)),
+    ...(preview ? { preview: true as const } : {}),
+  });
+  interface Calls {
+    shown: [string, string][];
+    pinned: string[];
+    reviews: { group: string; path?: string; repo?: string }[];
+  }
+  async function openSingle(
+    path: string,
+    over: { group?: 'changes' | 'staged'; preview?: boolean } = {},
+  ) {
+    const group = over.group ?? 'changes';
+    const list = FIVE.map((p) => entry(p));
+    server.status[REPO] = statusBody(group === 'staged' ? { staged: list } : { changes: list });
+    for (const p of FIVE) server.files[p] = snapshot(p, { group });
+    const calls: Calls = { shown: [], pinned: [], reviews: [] };
+    const pane = mountReview({
+      tab: fileTab(path, group, over.preview),
+      host: {
+        showFile: (id, p) => calls.shown.push([id, p]),
+        pinTab: (id) => calls.pinned.push(id),
+        openReview: (target) => calls.reviews.push(target),
+      },
+    });
+    await screen.findByTestId('review-list');
+    await settle();
+    return { pane, calls };
+  }
+
+  it('stages the file, moves the tab to the next file and does not pin', async () => {
+    movesToStaged();
+    const { calls } = await openSingle('b.ts', { preview: true });
+    await press(reviewed('b.ts'));
+    expect(writes('stage')[0]?.body).toEqual({ path: 'b.ts', token: 'tok-b.ts-1' });
+    expect(calls.shown).toEqual([['7', 'c.ts']]);
+    expect(calls.pinned).toEqual([]);
+  });
+
+  it('Unstage in a staged single-file review moves on the same way', async () => {
+    const { calls } = await openSingle('a.ts', { group: 'staged' });
+    await press(unstage('a.ts'));
+    expect(writes('unstage')).toHaveLength(1);
+    expect(calls.shown).toEqual([['7', 'b.ts']]);
+    expect(calls.pinned).toEqual([]);
+  });
+
+  it('with no next file shows the end state, and Open review opens the group at the file', async () => {
+    movesToStaged();
+    const { calls } = await openSingle('e.ts');
+    await press(reviewed('e.ts'));
+    expect(calls.shown).toEqual([]);
+    expect(screen.getByTestId('review-message').textContent).toBe('No more files in Changes');
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('rv-end-open-review'));
+    });
+    // In the review's own project, which need not be the one this device reads.
+    expect(calls.reviews).toEqual([{ group: 'changes', path: 'e.ts', repo: REPO }]);
+  });
+
+  it('the end state belongs to its visit: coming back to the file once it changed again shows it', async () => {
+    movesToStaged();
+    const { pane } = await openSingle('e.ts');
+    await press(reviewed('e.ts'));
+    expect(screen.getByTestId('review-message').textContent).toBe('No more files in Changes');
+    pane.setTab(fileTab('d.ts'));
+    await settle();
+    expect(paths()).toEqual(['d.ts']);
+    // e.ts is edited again, so it is back in Changes.
+    const status = server.status[REPO]!;
+    server.status[REPO] = { ...status, changes: [...status.changes, entry('e.ts')] };
+    await act(async () => {
+      scmStatusStore.refresh();
+    });
+    await settle();
+    pane.setTab(fileTab('e.ts'));
+    await settle();
+    expect(screen.queryByTestId('rv-end-open-review')).toBeNull();
+    expect(paths()).toEqual(['e.ts']);
+  });
+
+  it('opening the comment composer pins a preview, once', async () => {
+    const { calls } = await openSingle('a.ts', { preview: true });
+    const line = () => screen.getAllByTestId('review-no-new').find((el) => el.textContent === '1')!;
+    for (let i = 0; i < 2; i++) {
+      // oxlint-disable-next-line no-await-in-loop -- each draft is opened and closed in turn
+      await act(async () => {
+        fireEvent.pointerDown(line(), { pointerType: 'mouse', pointerId: 1, button: 0 });
+        fireEvent.pointerUp(window, { pointerType: 'mouse', pointerId: 1, button: 0 });
+      });
+      fireEvent.click(screen.getByTestId('review-comment-start'));
+      // oxlint-disable-next-line no-await-in-loop
+      await settle();
+      expect(screen.getByTestId('review-comment-input')).toBeInTheDocument();
+      if (i === 0) fireEvent.click(screen.getByTestId('review-comment-cancel'));
+    }
+    expect(calls.pinned).toEqual(['7']);
+  });
+
+  it('does not pin a tab that is already pinned', async () => {
+    const { calls } = await openSingle('a.ts');
+    const line = screen.getAllByTestId('review-no-new').find((el) => el.textContent === '1')!;
+    await act(async () => {
+      fireEvent.pointerDown(line, { pointerType: 'mouse', pointerId: 1, button: 0 });
+      fireEvent.pointerUp(window, { pointerType: 'mouse', pointerId: 1, button: 0 });
+    });
+    fireEvent.click(screen.getByTestId('review-comment-start'));
+    await settle();
+    expect(calls.pinned).toEqual([]);
   });
 });

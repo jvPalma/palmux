@@ -16,6 +16,7 @@ import type { FastifyInstance } from 'fastify';
 import type { LightMyRequestResponse } from 'fastify';
 import type {
   ScmCommentInput,
+  ScmBatchResult,
   ScmCommentList,
   ScmError,
   ScmFileSnapshot,
@@ -26,6 +27,7 @@ import type {
 import { DEFAULT_APP_CONFIG, type AppConfig } from './app-config';
 import { SESSION_COOKIE } from './auth';
 import { createServer, createSessionRegistry } from './server';
+import { discardHooks } from './scm-discard';
 import { resetScmCache } from './scm-snapshot';
 import { memoryGroupsStore, memoryTabsStore } from './tabs-store';
 import { memoryRestoreStore } from './session-restore';
@@ -269,6 +271,45 @@ describe('the cookie gate and unknown /scm paths', () => {
 });
 
 // ── GET /scm/repo ─────────────────────────────────────────────────────────────
+
+describe('the write surface', () => {
+  it('has exactly these /scm routes, and every one that writes is a stage, an unstage, a discard, an Undo or a comment', () => {
+    // printRoutes lists each path with its methods: "/scm/stage (POST)".
+    // printRoutes draws a radix tree ("├── /scm/stage (POST)" with "│   └── -paths (POST)"
+    // under it), so each line's full path is its parents' segments joined by depth.
+    const stack: string[] = [];
+    const listed: string[] = [];
+    for (const line of app.printRoutes({ commonPrefix: false }).split('\n')) {
+      const m = /^([│ ]*)[├└]── (\S+)(?: \(([^)]+)\))?$/.exec(line);
+      if (m === null) continue;
+      const depth = (m[1] ?? '').length / 4;
+      stack.length = depth;
+      stack.push(m[2] ?? '');
+      const path = stack.join('');
+      if (!path.startsWith('/scm/') || m[3] === undefined) continue;
+      for (const method of m[3].split(', ')) if (method !== 'HEAD') listed.push(`${method} ${path}`);
+    }
+    listed.sort();
+    expect(listed).toEqual(
+      [
+        'GET /scm/repo',
+        'GET /scm/status',
+        'GET /scm/file',
+        // Comments live under the config dir's .cache/, never in the project.
+        'GET /scm/comments',
+        'POST /scm/comments',
+        'PATCH /scm/comments',
+        'DELETE /scm/comments',
+        'POST /scm/stage',
+        'POST /scm/unstage',
+        'POST /scm/stage-paths',
+        'POST /scm/unstage-paths',
+        'POST /scm/discard',
+        'POST /scm/restore',
+      ].toSorted(),
+    );
+  });
+});
 
 describe('GET /scm/repo', () => {
   it('answers the canonical top of a subfolder', async () => {
@@ -583,6 +624,29 @@ describe('/scm/comments', () => {
     expect(body<ScmCommentList>(await call('GET', url()))).toEqual(created);
   });
 
+  it('clears every comment with all=1, tells every client the new rev, and still refuses a bare delete', async () => {
+    const dir = await makeRepo();
+    for (const text of ['one', 'two']) {
+      await call('POST', route('/scm/comments', { repo: dir }), comment({ body: text }));
+    }
+    const a = await listen();
+    try {
+      const res = await call('DELETE', route('/scm/comments', { repo: dir, all: '1' }));
+      expect(res.statusCode).toBe(200);
+      expect(body<ScmCommentList>(res)).toEqual({ rev: 3, comments: [] });
+      expect(body<ScmCommentList>(await call('GET', route('/scm/comments', { repo: dir })))).toEqual({
+        rev: 3,
+        comments: [],
+      });
+      expectRefusal(await call('DELETE', route('/scm/comments', { repo: dir })), 400);
+      expectRefusal(await call('DELETE', route('/scm/comments', { repo: dir, all: '0' })), 400);
+      await settled(a);
+      expect(revFrames(a)).toEqual([{ repo: dir, rev: 3 }]);
+    } finally {
+      a.ws.close();
+    }
+  });
+
   it('answers a delete of an unknown id with the unchanged list', async () => {
     const dir = await makeRepo();
     const created = body<ScmCommentList>(
@@ -806,5 +870,232 @@ describe('POST /scm/stage, /scm/unstage and /scm/restore', () => {
       'conflict',
     );
     expect(await stagedNames(dir)).toEqual(['a.txt']);
+  });
+});
+
+// ── Batch writes: /scm/stage-paths, /scm/unstage-paths, /scm/discard ──────────
+
+describe('batch index writes, discard and the audit lines', () => {
+  const auditLines = (spy: ReturnType<typeof vi.spyOn>): string[] =>
+    spy.mock.calls.map((c: unknown[]) => String(c[0])).filter((l: string) => l.startsWith('scm: '));
+  const entriesOf = async (repo: string, paths: string[]) =>
+    (await statusOf(repo)).changes
+      .filter((e) => paths.includes(e.path))
+      .map((e) => ({ path: e.path, fp: e.fp }));
+
+  it('stages and unstages a batch and answers a ScmBatchResult', async () => {
+    const dir = await makeRepo({ 'a.txt': 'one\n', 'b.txt': 'two\n' });
+    await put(dir, 'a.txt', 'ONE\n');
+    await put(dir, 'b.txt', 'TWO\n');
+    const staged = await call('POST', route('/scm/stage-paths', { repo: dir }), {
+      paths: ['a.txt', 'b.txt'],
+    });
+    expect(staged.statusCode, staged.body).toBe(200);
+    const stagedBody = body<ScmBatchResult>(staged);
+    expect(stagedBody.status).toBe('staged');
+    expect([...stagedBody.done].sort()).toEqual(['a.txt', 'b.txt']);
+    expect(stagedBody.skipped).toEqual([]);
+    expect(stagedBody.receiptId).toBeTypeOf('string');
+    expect((await stagedNames(dir)).sort()).toEqual(['a.txt', 'b.txt']);
+
+    const unstaged = await call('POST', route('/scm/unstage-paths', { repo: dir }), {
+      entries: [{ path: 'a.txt' }, { path: 'b.txt' }],
+    });
+    expect(unstaged.statusCode, unstaged.body).toBe(200);
+    expect(body<ScmBatchResult>(unstaged).status).toBe('unstaged');
+    expect(await stagedNames(dir)).toEqual([]);
+    expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('ONE\n');
+  });
+
+  it('discards a file and restores its bytes through the routes', async () => {
+    const dir = await makeRepo({ 'a.txt': 'one\n' });
+    await put(dir, 'a.txt', 'edited\n');
+    const entries = await entriesOf(dir, ['a.txt']);
+    const res = await call('POST', route('/scm/discard', { repo: dir }), { entries });
+    expect(res.statusCode, res.body).toBe(200);
+    const result = body<ScmBatchResult>(res);
+    expect(result.status).toBe('discarded');
+    expect(result.done).toEqual(['a.txt']);
+    expect(result.receiptId?.startsWith('d')).toBe(true);
+    expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('one\n');
+
+    const undone = await call('POST', route('/scm/restore', { repo: dir }), {
+      receiptId: result.receiptId,
+    });
+    expect(undone.statusCode, undone.body).toBe(200);
+    expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('edited\n');
+  });
+
+  it('refuses a relative repo, a body that is not an object and an unknown receipt prefix', async () => {
+    const dir = await makeRepo();
+    for (const path of ['/scm/stage-paths', '/scm/unstage-paths', '/scm/discard']) {
+      expectRefusal(
+        await call('POST', route(path, { repo: 'work/app' }), { paths: [], entries: [] }),
+        400,
+      );
+      expectRefusal(
+        await call('POST', route(path, { repo: dir }), '[1,2]', {
+          'content-type': 'application/json',
+        }),
+        400,
+      );
+    }
+    expectRefusal(
+      await call('POST', route('/scm/restore', { repo: dir }), { receiptId: 'x123' }),
+      410,
+      'token',
+    );
+  });
+
+  it('prints one D12 audit line per call, capped at ten paths, and one per refusal', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      const files: Record<string, string> = {};
+      for (let i = 0; i < 13; i++) files[`f${String(i).padStart(2, '0')}.txt`] = 'x\n';
+      const dir = await makeRepo(files);
+      for (const name of Object.keys(files)) await put(dir, name, 'y\n');
+
+      info.mockClear();
+      const names = Object.keys(files);
+      const staged = body<ScmBatchResult>(
+        await call('POST', route('/scm/stage-paths', { repo: dir }), { paths: names }),
+      );
+      let lines = auditLines(info);
+      expect(lines).toHaveLength(1);
+      const shown = names.slice(0, 10).join(',');
+      expect(lines[0]).toMatch(
+        new RegExp(
+          `^scm: stage-paths repo=${dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} done=13 skipped=0 receipt=${staged.receiptId} lockMs=\\d+ ms=\\d+ paths=${shown},…\\(\\+3\\)$`,
+        ),
+      );
+
+      info.mockClear();
+      await call('POST', route('/scm/unstage-paths', { repo: dir }), {
+        entries: names.slice(0, 2).map((path) => ({ path })),
+      });
+      lines = auditLines(info);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatch(
+        /^scm: unstage-paths repo=\S+ done=2 skipped=0 receipt=\S+ lockMs=\d+ ms=\d+ paths=f00\.txt,f01\.txt$/,
+      );
+
+      info.mockClear();
+      const entries = await entriesOf(dir, names.slice(0, 2));
+      const discarded = body<ScmBatchResult>(
+        await call('POST', route('/scm/discard', { repo: dir }), { entries }),
+      );
+      lines = auditLines(info);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatch(
+        new RegExp(
+          `^scm: discard repo=\\S+ done=\\d+ skipped=\\d+ receipt=${discarded.receiptId} ms=\\d+ paths=f00\\.txt,f01\\.txt$`,
+        ),
+      );
+      expect(lines[0]).not.toContain('lockMs');
+
+      info.mockClear();
+      await call('POST', route('/scm/restore', { repo: dir }), { receiptId: discarded.receiptId });
+      lines = auditLines(info);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatch(
+        new RegExp(
+          `^scm: restore-discard repo=\\S+ receipt=${discarded.receiptId} restored=2 kept=0 status=200 code=- ms=\\d+$`,
+        ),
+      );
+
+      info.mockClear();
+      expectRefusal(
+        await call('POST', route('/scm/stage-paths', { repo: dir }), { paths: 'nope' }),
+        400,
+      );
+      lines = auditLines(info);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatch(
+        /^scm: stage-paths refused repo=\S+ requested=0 status=400 code=- ms=\d+ error=".+"$/,
+      );
+
+      // The old single-file routes stay silent.
+      info.mockClear();
+      await call('POST', route('/scm/unstage', { repo: dir }), { path: 'f05.txt' });
+      expect(auditLines(info)).toEqual([]);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it('counts what an Undo of a discard put back and what it kept when it stops part way', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      const dir = await makeRepo({ 'a.ts': 'a\n' });
+      await put(dir, 'a.ts', 'a 2\n');
+      await put(dir, 'tmp/new.txt', 'new\n');
+      const discarded = body<ScmBatchResult>(
+        await call('POST', route('/scm/discard', { repo: dir }), {
+          entries: await entriesOf(dir, ['a.ts', 'tmp/new.txt']),
+        }),
+      );
+      discardHooks.afterCompare = () => put(dir, 'tmp/new.txt', 'an agent made this\n');
+      info.mockClear();
+      const undo = await call('POST', route('/scm/restore', { repo: dir }), {
+        receiptId: discarded.receiptId,
+      });
+      expect(undo.statusCode).toBe(409);
+      const lines = auditLines(info);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatch(
+        new RegExp(
+          `^scm: restore-discard repo=\\S+ receipt=${discarded.receiptId} restored=1 kept=1 status=409 code=conflict ms=\\d+$`,
+        ),
+      );
+    } finally {
+      discardHooks.afterCompare = null;
+      info.mockRestore();
+    }
+  });
+
+  it('prints the line of a call whose repo is refused, before the route’s own code runs', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      const dir = await makeRepo({ 'a.txt': 'one\n', 'sub/b.txt': 'two\n' });
+      // Relative, absent, a subfolder of a work tree (not its top) and a folder that is not there.
+      const repos: { params: Record<string, string>; shown: string }[] = [
+        { params: { repo: 'work/app' }, shown: 'work/app' },
+        { params: {}, shown: '-' },
+        { params: { repo: join(dir, 'sub') }, shown: join(dir, 'sub') },
+        { params: { repo: join(dir, 'gone') }, shown: join(dir, 'gone') },
+      ];
+      for (const { params, shown } of repos) {
+        for (const [path, op, payload] of [
+          ['/scm/stage-paths', 'stage-paths', { paths: ['a.txt'] }],
+          ['/scm/unstage-paths', 'unstage-paths', { entries: [{ path: 'a.txt' }] }],
+          ['/scm/discard', 'discard', { entries: [{ path: 'a.txt', fp: 'x' }] }],
+        ] as const) {
+          info.mockClear();
+          const res = await call('POST', route(path, params), payload);
+          expect(res.statusCode, `${path} ${shown}`).toBeGreaterThanOrEqual(400);
+          const lines = auditLines(info);
+          expect(lines, `${path} ${shown}`).toHaveLength(1);
+          expect(lines[0]).toContain(
+            `scm: ${op} refused repo=${shown} requested=1 status=${res.statusCode} `,
+          );
+          expect(lines[0]).toMatch(/ code=- ms=\d+ error=".+"$/);
+        }
+        info.mockClear();
+        const undo = await call('POST', route('/scm/restore', params), { receiptId: 'd0' });
+        const undoLines = auditLines(info);
+        expect(undoLines).toHaveLength(1);
+        expect(undoLines[0]).toMatch(
+          new RegExp(
+            `^scm: restore-discard repo=${shown.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} receipt=d0 restored=0 kept=0 status=${undo.statusCode} code=- ms=\\d+$`,
+          ),
+        );
+        // An index Undo is not one of the audited writes, refused or not.
+        info.mockClear();
+        await call('POST', route('/scm/restore', params), { receiptId: 'r0' });
+        expect(auditLines(info)).toEqual([]);
+      }
+    } finally {
+      info.mockRestore();
+    }
   });
 });

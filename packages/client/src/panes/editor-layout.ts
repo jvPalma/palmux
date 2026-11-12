@@ -22,16 +22,13 @@ export interface EditorLayoutOptions {
   lineDecorationsWidth: number;
   overviewRulerLanes: number;
   hideCursorInOverviewRuler: boolean;
-  wordWrap: 'on';
   scrollbar: { verticalScrollbarSize: number; horizontalScrollbarSize: number };
   scrollBeyondLastLine: boolean;
 }
 
 /**
- * `wordWrap` is 'on' at every width on purpose. A terminal user reads code in a
- * narrow column far more often than they need column alignment, and the pane can
- * be a 300px dock at any viewport size — so wrapping is the safe default and the
- * only thing that changes with width is how much chrome sits beside the text.
+ * Word wrap is not here: it is the `editorWrap` setting, the same at every width, so a
+ * width crossing never changes it.
  */
 export function editorLayoutOptions(width: number): EditorLayoutOptions {
   const narrow = width > 0 && width < NARROW_EDITOR_PX;
@@ -44,7 +41,6 @@ export function editorLayoutOptions(width: number): EditorLayoutOptions {
     // see all of. On a phone it is a stripe of colour that costs a column.
     overviewRulerLanes: narrow ? 0 : 2,
     hideCursorInOverviewRuler: narrow,
-    wordWrap: 'on',
     // Touch needs a bigger grab target than a mouse; a 6px slider is unusable
     // with a finger and a 14px one wastes a phone's width.
     scrollbar: {

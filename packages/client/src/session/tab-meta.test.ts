@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { TAB_KINDS } from '@palmux/shared';
+import { COLOR_PROFILES, deriveTabColors, TAB_KINDS, fileReviewUrl } from '@palmux/shared';
 import {
   displayTitle,
   kindIcon,
@@ -61,6 +61,15 @@ describe('displayTitle', () => {
   // A review tab is named for what it shows and which project it is about, so two
   // reviews of one project (Changes and Staged) and two projects stay apart.
   describe('review tabs', () => {
+    it('names a single-file review after the file and the group', () => {
+      expect(
+        displayTitle({ id: '4', kind: 'review', url: fileReviewUrl('changes', '/work/p', 'src/a.ts') }),
+      ).toBe('a.ts (Changes)');
+      expect(
+        displayTitle({ id: '4', kind: 'review', url: fileReviewUrl('staged', '/work/p', 'b.md') }),
+      ).toBe('b.md (Staged)');
+    });
+
     it('names Changes and Staged after the project folder', () => {
       expect(displayTitle({ id: '4', kind: 'review', url: 'changes:/work/palmux' })).toBe(
         'Changes · palmux',
@@ -98,13 +107,25 @@ describe('displayTitle', () => {
 });
 
 describe('palette', () => {
-  it('has 16 distinct ansi slots and an icon per kind', () => {
-    expect(TAB_COLORS).toHaveLength(16);
-    expect(new Set(TAB_COLORS.map((c) => c.value)).size).toBe(16);
-    expect(new Set(TAB_COLORS.map((c) => c.name)).size).toBe(16);
-    for (let n = 0; n < 16; n++) {
-      expect(TAB_COLORS.find((c) => c.name === `ansi${n}`)?.value).toBe(`var(--tab-c-ansi${n})`);
-    }
+  it('has the fifteen named colours, each its own var, and an icon per kind', () => {
+    expect(TAB_COLORS.map((c) => c.name)).toEqual([
+      'white',
+      'gray',
+      'pink',
+      'magenta',
+      'purple',
+      'blue',
+      'light-blue',
+      'cyan',
+      'green',
+      'lime',
+      'yellow',
+      'orange',
+      'red',
+      'crimson-red',
+      'black',
+    ]);
+    for (const c of TAB_COLORS) expect(c.value).toBe(`var(--tab-c-${c.name})`);
     for (const kind of ['terminal', 'web', 'dashboard', 'editor', 'markdown', 'review'] as const) {
       expect(kindIcon(kind)).toBeTruthy();
     }
@@ -112,49 +133,119 @@ describe('palette', () => {
     expect(new Set(TAB_KINDS.map(kindIcon)).size).toBe(TAB_KINDS.length);
   });
 
+  // Six of the fifteen are not ANSI hues and are derived. A derivation that
+  // collapses two names would leave a swatch that repeats another: reusing
+  // deriveAccents put two names on one colour in every built-in theme (purple on
+  // magenta in ten, pink on magenta in the two Catppuccins). The anchors are the
+  // theme's own slots, so where a theme's slot already sits on the in-between
+  // hue the pair is close (Catppuccin's magenta is pink: 18): the floor is "never
+  // the same colour", not "always far apart".
+  it('derives fifteen distinguishable colours in every built-in theme', () => {
+    const rgb = (n: number) => [(n >> 16) & 255, (n >> 8) & 255, n & 255] as const;
+    const dist = (a: number, b: number) => {
+      const [x, y] = [rgb(a), rgb(b)];
+      return Math.hypot(x[0] - y[0], x[1] - y[1], x[2] - y[2]);
+    };
+    for (const p of COLOR_PROFILES) {
+      const colors = deriveTabColors(p);
+      expect(Object.keys(colors)).toEqual(TAB_COLORS.map((c) => c.name));
+      const entries = Object.entries(colors);
+      for (let i = 0; i < entries.length; i++) {
+        for (let j = i + 1; j < entries.length; j++) {
+          const [[an, a], [bn, b]] = [entries[i]!, entries[j]!];
+          expect(dist(a, b), `${p.id}: ${an} ~ ${bn}`).toBeGreaterThanOrEqual(15);
+        }
+      }
+    }
+  });
+
+  // A name must draw its own hue, whatever the theme's slot is. Ayu Dark's
+  // magenta slot is orange (50°), which made purple green and pink orange until
+  // the anchors were held inside their bands.
+  it('draws every chromatic name inside its hue band in every built-in theme', () => {
+    const BANDS: { [name: string]: [number, number] } = {
+      red: [320, 30],
+      'crimson-red': [320, 20],
+      pink: [300, 355],
+      magenta: [240, 350],
+      purple: [230, 300],
+      blue: [175, 275],
+      'light-blue': [150, 235],
+      cyan: [115, 215],
+      green: [55, 170],
+      lime: [45, 110],
+      yellow: [25, 75],
+      orange: [5, 40],
+    };
+    const hue = (n: number) => {
+      const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => v / 255) as [
+        number,
+        number,
+        number,
+      ];
+      const [max, min] = [Math.max(r, g, b), Math.min(r, g, b)];
+      const d = max - min;
+      const h = max === r ? (g - b) / d + (g < b ? 6 : 0) : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+      return h * 60;
+    };
+    for (const p of COLOR_PROFILES) {
+      const colors = deriveTabColors(p);
+      for (const [name, [from, to]] of Object.entries(BANDS)) {
+        const h = hue(colors[name as keyof typeof colors]);
+        const inside = from <= to ? h >= from && h <= to : h >= from || h <= to;
+        expect(inside, `${p.id}: ${name} at ${Math.round(h)}°`).toBe(true);
+      }
+    }
+  });
+
   describe('resolveColorSlot', () => {
-    it('returns a valid slot name as-is', () => {
-      expect(resolveColorSlot('ansi3')).toBe('ansi3');
-      expect(resolveColorSlot('ansi0')).toBe('ansi0');
-      expect(resolveColorSlot('ansi15')).toBe('ansi15');
+    it('returns a palette name as-is', () => {
+      for (const c of TAB_COLORS) expect(resolveColorSlot(c.name)).toBe(c.name);
     });
 
-    it('maps every legacy name to its ansi slot, including both peach and maroon to ansi9', () => {
-      expect(resolveColorSlot('red')).toBe('ansi1');
-      expect(resolveColorSlot('green')).toBe('ansi2');
-      expect(resolveColorSlot('yellow')).toBe('ansi3');
-      expect(resolveColorSlot('blue')).toBe('ansi4');
-      expect(resolveColorSlot('mauve')).toBe('ansi5');
-      expect(resolveColorSlot('teal')).toBe('ansi6');
-      expect(resolveColorSlot('gray')).toBe('ansi8');
-      expect(resolveColorSlot('peach')).toBe('ansi9');
-      expect(resolveColorSlot('maroon')).toBe('ansi9');
-      expect(resolveColorSlot('lavender')).toBe('ansi12');
-      expect(resolveColorSlot('pink')).toBe('ansi13');
-      expect(resolveColorSlot('sky')).toBe('ansi14');
+    // tabs.json and groups.json are never rewritten, and the server still
+    // assigns the pre-ANSI names to a new group, so every older name resolves.
+    it('maps every ansi slot to its hue, the bright ones included, and 8 to gray', () => {
+      const hues = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white'];
+      for (let n = 0; n < 16; n++) {
+        expect(resolveColorSlot(`ansi${n}`), `ansi${n}`).toBe(n === 8 ? 'gray' : hues[n % 8]);
+      }
+    });
+
+    it('maps every pre-ANSI name to its nearest colour', () => {
+      expect(resolveColorSlot('mauve')).toBe('purple');
+      expect(resolveColorSlot('teal')).toBe('cyan');
+      expect(resolveColorSlot('peach')).toBe('orange');
+      expect(resolveColorSlot('maroon')).toBe('crimson-red');
+      expect(resolveColorSlot('lavender')).toBe('light-blue');
+      expect(resolveColorSlot('sky')).toBe('light-blue');
+      for (const same of ['red', 'green', 'yellow', 'blue', 'gray', 'pink']) {
+        expect(resolveColorSlot(same)).toBe(same);
+      }
     });
 
     it('unknown/absent name → undefined', () => {
       expect(resolveColorSlot('nope')).toBeUndefined();
+      expect(resolveColorSlot('grimson-red')).toBeUndefined();
       expect(resolveColorSlot(undefined)).toBeUndefined();
     });
   });
 
   describe('tabColorValue', () => {
-    it('resolves slots and legacy names to their accent var; unknown/absent → undefined', () => {
-      expect(tabColorValue('ansi3')).toBe('var(--tab-c-ansi3)');
-      expect(tabColorValue('green')).toBe('var(--tab-c-ansi2)');
-      expect(tabColorValue('sky')).toBe('var(--tab-c-ansi14)');
+    it('resolves names and older names to their var; unknown/absent → undefined', () => {
+      expect(tabColorValue('light-blue')).toBe('var(--tab-c-light-blue)');
+      expect(tabColorValue('ansi11')).toBe('var(--tab-c-yellow)');
+      expect(tabColorValue('sky')).toBe('var(--tab-c-light-blue)');
       expect(tabColorValue('nope')).toBeUndefined();
       expect(tabColorValue(undefined)).toBeUndefined();
     });
   });
 
   describe('tabColorInk', () => {
-    it('resolves slots and legacy names to their ink var; unknown/absent → undefined', () => {
-      expect(tabColorInk('ansi3')).toBe('var(--tab-c-ansi3-ink)');
-      expect(tabColorInk('peach')).toBe('var(--tab-c-ansi9-ink)');
-      expect(tabColorInk('maroon')).toBe('var(--tab-c-ansi9-ink)');
+    it('resolves names and older names to their ink var; unknown/absent → undefined', () => {
+      expect(tabColorInk('crimson-red')).toBe('var(--tab-c-crimson-red-ink)');
+      expect(tabColorInk('peach')).toBe('var(--tab-c-orange-ink)');
+      expect(tabColorInk('maroon')).toBe('var(--tab-c-crimson-red-ink)');
       expect(tabColorInk('nope')).toBeUndefined();
       expect(tabColorInk(undefined)).toBeUndefined();
     });

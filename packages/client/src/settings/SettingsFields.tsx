@@ -665,6 +665,13 @@ export function SettingsFields({
           />
         </Row>
 
+        <ToggleRow
+          id="set-editor-wrap"
+          label="Editor word wrap"
+          checked={settings.editorWrap}
+          onChange={(editorWrap) => onChange({ editorWrap })}
+        />
+
         <Row label="Cursor">
           <Segmented
             label="Cursor style"

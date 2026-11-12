@@ -62,10 +62,10 @@
      property resolves where it is USED: the content area is not inside a strip. */
   --cluster-pad: 2px;
 
-  /* Tab-accent palette: the 16 ANSI slots + their ink (readable text over a
-     solid fill of the slot). Theme-aware — the WHOLE set is overridden per theme
-     at runtime by applyThemeTokens; defaults = Catppuccin Mocha ansi16.
-     Referenced by TAB_COLORS as var(--tab-c-ansi<n>) and the swatches. */
+  /* The 16 ANSI slots + their ink (readable text over a solid fill of the
+     slot). Theme-aware — the WHOLE set is overridden per theme at runtime by
+     applyThemeTokens; defaults = Catppuccin Mocha ansi16. Source Control,
+     dictation and the config editor colour text from these; tabs do not. */
   --tab-c-ansi0: #45475a;
   --tab-c-ansi0-ink: #f2f2f8;
   --tab-c-ansi1: #f38ba8;
@@ -98,6 +98,40 @@
   --tab-c-ansi14-ink: #10101a;
   --tab-c-ansi15: #a6adc8;
   --tab-c-ansi15-ink: #10101a;
+
+  /* The tab and group palette (`deriveTabColors`) + ink, overridden per theme
+     by applyThemeTokens; defaults = Catppuccin Mocha. Referenced by TAB_COLORS
+     as var(--tab-c-<name>) and the swatches. */
+  --tab-c-white: #cdd6f4;
+  --tab-c-white-ink: #10101a;
+  --tab-c-gray: #898fa7;
+  --tab-c-gray-ink: #10101a;
+  --tab-c-pink: #f9d4e7;
+  --tab-c-pink-ink: #10101a;
+  --tab-c-magenta: #f5c2e7;
+  --tab-c-magenta-ink: #10101a;
+  --tab-c-purple: #caa7f6;
+  --tab-c-purple-ink: #10101a;
+  --tab-c-blue: #89b4fa;
+  --tab-c-blue-ink: #10101a;
+  --tab-c-light-blue: #a9e2f3;
+  --tab-c-light-blue-ink: #10101a;
+  --tab-c-cyan: #94e2d5;
+  --tab-c-cyan-ink: #10101a;
+  --tab-c-green: #a6e3a1;
+  --tab-c-green-ink: #10101a;
+  --tab-c-lime: #d9efa7;
+  --tab-c-lime-ink: #10101a;
+  --tab-c-yellow: #f9e2af;
+  --tab-c-yellow-ink: #10101a;
+  --tab-c-orange: #f6af9d;
+  --tab-c-orange-ink: #10101a;
+  --tab-c-red: #f38ba8;
+  --tab-c-red-ink: #10101a;
+  --tab-c-crimson-red: #ee689a;
+  --tab-c-crimson-red-ink: #10101a;
+  --tab-c-black: #45475a;
+  --tab-c-black-ink: #f2f2f8;
 }
 
 /* Touch target height. Keyed on an attribute App sets from the same resolved
@@ -1642,6 +1676,10 @@ body {
   color: var(--t-subtext);
 }
 
+.drawer-session.preview .drawer-session-title {
+  font-style: italic;
+}
+
 .drawer-session-title {
   flex: 1 1 auto;
   min-width: 0;
@@ -2073,7 +2111,7 @@ body {
 /* The base pill: grows with its title between a minimum and a maximum so a title
    shows in full while there is room, and the strip scrolls only once every pill
    is at its minimum. Inactive text is dimmed a step; there is no fill at rest.
-   --tab-accent (set inline on a coloured tab) paints the dot and nothing else. */
+   --tab-accent (set inline on a coloured tab) paints the bar and nothing else. */
 .ctab {
   position: relative;
   display: inline-flex;
@@ -2106,8 +2144,8 @@ body {
 }
 
 /* The active pill is the loudest thing on the strip: a raised fill (a step above
-   the surface), a ring, full-strength text and a heavier weight. Its colour dot,
-   if any, is the same as when inactive. */
+   the surface), a ring, full-strength text and a heavier weight. Its colour
+   bar, if any, goes from dimmed to full strength (below). */
 .ctab.active {
   --ring: var(--pill-ring);
   background-color: var(--pill-fill);
@@ -2115,17 +2153,39 @@ body {
   font-weight: 600;
 }
 
+/* A tab's colour is a bar flush with the pill's left edge: the full inner
+   height (the pill less its 1px border a side), pulled over the pill's own
+   padding, its outer corners concentric inside the pill's radius. It is dimmed
+   on an inactive pill and full strength on the active one, so on a coloured tab
+   the colour is also an active cue (owner, 2026-11-11). */
 .ctab-dot {
   flex: 0 0 auto;
-  width: 7px;
-  height: 7px; /* scale-ok: an identity dot, not a control size */
-  border-radius: 50%;
+  width: 11px;
+  height: calc(var(--ctl-h) - 2px);
+  margin-left: calc(-1 * var(--sp-2));
+  border-top-left-radius: calc(var(--r-2) - 1px);
+  border-bottom-left-radius: calc(var(--r-2) - 1px);
   background: var(--tab-accent);
+  opacity: 0.4;
+}
+
+.ctab.active > .ctab-dot {
+  opacity: 1;
+}
+
+/* The join cue is an INSET ring (--mark), and a child paints over an inset
+   shadow: the bar would cut the ring's left side. It steps aside while armed. */
+.ctab.join-armed > .ctab-dot {
+  visibility: hidden;
 }
 
 .ctab-icon {
   flex: 0 0 auto;
   font-size: var(--fs-1);
+}
+
+.ctab.preview .ctab-title {
+  font-style: italic;
 }
 
 .ctab-title {
@@ -2393,8 +2453,8 @@ body {
   background: var(--t-surface);
 }
 
-/* Swatch picker: two labeled rows (normal ansi0..7 / bright ansi8..15) + the
-   clear (∅) swatch. Shared class contract between the desktop menu and the
+/* Swatch picker: one wrapping row of the fifteen palette colours + the clear
+   (∅) swatch. Shared class contract between the desktop menu and the
    mobile sheet. */
 .tab-menu-colors {
   display: flex;
@@ -2408,15 +2468,11 @@ body {
   flex-wrap: wrap;
   gap: var(--sp-2);
 }
-/* A caption over a swatch row: the section title (ui.css), not an uppercase
-   tracked 10px label. The mobile sheet shares it. */
-.swatch-row-label {
-  font-size: var(--fs-1);
-  font-weight: 600;
-  letter-spacing: 0;
-  color: var(--t-subtext);
+/* The context menus size to their content, so an unbounded row of fifteen
+   swatches would stretch them to ~470px. Eight a line, as the old rows were. */
+.tab-menu .swatch-row {
+  max-width: calc(8 * 24px + 7 * var(--sp-2));
 }
-
 .tab-swatch {
   width: 24px;
   height: 24px;

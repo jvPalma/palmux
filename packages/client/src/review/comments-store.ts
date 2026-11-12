@@ -42,6 +42,8 @@ export interface CommentsStoreOptions {
   create: (repo: string, input: ScmCommentInput) => Answer;
   update: (repo: string, id: string, patch: ScmCommentPatch) => Answer;
   remove: (repo: string, id: string) => Answer;
+  /** Delete every comment of `repo`. */
+  removeAll: (repo: string) => Answer;
 }
 
 /** What a write reports. The new list reaches the caller through the snapshot, not here. */
@@ -114,6 +116,8 @@ export interface CommentsStore {
   add(input: ScmCommentInput): Promise<CommentWriteResult>;
   edit(id: string, patch: ScmCommentPatch): Promise<CommentWriteResult>;
   remove(id: string): Promise<CommentWriteResult>;
+  /** Delete every comment of the active project. */
+  clearAll(): Promise<CommentWriteResult>;
   /** Open or update a draft. The target's project is named, so a late keystroke cannot land in another. */
   setDraft(repo: string, target: DraftTarget, text: string): void;
   /** Close a draft (saved, or cancelled). */
@@ -292,6 +296,7 @@ export function createCommentsStore(options: CommentsStoreOptions): CommentsStor
     add: (input) => write((repo) => options.create(repo, input)),
     edit: (id, patch) => write((repo) => options.update(repo, id, patch)),
     remove: (id) => write((repo) => options.remove(repo, id)),
+    clearAll: () => write((repo) => options.removeAll(repo)),
 
     setDraft(repo, target, text) {
       const key = draftKey(target);

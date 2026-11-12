@@ -307,6 +307,40 @@ describe('Collapsible', () => {
     );
   });
 
+  it('takes the small step when asked, one class and no other step', () => {
+    render(
+      <Collapsible title="Changes" size="sm">
+        <p>Rows</p>
+      </Collapsible>,
+    );
+    const trigger = screen.getByTestId('ui-collapsible-trigger');
+    expect(trigger).toHaveClass('ui-collapsible-trigger', 'ui-collapsible-trigger-sm');
+    expect(trigger).not.toHaveClass('ui-collapsible-trigger-xs');
+  });
+
+  it('renders actions beside the trigger: no nested button, and a click on one does not toggle', () => {
+    const onAction = vi.fn();
+    render(
+      <Collapsible
+        title="Changes"
+        actions={
+          <button type="button" data-testid="act" onClick={onAction}>
+            Open
+          </button>
+        }
+      >
+        <p>Rows</p>
+      </Collapsible>,
+    );
+    const trigger = screen.getByTestId('ui-collapsible-trigger');
+    expect(trigger.querySelector('button')).toBeNull();
+    expect(trigger.contains(screen.getByTestId('act'))).toBe(false);
+    expect(trigger.parentElement).toHaveClass('ui-collapsible-head');
+    fireEvent.click(screen.getByTestId('act'));
+    expect(onAction).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('ui-collapsible-content')).toHaveAttribute('data-state', 'open');
+  });
+
   it('keeps its content mounted while closed, so it has a full height to open to', () => {
     render(
       <Collapsible title="Appearance" defaultOpen={false}>

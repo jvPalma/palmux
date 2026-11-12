@@ -190,6 +190,13 @@
   font-size: 11px;
 }
 
+/* The extra-small Collapsible trigger's height, for a button in its actions slot. */
+.ui-icon-btn-xs {
+  width: calc(var(--ctl-h) - var(--sp-3));
+  height: calc(var(--ctl-h) - var(--sp-3));
+  font-size: 11px;
+}
+
 .ui-icon-btn:not(:disabled):hover {
   background: var(--t-surface);
   color: var(--t-text);
@@ -397,10 +404,36 @@
   transition: color var(--mo-micro) ease;
 }
 
+/* A header with actions: the trigger takes the row and the actions sit beside it, outside the
+   trigger's button, so pressing one never toggles the section. */
+.ui-collapsible-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.ui-collapsible-head > .ui-collapsible-trigger {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.ui-collapsible-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
 /* The extra-small step, below the small one Button and IconButton have: a section header
    that heads rows as short as itself (Source Control's groups on a phone, 24px). */
 .ui-collapsible-trigger-xs {
   min-height: calc(var(--ctl-h) - var(--sp-3));
+}
+
+/* The small step, Button's own: a header that heads rows one step below the control height
+   (Source Control's groups on a desktop, 24px). */
+.ui-collapsible-trigger-sm {
+  min-height: calc(var(--ctl-h) - var(--sp-1));
 }
 
 .ui-collapsible-trigger:hover {

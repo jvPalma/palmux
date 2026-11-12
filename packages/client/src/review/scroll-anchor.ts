@@ -12,7 +12,7 @@
 // result to the scroller.
 
 import type { ScmFileSnapshot } from '@palmux/shared';
-import { relocateLine } from './anchor';
+import { relocateLine } from '@palmux/shared';
 import { firstVisibleRow } from './review-metrics';
 import { rowLine, type DiffSide, type Row } from './rows';
 

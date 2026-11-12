@@ -3,8 +3,9 @@
 // must NOT do is call a comment outdated that it merely could not check.
 
 import { describe, expect, it, vi } from 'vitest';
-import type { ScmComment, ScmEntry, ScmFileSnapshot, ScmGroup, ScmStatus } from '@palmux/shared';
-import { commentMarks, commentsMarkdown, type ReadSnapshot } from './copy-comments';
+import { commentMarks, commentsMarkdown, type ReadSnapshot } from './comment-marks';
+import type { ScmEntry, ScmFileSnapshot, ScmGroup, ScmStatus } from './scm';
+import type { ScmComment } from './scm-comments';
 
 const entry = (path: string, over: Partial<ScmEntry> = {}): ScmEntry => ({
   path,
@@ -188,12 +189,12 @@ describe('the document', () => {
       [comment('alive', 'a.ts', 'TWO'), comment('gone', 'a.ts', 'deleted', { start: 9, end: 9 })],
       read,
     );
-    expect(text).toMatch(/\*\*L2\*\* \(new\)\n/);
-    expect(text).toMatch(/\*\*L9\*\* \(new\) \(outdated\)/);
+    expect(text).toMatch(/^### a\.ts:L2 \(new\)\n/m);
+    expect(text).toMatch(/^### a\.ts:L9 \(new\) \(outdated\)$/m);
   });
 
   it('still produces the document when there is no status to check against', async () => {
-    const text = await commentsMarkdown('/work/app', null, [comment('c1', 'a.ts', 'TWO')]);
+    const text = await commentsMarkdown('/work/app', null, [comment('c1', 'a.ts', 'TWO')], reader({}));
     expect(text).toContain('## a.ts');
     expect(text).not.toContain('outdated');
   });
@@ -271,7 +272,7 @@ describe('a file palmux answered but did not read', () => {
       [comment('c1', 'a.ts', 'TWO', { start: 4, end: 4 })],
       read,
     );
-    expect(text).toContain('**L4** (new) (not shown: file too large / converted)');
+    expect(text).toContain(':L4 (new) (not shown: file too large / converted)');
     expect(text).not.toContain('outdated');
   });
 });

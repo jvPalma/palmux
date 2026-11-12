@@ -373,3 +373,71 @@ export async function readHeadEntry(top: string, path: string): Promise<HeadEntr
   const entry = parseLsTree(run.stdout).find((e) => e.path === path && e.type !== 'tree');
   return { ok: true, entry: entry ?? null };
 }
+
+// ── Batch writes: git version, time limit and the converted-path check ────────
+
+/** One `git add` or `checkout-index` over up to 5,000 paths may take longer than a read. */
+export const GIT_BATCH_TIMEOUT_MS = 60_000;
+
+export interface GitVersion {
+  major: number;
+  minor: number;
+}
+
+/** `git version 2.43.0` or `git version 2.39.3 (Apple Git-146)`; null for anything else. */
+export function parseGitVersion(text: string): GitVersion | null {
+  const match = /^git version (\d+)\.(\d+)/.exec(text.trim());
+  return match ? { major: Number(match[1]), minor: Number(match[2]) } : null;
+}
+
+let versionCache: Promise<GitVersion | null> | null = null;
+
+/** The host's git version, read once per process; null when it cannot be read. */
+export function gitVersion(): Promise<GitVersion | null> {
+  versionCache ??= runGit(process.cwd(), ['version']).then((run) =>
+    run.ok ? parseGitVersion(run.stdout.toString('utf8')) : null,
+  );
+  return versionCache;
+}
+
+/** Test seam: forget the cached version. */
+export function resetGitVersion(): void {
+  versionCache = null;
+}
+
+/** `--pathspec-from-file` exists on `add` since 2.25 and on `restore` since 2.26. */
+export function supportsPathspecFromFile(version: GitVersion | null): boolean {
+  return version !== null && (version.major > 2 || (version.major === 2 && version.minor >= 26));
+}
+
+const CONVERT_ATTRS = ['filter', 'working-tree-encoding', 'ident'];
+
+/** An attribute with a value of its own, as opposed to set, unset or unspecified. */
+const isNamed = (value: string | undefined): boolean =>
+  value !== undefined && value !== 'unspecified' && value !== 'unset' && value !== 'set';
+
+export type ConvertedResult = { ok: true; paths: Set<string> } | ScmFailure;
+
+/**
+ * The paths git would convert on check-in or checkout in a way palmux does not run: a
+ * `filter` driver, a `working-tree-encoding`, or `ident`. One `check-attr --stdin` for
+ * the whole batch; the paths ride stdin, NUL-separated, so none is read as an option.
+ */
+export async function convertedPaths(top: string, paths: readonly string[]): Promise<ConvertedResult> {
+  if (paths.length === 0) return { ok: true, paths: new Set() };
+  const run = await runGit(top, ['check-attr', '-z', '--stdin', ...CONVERT_ATTRS], {
+    input: `${paths.join('\0')}\0`,
+    timeoutMs: GIT_BATCH_TIMEOUT_MS,
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (!run.ok) return gitFailure(run, 'check-attr');
+  const fields = run.stdout.toString('utf8').split('\0');
+  const converted = new Set<string>();
+  for (let i = 0; i + 2 < fields.length; i += 3) {
+    const path = fields[i] as string;
+    const attr = fields[i + 1] as string;
+    const value = fields[i + 2];
+    if (attr === 'ident' ? value === 'set' : isNamed(value)) converted.add(path);
+  }
+  return { ok: true, paths: converted };
+}

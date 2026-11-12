@@ -23,6 +23,8 @@ export interface CommentActions {
   edit: (comment: ScmComment) => void;
   /** Delete a stored comment; one confirmation, and only when it has text. */
   remove: (comment: ScmComment) => void;
+  /** Delete a stored comment at once: no question, and the toast it leaves offers Undo. */
+  resolve: (comment: ScmComment) => void;
   /**
    * True once, for the editor of a draft a person has just opened: it takes focus.
    * An editor that mounts again because it scrolled back into view must not.

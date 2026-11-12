@@ -97,7 +97,11 @@ type Row =
     };
 
 export interface FileTreeProps {
-  onOpenFile: (path: string) => void;
+  /**
+   * Open a file. `preview` is false for the second click of a pointer double-click (D4), so that
+   * open keeps the file; a single click, Enter and the context menu's Open are preview opens.
+   */
+  onOpenFile: (path: string, opts: { preview: boolean }) => void;
   /** Pinned roots (a synced setting). Omit to run with HOME as the only root. */
   pins?: string[] | undefined;
   onPinsChange?: ((next: string[]) => void) | undefined;
@@ -497,9 +501,9 @@ export const FileTree = ({ onOpenFile, pins, onPinsChange, onNotice }: FileTreeP
   );
 
   const openFile = useCallback(
-    (path: string): void => {
+    (path: string, preview = true): void => {
       setSelected(path);
-      onOpenFile(path);
+      onOpenFile(path, { preview });
     },
     [onOpenFile],
   );
@@ -795,10 +799,11 @@ export const FileTree = ({ onOpenFile, pins, onPinsChange, onNotice }: FileTreeP
           // While selecting, a plain click PICKS instead of navigating: a mode
           // whose rows still did their normal thing would make every attempt to
           // build a selection also open a file or expand a folder.
-          onClick={() => {
+          // A keyboard activation has `detail` 0, so two Enter presses never keep a file open.
+          onClick={(e) => {
             if (pickedSet) togglePick(row.path);
             else if (isDir) toggle(row.path);
-            else openFile(row.path);
+            else openFile(row.path, e.detail !== 2);
           }}
         >
           {pickedSet && (

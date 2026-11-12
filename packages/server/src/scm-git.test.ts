@@ -9,6 +9,10 @@ import { promisify } from 'node:util';
 import {
   checkRelPath,
   checkRepo,
+  convertedPaths,
+  gitVersion,
+  parseGitVersion,
+  supportsPathspecFromFile,
   parseLsFiles,
   parseLsTree,
   readHead,
@@ -353,5 +357,40 @@ describe('HEAD reads', () => {
     for (const path of ['dir', 'missing.ts', 'a*.ts', 'dir/*']) {
       expect(await readHeadEntry(dir, path), path).toEqual({ ok: true, entry: null });
     }
+  });
+});
+
+describe('batch helpers', () => {
+  it('parses git versions, Apple builds included', () => {
+    expect(parseGitVersion('git version 2.43.0\n')).toEqual({ major: 2, minor: 43 });
+    expect(parseGitVersion('git version 2.39.3 (Apple Git-146)')).toEqual({ major: 2, minor: 39 });
+    expect(parseGitVersion('not git')).toBeNull();
+  });
+
+  it('needs git 2.26 for --pathspec-from-file on restore', () => {
+    expect(supportsPathspecFromFile({ major: 2, minor: 25 })).toBe(false);
+    expect(supportsPathspecFromFile({ major: 2, minor: 26 })).toBe(true);
+    expect(supportsPathspecFromFile({ major: 3, minor: 0 })).toBe(true);
+    expect(supportsPathspecFromFile(null)).toBe(false);
+  });
+
+  it('reads the host git version once', async () => {
+    const version = await gitVersion();
+    expect(version?.major).toBeGreaterThanOrEqual(2);
+    expect(gitVersion()).toBe(gitVersion());
+  });
+
+  it('names the paths with a filter, a working-tree-encoding or ident, one process for all', async () => {
+    const dir = await makeRepo({
+      '.gitattributes': 'big.bin filter=lfs\nutf16.txt working-tree-encoding=UTF-16\nid.c ident\nplain.txt -ident\n',
+    });
+    // check-attr reads attributes for a name; the files need not exist.
+    const calls: string[] = [];
+    setGitObserver((args) => calls.push(args[0] ?? ''));
+    const res = await convertedPaths(dir, ['big.bin', 'utf16.txt', 'id.c', 'plain.txt', 'a*.ts']);
+    setGitObserver(null);
+    if (!res.ok) throw new Error(res.error);
+    expect([...res.paths].toSorted()).toEqual(['big.bin', 'id.c', 'utf16.txt']);
+    expect(calls).toEqual(['check-attr']);
   });
 });

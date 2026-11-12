@@ -528,10 +528,26 @@ export function reconcile(
   // At boot there is no "before", so a dead active tab's neighbour is read off the new order.
   const before = prevOrder.length > 0 ? prevOrder : order;
 
+  // 0. A tab that REPLACED another in place (a preview swapped for another kind, `replaces`) takes
+  // that tab's slot in the leaf holding it, and its place as the active tab, so the close rule
+  // below has nothing to do and no neighbour shows for a frame. Only while the list no longer
+  // lists the old tab and no leaf holds the new one, so it fires once.
+  let current = layout;
+  for (const tab of tabs) {
+    const old = tab.replaces;
+    if (old === undefined || byId.has(old) || leafOf(current, tab.id) !== null) continue;
+    const leaf = leafOf(current, old);
+    if (leaf === null) continue;
+    current = replaceLeaf(current, leaf.id, (l) => ({
+      ...l,
+      tabs: l.tabs.map((t) => (t.id === old ? { id: tab.id, kind: tab.kind } : t)),
+      active: l.active === old ? tab.id : l.active,
+    }));
+  }
+
   // 1 + 2. Drop what is gone or recycled into another kind, and re-pick a pane's active tab if it
   // was one of them, by the same left-then-right rule a close uses.
-  let current = layout;
-  for (const leaf of leaves(layout)) {
+  for (const leaf of leaves(current)) {
     const kept: TabRef[] = [];
     let changed = false;
     for (const ref of leaf.tabs) {
@@ -592,6 +608,34 @@ export function reconcile(
     }
   }
   return current;
+}
+
+/**
+ * Keep the `replaces` hint on a list until a render has used it. The server sends it on the
+ * broadcast that swapped two tabs, and any later change to the new tab (its pin, above all)
+ * broadcasts it without the hint. The layout is reconciled during render, and two broadcasts
+ * handled before one render show it only the second, which would read the swap as a close and a
+ * create: the neighbour shown, the new tab in the focused pane (design D3a, owner Q2). So a tab
+ * the previous list showed replacing another keeps the hint while `layout`, as last rendered,
+ * still holds the tab it replaced and not this one, the list no longer listing the old tab.
+ * The SAME list when nothing is carried.
+ */
+export function keepReplaces(
+  tabs: TabMeta[],
+  prev: readonly TabMeta[],
+  layout: PaneLayout | null,
+): TabMeta[] {
+  if (layout === null) return tabs;
+  let out: TabMeta[] | null = null;
+  tabs.forEach((tab, i) => {
+    if (tab.replaces !== undefined) return;
+    const old = prev.find((t) => t.id === tab.id && t.kind === tab.kind)?.replaces;
+    if (old === undefined || tabs.some((t) => t.id === old)) return;
+    if (leafOf(layout, old) === null || leafOf(layout, tab.id) !== null) return;
+    out ??= [...tabs];
+    out[i] = { ...tab, replaces: old };
+  });
+  return out ?? tabs;
 }
 
 // ── Reading a saved layout ────────────────────────────────────────────────────

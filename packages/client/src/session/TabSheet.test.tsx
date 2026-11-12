@@ -80,27 +80,25 @@ describe('TabSheet', () => {
 
   it('palette swatches recolor; ∅ clears', () => {
     const p = renderSheet();
-    fireEvent.click(screen.getByTestId('sheet-color-ansi4'));
-    expect(p.onRecolor).toHaveBeenCalledWith('3', 'ansi4');
+    fireEvent.click(screen.getByTestId('sheet-color-light-blue'));
+    expect(p.onRecolor).toHaveBeenCalledWith('3', 'light-blue');
     fireEvent.pointerDown(screen.getByTestId('sheet-color-none'));
     expect(p.onRecolor).toHaveBeenCalledWith('3', '');
   });
 
-  it('renders 16 swatches across two labeled rows', () => {
+  it('renders the fifteen swatches in one row, with no normal/bright captions', () => {
     renderSheet();
     const rows = document.querySelectorAll('.swatch-row');
-    expect(rows).toHaveLength(2);
-    expect(rows[0]?.querySelectorAll('.tab-swatch')).toHaveLength(8);
-    expect(rows[1]?.querySelectorAll('.tab-swatch')).toHaveLength(8);
-    const labels = screen.getAllByText(/normal|bright/);
-    expect(labels.map((el) => el.textContent)).toEqual(['normal', 'bright']);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.querySelectorAll('.tab-swatch')).toHaveLength(15);
+    expect(screen.queryByText(/normal|bright/)).toBeNull();
   });
 
-  it('a legacy color name highlights its mapped ansi swatch', () => {
-    // tab.color is 'teal', which resolves to ansi6 (see LEGACY_COLOR_SLOTS).
+  it('an older color name highlights the swatch it reads as now', () => {
+    // tab.color is 'teal', which resolves to cyan (see OLDER_COLOR_NAMES).
     renderSheet();
-    expect(screen.getByTestId('sheet-color-ansi6').className).toMatch(/selected/);
-    expect(screen.getByTestId('sheet-color-ansi4').className).not.toMatch(/selected/);
+    expect(screen.getByTestId('sheet-color-cyan').className).toMatch(/selected/);
+    expect(screen.getByTestId('sheet-color-blue').className).not.toMatch(/selected/);
   });
 
   // The group rows live in a bounded SCROLLER, so they use `pressMove`: they act
@@ -457,5 +455,24 @@ describe('a group row press’s own click, landing on what the dismissal uncover
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('offers Keep open only for a preview; tapping pins and dismisses', () => {
+    renderSheet();
+    expect(screen.queryByTestId('tab-sheet-keep-open')).toBeNull();
+    document.body.innerHTML = '';
+    const onPin = vi.fn();
+    const props = {
+      tab: { id: '8', kind: 'editor', url: '/a/b.md', preview: true } as TabMeta,
+      onRename: vi.fn(),
+      onRecolor: vi.fn(),
+      onCloseTab: vi.fn(),
+      onDismiss: vi.fn(),
+      onPin,
+    };
+    render(<TabSheet {...props} />);
+    fireEvent.pointerDown(screen.getByTestId('tab-sheet-keep-open'));
+    expect(onPin).toHaveBeenCalledWith('8');
+    expect(props.onDismiss).toHaveBeenCalled();
   });
 });

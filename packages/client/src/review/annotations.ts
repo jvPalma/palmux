@@ -11,8 +11,7 @@
 // a gap nobody expanded) go in one list at the end of the file, with the code they
 // were about quoted, so the reader can still find what the comment meant.
 
-import type { ScmComment } from '@palmux/shared';
-import type { PlacedComment } from './comment-placement';
+import type { ScmComment, PlacedComment } from '@palmux/shared';
 import { draftKey, type DraftTarget } from './comments-store';
 import type { DiffSide, EditorRow, Row, UnplacedItem } from './rows';
 

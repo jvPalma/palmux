@@ -42,6 +42,14 @@ export interface FilePaneProps {
    * to a saved one is the close-confirm's whole reason to exist.
    */
   onDirtyChange?: ((dirty: boolean) => void) | undefined;
+  /** A save landed, or Ctrl+S on a clean buffer. */
+  onSaved?: (() => void) | undefined;
+  /**
+   * False while the file is mounted but not the focused pane's shown tab. Its editor then leaves
+   * Ctrl+S alone: a hidden one answering it would report a save nobody asked for, and a host that
+   * previews the tab would pin it.
+   */
+  focused?: boolean | undefined;
 }
 
 const READABLE_EXT = new Set(['md', 'markdown']);
@@ -67,6 +75,8 @@ export const FilePane = ({
   onChangePath,
   onClose,
   onDirtyChange,
+  onSaved,
+  focused = true,
 }: FilePaneProps) => {
   const [dirty, setDirty] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -175,9 +185,10 @@ export const FilePane = ({
               <EditorPane
                 tabId={path}
                 filePath={path}
-                active={active === 'edit'}
+                active={focused && active === 'edit'}
                 onDirtyChange={onDirty}
                 onSaveError={setSaveError}
+                onSaved={onSaved}
               />
             </div>
           </>

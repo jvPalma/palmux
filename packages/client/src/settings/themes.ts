@@ -7,7 +7,14 @@
 // shared API unchanged, so existing `./themes` importers keep working.
 
 import type { ITheme } from '@xterm/xterm';
-import { deriveUiTokens, hex, isLightBg, luminance, type ColorProfile } from '@palmux/shared';
+import {
+  deriveTabColors,
+  deriveUiTokens,
+  hex,
+  isLightBg,
+  luminance,
+  type ColorProfile,
+} from '@palmux/shared';
 import { setEditorProfile } from '../panes/monaco-theme';
 
 export {
@@ -71,7 +78,8 @@ const inkFor = (n: number): string => (luminance(n) > 0.5 ? INK_DARK : INK_LIGHT
 
 /**
  * Skin the WHOLE app to a theme: all seven `--t-*` UI tokens plus the sixteen
- * `--tab-c-ansi*` slot vars (+ their `-ink` text colors), so the topbar/
+ * `--tab-c-ansi*` slot vars and the fifteen named tab colours `--tab-c-<name>`
+ * (each with an `-ink` text colour), so the topbar/
  * panels/drawer/controls follow the terminal palette — not just the xterm
  * canvas. `color-scheme` follows the background so native scrollbars/
  * controls match. Called at boot (main.tsx, pre-paint) and on every theme
@@ -106,10 +114,16 @@ export function applyThemeTokens(profile: ColorProfile): void {
   root.style.setProperty('--t-term-bg', hex(profile.bg));
   const scheme = isLightBg(profile) ? 'light' : 'dark';
   root.style.setProperty('color-scheme', scheme);
+  // The ANSI slots stay published: Source Control, dictation and the config
+  // editor colour their text from them. Tabs and groups read the named set.
   profile.ansi16.forEach((c, n) => {
     root.style.setProperty(`--tab-c-ansi${n}`, hex(c));
     root.style.setProperty(`--tab-c-ansi${n}-ink`, inkFor(c));
   });
+  for (const [name, c] of Object.entries(deriveTabColors(profile))) {
+    root.style.setProperty(`--tab-c-${name}`, hex(c));
+    root.style.setProperty(`--tab-c-${name}-ink`, inkFor(c));
+  }
   // Sync the browser/PWA chrome color to the active theme (was hardcoded Mocha
   // in index.html). Runs pre-paint in main.tsx and on every live theme change.
   setMetaContent('theme-color', hex(profile.bg));

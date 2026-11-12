@@ -11,6 +11,8 @@ import { flushSync } from 'react-dom';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
+import { fileReviewUrl, type CliGoto, type CliResultEntry } from '@palmux/shared';
+import { hasGoto, resetEditorGoto, takeGoto } from './panes/editor-goto';
 import { App, shouldRestoreKeyboard, type DrawerCloseOptions } from './App';
 import { GROUP_DND_TYPE, TAB_DIRTY_DND_TYPE, TAB_DND_TYPE } from './session/SessionTabs';
 import type { SessionDrawer as SessionDrawerComponent } from './session/SessionDrawer';
@@ -65,6 +67,10 @@ const { sockets } = vi.hoisted(() => ({
     settingsSent: Array<Record<string, unknown>>;
     /** Every theme import request, as typed. */
     imports: string[];
+    /** Every `updateTab` this client sent, in order. */
+    updates: Array<Record<string, unknown>>;
+    /** Every `replaceTab` this client sent, in order. */
+    replaced: Array<{ id: string; kind: string; url: string }>;
   }>,
 }));
 
@@ -82,6 +88,8 @@ vi.mock('./lib/ws', () => ({
     openHandler: (() => void) | null = null;
     settingsSent: Array<Record<string, unknown>> = [];
     imports: string[] = [];
+    updates: Array<Record<string, unknown>> = [];
+    replaced: Array<{ id: string; kind: string; url: string }> = [];
     constructor(url: string) {
       this.url = url;
       sockets.push(this);
@@ -96,6 +104,9 @@ vi.mock('./lib/ws', () => ({
     connect() {}
     destroy() {}
     stopReconnect() {}
+    isOpen() {
+      return true;
+    }
     sendSettings(j: Record<string, unknown>) {
       this.settingsSent.push(j);
       return true;
@@ -115,7 +126,12 @@ vi.mock('./lib/ws', () => ({
       this.created.push(spec);
       return true;
     }
-    sendUpdateTab() {
+    sendUpdateTab(patch: Record<string, unknown>) {
+      this.updates.push(patch);
+      return true;
+    }
+    sendReplaceTab(id: string, kind: string, url: string) {
+      this.replaced.push({ id, kind, url });
       return true;
     }
     sendMoveToWindow(ids: string[], window: string | null) {
@@ -204,6 +220,15 @@ const UploadingPaneApi = (p: { registry: SplitRegistry; slot: SlotId; sessionId:
   return null;
 };
 
+// The callbacks the latest rendered terminal pane was handed for `palmux open` / `palmux git`.
+const cliPane = vi.hoisted(() => ({
+  props: null as {
+    onCliOpen: (paths: string[], goto?: CliGoto[]) => CliResultEntry[];
+    onCliGit: (repo: string) => { results: CliResultEntry[]; note?: string };
+    onCliWeb: (url: string) => CliResultEntry;
+  } | null,
+}));
+
 // TerminalPane stub: enough surface for the layout/focus assertions, plus the
 // real pane's mousedown→onFocusRequest wiring (a click inside a pane focuses it).
 vi.mock('./terminal/TerminalPane', () => ({
@@ -217,21 +242,28 @@ vi.mock('./terminal/TerminalPane', () => ({
     /** The detached window this pane's data socket names (absent in the main window). */
     window?: string;
     onFocusRequest: (slot: string) => void;
-  }) => (
-    <div
-      data-testid={`term-pane-${p.slot}`}
-      data-session={p.sessionId}
-      data-window={p.window}
-      // The theme id the pane is handed: the terminal paints exactly this one.
-      data-theme={p.settings.themeId}
-      className={p.inSplit ? `slot${p.focused ? ' focused' : ''}` : ''}
-      onMouseDown={() => p.onFocusRequest(p.slot as never)}
-    >
-      {paneApiFake.enabled && (
-        <UploadingPaneApi registry={p.registry} slot={p.slot} sessionId={p.sessionId} />
-      )}
-    </div>
-  ),
+    onCliOpen: (paths: string[], goto?: CliGoto[]) => CliResultEntry[];
+    onCliGit: (repo: string) => { results: CliResultEntry[]; note?: string };
+    onCliWeb: (url: string) => CliResultEntry;
+  }) => {
+    // What the real pane calls when its data socket delivers `cliOpen` / `cliGit` / `cliWeb`.
+    cliPane.props = { onCliOpen: p.onCliOpen, onCliGit: p.onCliGit, onCliWeb: p.onCliWeb };
+    return (
+      <div
+        data-testid={`term-pane-${p.slot}`}
+        data-session={p.sessionId}
+        data-window={p.window}
+        // The theme id the pane is handed: the terminal paints exactly this one.
+        data-theme={p.settings.themeId}
+        className={p.inSplit ? `slot${p.focused ? ' focused' : ''}` : ''}
+        onMouseDown={() => p.onFocusRequest(p.slot as never)}
+      >
+        {paneApiFake.enabled && (
+          <UploadingPaneApi registry={p.registry} slot={p.slot} sessionId={p.sessionId} />
+        )}
+      </div>
+    );
+  },
 }));
 
 // The real drawer, with its props kept so a test can press what the drawer's UI
@@ -3038,7 +3070,13 @@ describe('the last tab survives a relaunch', () => {
   // Ctrl+W must never reach the browser's "close tab", which closes the whole app.
   describe('Ctrl+W', () => {
     const chord = (mods: { ctrlKey?: boolean; metaKey?: boolean; repeat?: boolean }) => {
-      const e = new KeyboardEvent('keydown', { key: 'w', code: 'KeyW', bubbles: true, cancelable: true, ...mods });
+      const e = new KeyboardEvent('keydown', {
+        key: 'w',
+        code: 'KeyW',
+        bubbles: true,
+        cancelable: true,
+        ...mods,
+      });
       window.dispatchEvent(e);
       return e;
     };
@@ -3134,7 +3172,7 @@ describe('the last tab survives a relaunch', () => {
       });
     });
 
-    it('leaves the main window\'s remembered tab alone', () => {
+    it("leaves the main window's remembered tab alone", () => {
       localStorage.setItem(LAST, JSON.stringify({ id: '2', kind: 'terminal' }));
       sessionStorage.setItem(OWN, JSON.stringify({ id: '2', kind: 'terminal' }));
       history.replaceState(null, '', '/popout/0');
@@ -5749,6 +5787,26 @@ describe('Settings in the app', () => {
       keptInRaw();
     });
 
+    it('palmux git asks too, and on Cancel tells the CLI Source Control did not open', async () => {
+      await dirtyConfig();
+      let answer: unknown;
+      act(() => {
+        answer = cliPane.props!.onCliGit('/home/u/work/app');
+      });
+      expect(confirm).toHaveBeenCalledWith(DISCARD);
+      keptInRaw();
+      expect(answer).toEqual({
+        results: [
+          {
+            path: '/home/u/work/app',
+            ok: false,
+            error:
+              'the project was added, but Source Control did not open: config.json has unsaved changes',
+          },
+        ],
+      });
+    });
+
     it('the strip’s [+] button asks too, and Cancel keeps Raw with the text', async () => {
       await dirtyConfig();
       fireEvent.pointerDown(screen.getByTestId('session-new'), { button: 0 });
@@ -7013,6 +7071,202 @@ describe('Source Control in the dock', () => {
       expect(stored()['scmActiveRepo']).toBe(LIB_REPO);
     });
   });
+
+  describe('single-file reviews (preview tabs)', () => {
+    const WID = 'wq3k9x2m1ab';
+    const fileUrl = (path: string, group: 'changes' | 'staged' = 'changes') =>
+      fileReviewUrl(group, APP_REPO, path);
+    const openRows = () => {
+      answers[APP_REPO] = scmStatus(APP_REPO, {
+        staged: [entryOf('s.ts')],
+        changes: [entryOf('c.ts'), entryOf('d.ts')],
+      });
+      storeSettings({ scmRepos: [APP_REPO], scmActiveRepo: APP_REPO });
+    };
+    /** The server's `ready`, announcing preview tabs. */
+    const supported = () =>
+      send({ type: 'ready', maxUploadBytes: 1024, webApps: [], version: '', previewTabs: true });
+    const toastText = () => document.querySelector('.toast.show')?.textContent ?? null;
+    beforeEach(() => {
+      // A tap elsewhere marks its gesture in module state; a key press clears it.
+      fireEvent.keyDown(document, { key: 'Shift' });
+    });
+
+    it('a Source Control open sends one preview createTab for the file’s own review url', async () => {
+      openRows();
+      boot([{ id: '0', kind: 'terminal' }]);
+      await supported();
+      await openScm();
+      fireEvent.click(await screen.findByTestId('scm-row-changes:c.ts'));
+      expect(server().created).toEqual([
+        { kind: 'review', url: `changes-file:${encodeURIComponent(APP_REPO)}:c.ts`, preview: true },
+      ]);
+    });
+
+    it('a row’s Open file opens the file itself as a preview editor, not its review', async () => {
+      openRows();
+      boot([{ id: '0', kind: 'terminal' }]);
+      await send({
+        type: 'ready',
+        maxUploadBytes: 1024,
+        webApps: [],
+        version: '',
+        previewTabs: true,
+        scmBatchWrites: true,
+      });
+      await openScm();
+      const row = await screen.findByTestId('scm-row-changes:c.ts');
+      const item = row.closest<HTMLElement>('.scm-item');
+      expect(item).not.toBeNull();
+      fireEvent.click(within(item!).getByTestId('scm-action-open'));
+      expect(server().created).toEqual([
+        { kind: 'editor', url: `${APP_REPO}/c.ts`, preview: true },
+      ]);
+    });
+
+    it('a row offers no action until the server announces batch writes', async () => {
+      openRows();
+      boot([{ id: '0', kind: 'terminal' }]);
+      await supported();
+      await openScm();
+      const row = await screen.findByTestId('scm-row-changes:c.ts');
+      expect(row.closest('.scm-item')).toBeNull();
+      expect(document.querySelector('[data-testid^="scm-action-"]')).toBeNull();
+    });
+
+    it('Opening two files of one group: the second replaces the first in place', async () => {
+      openRows();
+      boot([
+        { id: '0', kind: 'terminal' },
+        { id: '4', kind: 'review', url: fileUrl('c.ts'), preview: true },
+      ]);
+      await supported();
+      await openScm();
+      fireEvent.click(await screen.findByTestId('scm-row-changes:d.ts'));
+      expect(server().replaced).toEqual([{ id: '4', kind: 'review', url: fileUrl('d.ts') }]);
+      expect(server().created).toEqual([]);
+    });
+
+    it('a double-click on a row keeps the review open', async () => {
+      openRows();
+      boot([
+        { id: '0', kind: 'terminal' },
+        { id: '4', kind: 'review', url: fileUrl('c.ts'), preview: true },
+      ]);
+      await supported();
+      await openScm();
+      fireEvent.doubleClick(await screen.findByTestId('scm-row-changes:c.ts'));
+      expect(server().updates).toEqual([{ id: '4', preview: false }]);
+    });
+
+    it('Opening the whole group: the header button opens the continuous review', async () => {
+      openRows();
+      boot([{ id: '0', kind: 'terminal' }]);
+      await supported();
+      await openScm();
+      fireEvent.click(await screen.findByTestId('scm-open-review-changes'));
+      expect(server().created).toEqual([{ kind: 'review', url: `changes:${APP_REPO}` }]);
+    });
+
+    it('A single-file review held by another window moves here and is shown', async () => {
+      openRows();
+      history.replaceState(null, '', '/');
+      boot([
+        { id: '0', kind: 'terminal' },
+        { id: '4', kind: 'review', url: fileUrl('c.ts'), preview: true, window: WID },
+      ]);
+      await supported();
+      await openScm();
+      fireEvent.click(await screen.findByTestId('scm-row-changes:c.ts'));
+      expect(server().moves).toEqual([{ ids: ['4'], window: null }]);
+      expect(server().created).toEqual([]);
+      expect(server().replaced).toEqual([]);
+      expect(selected()).toEqual(['4']);
+    });
+
+    it('A preview open never names a preview another window holds', async () => {
+      openRows();
+      history.replaceState(null, '', '/');
+      boot([
+        { id: '0', kind: 'terminal' },
+        { id: '4', kind: 'review', url: fileUrl('c.ts'), preview: true, window: WID },
+      ]);
+      await supported();
+      await openScm();
+      fireEvent.click(await screen.findByTestId('scm-row-changes:d.ts'));
+      expect(server().replaced).toEqual([]);
+      expect(server().created).toEqual([{ kind: 'review', url: fileUrl('d.ts'), preview: true }]);
+    });
+
+    it('showFile moves the tab by url, and toasts when no broadcast shows it within 2 s', async () => {
+      openRows();
+      boot([
+        { id: '0', kind: 'terminal' },
+        { id: '4', kind: 'review', url: fileUrl('c.ts'), preview: true },
+      ]);
+      await supported();
+      vi.useFakeTimers();
+      act(() => paneHost.review!.showFile('4', 'd.ts'));
+      expect(server().updates).toEqual([{ id: '4', url: fileUrl('d.ts') }]);
+      act(() => vi.advanceTimersByTime(2000));
+      expect(toastText()).toBe('Could not open the next file');
+    });
+
+    it('showFile says nothing once a broadcast shows the tab at its new url', async () => {
+      openRows();
+      boot([
+        { id: '0', kind: 'terminal' },
+        { id: '4', kind: 'review', url: fileUrl('c.ts'), preview: true },
+      ]);
+      await supported();
+      vi.useFakeTimers();
+      act(() => paneHost.review!.showFile('4', 'd.ts'));
+      await send({
+        type: 'sessions',
+        tabs: [
+          { id: '0', kind: 'terminal' },
+          { id: '4', kind: 'review', url: fileUrl('d.ts'), preview: true },
+        ],
+      });
+      act(() => vi.advanceTimersByTime(2000));
+      expect(toastText()).toBeNull();
+    });
+
+    it('showFile selects the tab that already holds the file’s review instead', async () => {
+      openRows();
+      boot([
+        { id: '0', kind: 'terminal' },
+        { id: '4', kind: 'review', url: fileUrl('c.ts'), preview: true },
+        { id: '5', kind: 'review', url: fileUrl('d.ts') },
+      ]);
+      await supported();
+      act(() => paneHost.review!.showFile('4', 'd.ts'));
+      expect(server().updates).toEqual([]);
+      expect(selected()).toEqual(['5']);
+    });
+
+    it('the review host opens the continuous review, with or without a file', async () => {
+      openRows();
+      boot([{ id: '0', kind: 'terminal' }]);
+      await supported();
+      act(() => paneHost.review!.openReview({ group: 'staged' }));
+      expect(server().created).toEqual([{ kind: 'review', url: `staged:${APP_REPO}` }]);
+      expect(paneHost.review!.takeScrollTarget(`staged:${APP_REPO}`)).toBeUndefined();
+    });
+
+    it('Open review from a paused file stays in its original repository', async () => {
+      openRows();
+      storeSettings({ scmRepos: [APP_REPO, LIB_REPO], scmActiveRepo: LIB_REPO });
+      boot([{ id: '0', kind: 'terminal' }]);
+      await supported();
+      act(() => paneHost.review!.openReview({ group: 'changes', path: 'c.ts', repo: APP_REPO }));
+      expect(server().created).toEqual([{ kind: 'review', url: `changes:${APP_REPO}` }]);
+      expect(paneHost.review!.takeScrollTarget(`changes:${APP_REPO}`)).toEqual({
+        group: 'changes',
+        path: 'c.ts',
+      });
+    });
+  });
 });
 
 // ── The review keys and the comments, as the app wires them ─────────────────────
@@ -7078,6 +7332,7 @@ describe('Source Control keys and comments in the app', () => {
     nextFile: vi.fn(),
     prevFile: vi.fn(),
     reviewCurrent: vi.fn(),
+    toggleWrap: vi.fn(() => 'on' as const),
   });
   /** Press a chord; true when the app claimed it (prevented its default). */
   const press = (init: KeyboardEventInit): boolean => !fireEvent.keyDown(window, init);
@@ -7146,6 +7401,23 @@ describe('Source Control keys and comments in the app', () => {
       expect(api.prevFile).toHaveBeenCalledTimes(1);
       expect(press({ key: 'Enter', ...CTRL_ALT })).toBe(true);
       expect(api.reviewCurrent).toHaveBeenCalledTimes(1);
+    });
+
+    it('Alt+Z is left to xterm on a terminal', () => {
+      render(<App />);
+      broadcast(['0']);
+      expect(press({ key: 'z', code: 'KeyZ', altKey: true })).toBe(false);
+    });
+
+    it('Alt+Z toggles wrap on a focused review, by physical key', async () => {
+      const api = fakeApi();
+      registerReview('1', api);
+      bootReviews('1');
+      select('1');
+      await flush();
+      expect(press({ key: 'Ω', code: 'KeyZ', altKey: true })).toBe(true);
+      expect(api.toggleWrap).toHaveBeenCalledTimes(1);
+      expect(screen.getByText('Word wrap on')).toBeTruthy();
     });
 
     it('reach only the focused review when several are open', async () => {
@@ -7415,6 +7687,7 @@ describe('Source Control on a phone', () => {
     nextFile: vi.fn(),
     prevFile: vi.fn(),
     reviewCurrent: vi.fn(),
+    toggleWrap: vi.fn(() => 'on' as const),
   });
   const REVIEW = { id: '4', kind: 'review', url: `changes:${APP}` };
   const STAGED = { id: '5', kind: 'review', url: `staged:${APP}` };
@@ -9102,7 +9375,8 @@ describe('detached windows', () => {
   });
 
   describe('the + in a detached window', () => {
-    const plus = () => fireEvent.pointerDown(stripOf('p0').getByTestId('session-new'), { button: 0 });
+    const plus = () =>
+      fireEvent.pointerDown(stripOf('p0').getByTestId('session-new'), { button: 0 });
 
     it('opens the New-tab chooser in a dialog, because the window has no dock', () => {
       bootDetached([term('1', WID)]);
@@ -9238,6 +9512,941 @@ describe('detached windows', () => {
       expect(screen.queryByTestId('dock')).toBeNull();
       expect(localStorage.getItem('palmux-dock-view')).toBeNull();
       await act(async () => {}); // the history's fetch settles
+    });
+  });
+});
+
+// ── Preview tabs (openspec preview-tabs, design D3, D3a, D4, D9) ──────────────
+describe('preview tabs', () => {
+  const HOME = '/work';
+  const A = `${HOME}/a.ts`;
+  const B = `${HOME}/b.ts`;
+  const C = `${HOME}/c.ts`;
+  const WID = 'wq3k9x2m1ab';
+  const t = (id: string) => ({ id, kind: 'terminal' });
+  const ed = (id: string, url: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    kind: 'editor',
+    url,
+    ...extra,
+  });
+  const pv = (id: string, url: string) => ed(id, url, { preview: true });
+  const list = (...tabs: Array<Record<string, unknown>>) => send({ type: 'sessions', tabs });
+  /** The server's `ready`: `previewTabs` unless told otherwise. */
+  const ready = (extra: Record<string, unknown> = { previewTabs: true }) =>
+    send({ type: 'ready', maxUploadBytes: 1024, webApps: [], version: '', ...extra });
+  const toastText = () => document.querySelector('.toast.show')?.textContent ?? null;
+  const flush = () => act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+
+  beforeEach(() => {
+    // A tap marks its gesture in module state (`consumeGesture`), and the mark swallows the next
+    // pointer click for a moment; a key press clears it, so no test inherits another's tap.
+    fireEvent.keyDown(document, { key: 'Shift' });
+    // The Explorer lists HOME; the icon index is answered the way a host without icons would.
+    const files = ['a.ts', 'b.ts', 'c.ts', ...Array.from({ length: 10 }, (_, i) => `f${i}.ts`)];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) => {
+        const u = new URL(url, 'http://palmux');
+        if (u.pathname === '/files/list') {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () =>
+              Promise.resolve({
+                path: HOME,
+                parent: '/',
+                entries: files.map((name) => ({
+                  name,
+                  dir: false,
+                  size: 1,
+                  mtime: 0,
+                  symlink: false,
+                })),
+              }),
+          });
+        }
+        return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) });
+      }),
+    );
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  /** The dock's Explorer, listed. */
+  const explorer = async () => {
+    fireEvent.click(screen.getByTestId('dock-rail-files'));
+    await flush();
+    await screen.findByTestId(`ft-row-${A}`);
+  };
+  /** A click on a file row: `detail` 2 is the second click of a double-click, 0 a key. */
+  const row = (path: string, detail = 1) =>
+    fireEvent.click(screen.getByTestId(`ft-row-${path}`), { detail });
+
+  describe('against an older server', () => {
+    it('sends no preview field and no replaceTab before the first ready, or after one without the flag', async () => {
+      render(<App />);
+      await list(t('0'), pv('3', A));
+      await explorer();
+      row(B);
+      await ready({});
+      row(C);
+      expect(server().created).toEqual([
+        { kind: 'editor', url: B },
+        { kind: 'editor', url: C },
+      ]);
+      expect(server().replaced).toEqual([]);
+      act(() => paneHost.review!.pinTab('3'));
+      expect(server().updates).toEqual([]);
+    });
+  });
+
+  describe('pinTab', () => {
+    it('sends one message for two calls, and sends it again after a reconnect while still a preview', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), pv('3', A));
+      act(() => {
+        paneHost.review!.pinTab('3');
+        paneHost.review!.pinTab('3');
+      });
+      expect(server().updates).toEqual([{ id: '3', preview: false }]);
+      await ready(); // a reconnect: the pin may never have arrived
+      expect(server().updates).toEqual([
+        { id: '3', preview: false },
+        { id: '3', preview: false },
+      ]);
+      await list(t('0'), ed('3', A)); // now pinned
+      await ready();
+      expect(server().updates).toHaveLength(2);
+      act(() => paneHost.review!.pinTab('0')); // not a preview
+      expect(server().updates).toHaveLength(2);
+    });
+  });
+
+  describe('a preview open', () => {
+    it('An Explorer open sends createTab with preview: true', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'));
+      await explorer();
+      row(A);
+      expect(server().created).toEqual([{ kind: 'editor', url: A, preview: true }]);
+    });
+
+    it('palmux open of a file whose preview is still being created pins it and keeps the last path selected', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), ed('5', B));
+      await explorer();
+      row(A);
+      expect(server().created).toEqual([{ kind: 'editor', url: A, preview: true }]);
+      let results: unknown;
+      act(() => {
+        results = cliPane.props!.onCliOpen([A, B]);
+      });
+      expect(results).toEqual([
+        { path: A, ok: true },
+        { path: B, ok: true },
+      ]);
+      await list(t('0'), ed('5', B), pv('6', A));
+      send({ type: 'tabCreated', id: '6' });
+      await flush();
+      expect(server().updates).toEqual([{ id: '6', preview: false }]);
+      const selected = [
+        ...document.querySelectorAll('[data-testid^="session-tab-"][aria-selected="true"]'),
+      ].map((el) => el.getAttribute('data-testid'));
+      expect(selected).toEqual(['session-tab-5']);
+    });
+
+    it('a preview a CLI open left unshown is shown when it is opened again before it lands', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), ed('5', B));
+      await explorer();
+      row(A);
+      act(() => {
+        cliPane.props!.onCliOpen([B]);
+      });
+      row(A);
+      await list(t('0'), ed('5', B), pv('6', A));
+      send({ type: 'tabCreated', id: '6' });
+      await flush();
+      const selected = [
+        ...document.querySelectorAll('[data-testid^="session-tab-"][aria-selected="true"]'),
+      ].map((el) => el.getAttribute('data-testid'));
+      expect(selected).toEqual(['session-tab-6']);
+    });
+
+    it('replaces the preview of the same kind with exactly one replaceTab, and nothing else', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), pv('3', A));
+      await explorer();
+      row(B);
+      expect(server().replaced).toEqual([{ id: '3', kind: 'editor', url: B }]);
+      expect(server().created).toEqual([]);
+      expect(server().killed).toEqual([]);
+      expect(server().reorders).toEqual([]);
+    });
+
+    it('replaces a preview of another kind with exactly one replaceTab too', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), {
+        id: '3',
+        kind: 'review',
+        url: 'changes-file:%2Fw:x.ts',
+        preview: true,
+      });
+      await explorer();
+      row(B);
+      expect(server().replaced).toEqual([{ id: '3', kind: 'editor', url: B }]);
+      expect(server().created).toEqual([]);
+      expect(server().killed).toEqual([]);
+      expect(server().reorders).toEqual([]);
+    });
+
+    it('shows an open pinned target and sends nothing; a pinned open of a previewed one pins it', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), ed('3', A), pv('4', B));
+      clickTab('0');
+      await explorer();
+      row(A);
+      row(A, 2);
+      expect(shownIn('p0')).toBe('3');
+      expect(server().created).toEqual([]);
+      expect(server().replaced).toEqual([]);
+      expect(server().updates).toEqual([]);
+      row(B, 2);
+      expect(shownIn('p0')).toBe('4');
+      expect(server().updates).toEqual([{ id: '4', preview: false }]);
+    });
+
+    it('two opens before the answer end in one tab showing the second url', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'));
+      await explorer();
+      row(A);
+      row(B);
+      expect(server().created).toEqual([{ kind: 'editor', url: A, preview: true }]);
+      expect(server().replaced).toEqual([]);
+      await list(t('0'), pv('5', A));
+      await send({ type: 'tabCreated', id: '5' });
+      expect(server().replaced).toEqual([{ id: '5', kind: 'editor', url: B }]);
+      await list(t('0'), pv('5', B));
+      await send({ type: 'tabCreated', id: '5' });
+      expect(server().created).toHaveLength(1);
+      expect(server().replaced).toHaveLength(1);
+      expect(strips()[0]!.tabs).toEqual(['0', '5']);
+    });
+
+    it('matches its answer by content: an unrelated broadcast in between creates no second tab', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'));
+      await explorer();
+      row(A);
+      await list({ ...t('0'), title: 'vim' }); // a rename, not the answer
+      await list(t('0'), pv('5', A));
+      await send({ type: 'tabCreated', id: '5' });
+      row(B);
+      expect(server().created).toHaveLength(1);
+      expect(server().replaced).toEqual([{ id: '5', kind: 'editor', url: B }]);
+    });
+
+    it('holds an answer that comes before its tab is listed, and matches it on the next list', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'));
+      await explorer();
+      row(A);
+      row(B);
+      await send({ type: 'tabCreated', id: '5' }); // not listed yet
+      expect(server().replaced).toEqual([]);
+      await list(t('0'), pv('5', A));
+      expect(server().replaced).toEqual([{ id: '5', kind: 'editor', url: B }]);
+    });
+
+    it('with no answer in 5 s toasts and sends nothing more', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'));
+      await explorer();
+      vi.useFakeTimers();
+      row(A);
+      act(() => vi.advanceTimersByTime(5000));
+      expect(toastText()).toBe('Could not open a.ts');
+      expect(server().created).toHaveLength(1);
+      expect(server().replaced).toEqual([]);
+      row(B); // the pane is free again
+      expect(server().created).toHaveLength(2);
+    });
+
+    it('a pinned open of the pending url pins it once the answer lands', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'));
+      await explorer();
+      row(A);
+      row(A, 2);
+      expect(server().created).toHaveLength(1);
+      expect(server().updates).toEqual([]);
+      await list(t('0'), pv('5', A));
+      await send({ type: 'tabCreated', id: '5' });
+      expect(server().updates).toEqual([{ id: '5', preview: false }]);
+    });
+
+    it('a double-click then a click on another file before the answer keeps the first open', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), pv('3', C));
+      await explorer();
+      row(A); // replaces 3
+      row(A, 2); // keep it
+      row(B); // a new preview, never a replace of what is to be kept
+      expect(server().replaced).toEqual([{ id: '3', kind: 'editor', url: A }]);
+      expect(server().created).toEqual([{ kind: 'editor', url: B, preview: true }]);
+      await list(t('0'), pv('3', A));
+      await send({ type: 'tabCreated', id: '3' });
+      expect(server().updates).toEqual([{ id: '3', preview: false }]);
+      expect(server().replaced).toHaveLength(1);
+      await list(t('0'), ed('3', A), pv('5', B));
+      await send({ type: 'tabCreated', id: '5' });
+      expect(server().replaced).toHaveLength(1);
+      expect(server().created).toHaveLength(1);
+      expect(server().updates).toHaveLength(1);
+      // B is the pane's preview now: the next open replaces it.
+      row(C);
+      expect(server().replaced).toEqual([
+        { id: '3', kind: 'editor', url: A },
+        { id: '5', kind: 'editor', url: C },
+      ]);
+    });
+
+    it('a pinned open of the previewed url after the answer pins it at once', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'));
+      await explorer();
+      row(A);
+      await list(t('0'), pv('5', A));
+      await send({ type: 'tabCreated', id: '5' });
+      row(A, 2);
+      expect(server().updates).toEqual([{ id: '5', preview: false }]);
+      expect(server().created).toHaveLength(1);
+    });
+
+    it('two Enter presses do not pin', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), pv('5', A));
+      await explorer();
+      row(A, 0);
+      row(A, 0);
+      expect(server().updates).toEqual([]);
+    });
+
+    it('a held editor toasts and sends nothing', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), ed('3', A, { window: WID }));
+      await explorer();
+      row(A);
+      expect(toastText()).toBe('a.ts is open in another window');
+      expect(server().created).toEqual([]);
+      expect(server().replaced).toEqual([]);
+      expect(server().moves).toEqual([]);
+    });
+
+    it('Which preview is replaced: the active one when it is one', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), pv('3', A), pv('4', B));
+      clickTab('3');
+      await explorer();
+      row(C);
+      expect(server().replaced).toEqual([{ id: '3', kind: 'editor', url: C }]);
+    });
+
+    it('Which preview is replaced: else the last in strip order, and never a dirty one', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), pv('3', A), pv('4', B));
+      clickTab('0');
+      act(() => paneHost.onDirtyChange!('4', true));
+      await explorer();
+      row(C);
+      expect(server().replaced).toEqual([{ id: '3', kind: 'editor', url: C }]);
+    });
+
+    it('Each pane keeps its own preview', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), t('1'), pv('3', A));
+      splitVia('1'); // p0 = [0, 3], p1 = [1], p1 focused
+      await explorer();
+      row(B);
+      expect(server().replaced).toEqual([]);
+      expect(server().created).toEqual([{ kind: 'editor', url: B, preview: true }]);
+      fireEvent.pointerDown(screen.getByTestId('session-tab-0'), { button: 0 }); // focus p0
+      row(C);
+      expect(server().replaced).toEqual([{ id: '3', kind: 'editor', url: C }]);
+    });
+
+    it('A new terminal is never a preview', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), pv('3', A));
+      fireEvent.pointerDown(stripOf('p0').getByTestId('session-new'), { button: 0 });
+      tapPress(screen.getByTestId('dash-new-terminal'));
+      expect(server().created).toEqual([]);
+      expect(server().replaced).toEqual([]);
+      expect(strips()[0]!.tabs).toContain('3');
+    });
+
+    it('Browsing ten files leaves one preview', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'));
+      await explorer();
+      for (let i = 0; i < 10; i++) {
+        const path = `${HOME}/f${i}.ts`;
+        row(path);
+        // oxlint-disable-next-line no-await-in-loop -- each answer lands before the next open
+        await list(t('0'), pv('5', path));
+        // oxlint-disable-next-line no-await-in-loop -- the answer to the open above
+        await send({ type: 'tabCreated', id: '5' });
+      }
+      expect(server().created).toHaveLength(1);
+      expect(server().replaced).toHaveLength(9);
+      expect(strips()).toEqual([{ pane: 'p0', tabs: ['0', '5'], focused: true }]);
+    });
+  });
+
+  describe('a replaced tab', () => {
+    const swapped = {
+      id: '9',
+      kind: 'review',
+      url: 'changes-file:%2Fw:x.ts',
+      preview: true,
+      replaces: '4',
+    };
+
+    it('keeps its place in the pane and stays the shown tab', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), pv('4', A), t('2'));
+      clickTab('4');
+      await list(t('0'), swapped, t('2'));
+      expect(strips()).toEqual([{ pane: 'p0', tabs: ['0', '9', '2'], focused: true }]);
+      expect(shownIn('p0')).toBe('9');
+    });
+
+    // The hint rides one broadcast: a pin of the new tab clears it on the server. Two broadcasts
+    // handled before one render show the layout only the second.
+    it('a replacement followed by a pin in one render keeps its original pane', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), t('1'), pv('4', A), t('2'));
+      splitVia('1'); // p0 = [0, 4, 2], p1 = [1], p1 focused
+      clickTab('4'); // p0 shows 4, and is focused
+      fireEvent.pointerDown(screen.getByTestId('session-tab-1'), { button: 0 }); // focus p1
+      expect(strips()).toEqual([
+        { pane: 'p0', tabs: ['0', '4', '2'], focused: false },
+        { pane: 'p1', tabs: ['1'], focused: true },
+      ]);
+      const { replaces: _, preview: __, ...pinned } = swapped;
+      act(() => {
+        server().handler!({ type: 'sessions', tabs: [t('0'), t('1'), swapped, t('2')] });
+        server().handler!({ type: 'sessions', tabs: [t('0'), t('1'), pinned, t('2')] });
+      });
+      expect(strips()).toEqual([
+        { pane: 'p0', tabs: ['0', '9', '2'], focused: false },
+        { pane: 'p1', tabs: ['1'], focused: true },
+      ]);
+      expect(shownIn('p0')).toBe('9');
+    });
+
+    it('on a phone, a hint left on a tab from an earlier swap does not move the selection', async () => {
+      localStorage.setItem('palmux-settings', JSON.stringify({ mobileMode: 'on' }));
+      render(<App />);
+      await ready();
+      await list(t('0'), pv('1', A), t('2'));
+      act(() => void paneHost.review!.openFile(A)); // shows 1
+      const review = { ...swapped, replaces: '1' };
+      await list(t('0'), review, t('2')); // editor 1 became review 9
+      expect(drawer().current).toBe('9');
+      // An unrelated tab takes the recycled id 1, and the server still lists review 9's hint.
+      await list(t('0'), review, t('2'), ed('1', B));
+      act(() => void paneHost.review!.openFile(B)); // shows 1
+      expect(drawer().current).toBe('1');
+      await list(t('0'), review, t('2')); // 1 is closed: its left neighbour is 2
+      expect(drawer().current).toBe('2');
+    });
+
+    it('on a phone, hands the selection over with no render showing the neighbour', async () => {
+      localStorage.setItem('palmux-settings', JSON.stringify({ mobileMode: 'on' }));
+      render(<App />);
+      await ready();
+      await list(t('0'), pv('4', A));
+      act(() => void paneHost.review!.openFile(A)); // shows 4
+      expect(drawer().current).toBe('4');
+      expect(panes()).toEqual([]);
+      const seen: Element[] = [];
+      const observer = new MutationObserver((records) => {
+        for (const r of records)
+          for (const n of r.addedNodes) if (n instanceof Element) seen.push(n);
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+      await list(t('0'), swapped);
+      for (const r of observer.takeRecords()) {
+        for (const n of r.addedNodes) if (n instanceof Element) seen.push(n);
+      }
+      observer.disconnect();
+      expect(drawer().current).toBe('9');
+      expect(panes()).toEqual([]);
+      const terminalMounted = seen.some(
+        (n) =>
+          n.matches('[data-testid^="term-pane-"]') ||
+          n.querySelector('[data-testid^="term-pane-"]') !== null,
+      );
+      expect(terminalMounted).toBe(false);
+    });
+
+    it('toasts when a preview with unsaved text was replaced by another window', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), pv('4', A));
+      act(() => paneHost.onDirtyChange!('4', true));
+      await list(t('0'), pv('4', B));
+      expect(toastText()).toBe('a.ts was replaced by another window before your edit was saved');
+    });
+
+    it('does not toast for a pinned tab following a link', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), ed('4', `${HOME}/a.md`));
+      act(() => paneHost.onDirtyChange!('4', true));
+      await list(t('0'), ed('4', `${HOME}/b.md`));
+      expect(toastText()).toBeNull();
+    });
+  });
+
+  describe('what pins', () => {
+    it('The first edit pins in every window: a dirty transition sends the pin', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), pv('4', A));
+      act(() => paneHost.onDirtyChange!('4', true));
+      expect(server().updates).toEqual([{ id: '4', preview: false }]);
+    });
+
+    it('Split right pins a preview in a two-tab pane', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), pv('4', A));
+      splitVia('4');
+      expect(strips().map((s) => s.tabs)).toEqual([['0'], ['4']]);
+      expect(server().updates).toEqual([{ id: '4', preview: false }]);
+    });
+
+    it('Split right on a lone preview opens a terminal and pins nothing', async () => {
+      history.replaceState(null, '', '/'); // not the suite's legacy `/0`, which would add a terminal
+      render(<App />);
+      await ready();
+      await list(pv('4', A));
+      splitVia('4');
+      expect(strips()).toHaveLength(2);
+      expect(server().updates).toEqual([]);
+    });
+
+    it('Moving to another pane pins; a drop on its own pane does not', async () => {
+      render(<App />);
+      await ready();
+      await list(t('0'), t('1'), pv('4', A));
+      splitVia('1'); // p0 = [0, 4], p1 = [1]
+      dropOnPane('4', 0, 'centre'); // its own pane
+      expect(server().updates).toEqual([]);
+      dropOnPane('4', 1, 'centre');
+      expect(strips().map((s) => s.tabs)).toEqual([['0'], ['1', '4']]);
+      expect(server().updates).toEqual([{ id: '4', preview: false }]);
+    });
+
+    it('Moving to another window keeps the preview', async () => {
+      const open = vi.spyOn(window, 'open').mockReturnValue({} as Window);
+      history.replaceState(null, '', '/');
+      render(<App />);
+      await ready({ previewTabs: true, detachedWindows: true });
+      await list(t('0'), pv('4', A));
+      fireEvent.contextMenu(screen.getByTestId('session-tab-4'));
+      fireEvent.click(screen.getByTestId('menu-popout'));
+      expect(open).toHaveBeenCalled();
+      expect(server().moves).toHaveLength(1);
+      expect(server().updates).toEqual([]);
+    });
+  });
+});
+
+// ── palmux open / palmux git: the window's half (openspec palmux-cli-commands, D3, D5) ─────────
+// The terminal pane is a stub here, so a test calls the callbacks App hands it, as the pane does on
+// a `cliOpen` / `cliGit` frame. Sending the answer on the pane's own socket is the pane's job.
+describe('palmux open and palmux git', () => {
+  const HOME = '/work';
+  const A = `${HOME}/a.ts`;
+  const B = `${HOME}/b.ts`;
+  const REPO = '/home/u/work/app';
+  const OTHER_REPO = '/home/u/work/lib';
+  const WID = 'wq3k9x2m1ab';
+  const t = (id: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    kind: 'terminal',
+    ...extra,
+  });
+  const ed = (id: string, url: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    kind: 'editor',
+    url,
+    ...extra,
+  });
+  const list = (...tabs: Array<Record<string, unknown>>) => send({ type: 'sessions', tabs });
+  const selected = () =>
+    [...document.querySelectorAll('[data-testid^="session-tab-"][aria-selected="true"]')].map(
+      (el) => el.getAttribute('data-testid')?.replace('session-tab-', ''),
+    );
+  const stored = () => JSON.parse(localStorage.getItem('palmux-settings') ?? '{}');
+  const openFiles = (...paths: string[]) => {
+    let results: CliResultEntry[] = [];
+    act(() => {
+      results = cliPane.props!.onCliOpen(paths);
+    });
+    return results;
+  };
+  const openAt = (paths: string[], goto: CliGoto[]) => {
+    let results: CliResultEntry[] = [];
+    act(() => {
+      results = cliPane.props!.onCliOpen(paths, goto);
+    });
+    return results;
+  };
+  const openWeb = (url: string) => {
+    let result: CliResultEntry = { path: url, ok: false };
+    act(() => {
+      result = cliPane.props!.onCliWeb(url);
+    });
+    return result;
+  };
+  const gitRepo = (repo: string) => {
+    let answer: { results: CliResultEntry[]; note?: string } = { results: [] };
+    act(() => {
+      answer = cliPane.props!.onCliGit(repo);
+    });
+    return answer;
+  };
+
+  beforeEach(() => {
+    cliPane.props = null;
+    history.replaceState(null, '', '/');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve(null) })),
+    );
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  describe('open', () => {
+    it('Open one file: creates the editor tab and answers ok', () => {
+      render(<App />);
+      list(t('0'));
+      expect(openFiles(A)).toEqual([{ path: A, ok: true }]);
+      expect(server().created).toEqual([{ kind: 'editor', url: A }]);
+    });
+
+    it('Several files: opens them in order and answers one entry per path', () => {
+      render(<App />);
+      list(t('0'));
+      expect(openFiles(A, B)).toEqual([
+        { path: A, ok: true },
+        { path: B, ok: true },
+      ]);
+      expect(server().created.map((c) => (c as { url: string }).url)).toEqual([A, B]);
+    });
+
+    it('file:line asks the editor of each file it opened for the position, and none it did not', () => {
+      render(<App />);
+      list(t('0'), ed('3', B, { window: WID }));
+      resetEditorGoto();
+      expect(
+        openAt(
+          [A, B],
+          [
+            { path: A, line: 12, column: 3 },
+            { path: B, line: 4 },
+          ],
+        ),
+      ).toEqual([
+        { path: A, ok: true },
+        { path: B, ok: false, error: 'open in another window' },
+      ]);
+      expect(takeGoto(A)).toEqual({ line: 12, column: 3 });
+      expect(hasGoto(B)).toBe(false);
+    });
+
+    it('Already open: selects the existing tab and creates nothing', () => {
+      render(<App />);
+      list(t('0'), ed('3', A));
+      expect(selected()).toEqual(['0']);
+      expect(openFiles(A)).toEqual([{ path: A, ok: true }]);
+      expect(server().created).toEqual([]);
+      expect(selected()).toEqual(['3']);
+    });
+
+    it('Open in another window: changes nothing and answers the reason', () => {
+      render(<App />);
+      list(t('0'), ed('3', A, { window: WID }));
+      expect(openFiles(A)).toEqual([{ path: A, ok: false, error: 'open in another window' }]);
+      expect(server().created).toEqual([]);
+      expect(server().moves).toEqual([]);
+      expect(document.querySelector('.toast.show')?.textContent).toBe(
+        'a.ts is open in another window',
+      );
+    });
+
+    it('answers per path when only one of them is held elsewhere', () => {
+      render(<App />);
+      list(t('0'), ed('3', A, { window: WID }));
+      expect(openFiles(A, B)).toEqual([
+        { path: A, ok: false, error: 'open in another window' },
+        { path: B, ok: true },
+      ]);
+      expect(server().created).toEqual([{ kind: 'editor', url: B }]);
+    });
+
+    it('answers a failure when the window cannot send the create, and a retry creates it', () => {
+      render(<App />);
+      list(t('0'), ed('3', B));
+      const ws = server() as unknown as { sendCreateTab: () => boolean };
+      const create = vi.spyOn(ws, 'sendCreateTab').mockReturnValue(false);
+      expect(openFiles(A, B)).toEqual([
+        { path: A, ok: false, error: 'this window is not connected to the server' },
+        { path: B, ok: true },
+      ]);
+      create.mockRestore();
+      expect(openFiles(A)).toEqual([{ path: A, ok: true }]);
+      expect(server().created).toEqual([{ kind: 'editor', url: A }]);
+    });
+
+    it('selects the path typed last when an earlier one is created after it', () => {
+      render(<App />);
+      list(t('0'), ed('3', B));
+      expect(openFiles(A, B)).toEqual([
+        { path: A, ok: true },
+        { path: B, ok: true },
+      ]);
+      expect(server().created).toEqual([{ kind: 'editor', url: A }]);
+      expect(selected()).toEqual(['3']);
+      // The server lists the new tab, then answers the create.
+      list(t('0'), ed('3', B), ed('4', A));
+      send({ type: 'tabCreated', id: '4' });
+      expect(selected()).toEqual(['3']);
+    });
+
+    it('selects the path typed last when every path is created or only the last is', () => {
+      render(<App />);
+      list(t('0'));
+      openFiles(A, B);
+      list(t('0'), ed('4', A), ed('5', B));
+      send({ type: 'tabCreated', id: '4' });
+      send({ type: 'tabCreated', id: '5' });
+      expect(selected()).toEqual(['5']);
+      const C = `${HOME}/c.ts`;
+      openFiles(A, C);
+      // A is open already and not the last path: it is left where it is.
+      expect(selected()).toEqual(['5']);
+      list(t('0'), ed('4', A), ed('5', B), ed('6', C));
+      send({ type: 'tabCreated', id: '6' });
+      expect(selected()).toEqual(['6']);
+    });
+
+    it('selects the last path it opened when the last one typed is held elsewhere', () => {
+      render(<App />);
+      list(t('0'), ed('3', B, { window: WID }));
+      expect(openFiles(A, B)).toEqual([
+        { path: A, ok: true },
+        { path: B, ok: false, error: 'open in another window' },
+      ]);
+      list(t('0'), ed('3', B, { window: WID }), ed('4', A));
+      send({ type: 'tabCreated', id: '4' });
+      expect(selected()).toEqual(['4']);
+    });
+
+    it('a later open of a path still being created selects it when it lands', () => {
+      render(<App />);
+      list(t('0'), ed('3', B));
+      openFiles(A, B);
+      expect(openFiles(A)).toEqual([{ path: A, ok: true }]);
+      expect(server().created).toEqual([{ kind: 'editor', url: A }]);
+      list(t('0'), ed('3', B), ed('4', A));
+      send({ type: 'tabCreated', id: '4' });
+      expect(selected()).toEqual(['4']);
+    });
+
+    it('creates one editor for a path typed twice, and for a second request before the list shows it', () => {
+      render(<App />);
+      list(t('0'));
+      expect(openFiles(A, A)).toEqual([
+        { path: A, ok: true },
+        { path: A, ok: true },
+      ]);
+      expect(openFiles(A)).toEqual([{ path: A, ok: true }]);
+      expect(server().created).toEqual([{ kind: 'editor', url: A }]);
+      list(t('0'), ed('4', A));
+      send({ type: 'tabCreated', id: '4' });
+      expect(selected()).toEqual(['4']);
+    });
+
+    it('a newer request that selects another file leaves an older pending create unshown', () => {
+      render(<App />);
+      list(t('0'));
+      openFiles(A);
+      openFiles(B);
+      expect(server().created).toEqual([
+        { kind: 'editor', url: A },
+        { kind: 'editor', url: B },
+      ]);
+      // B is listed and answered first, then A's answer lands late: B stays selected.
+      list(t('0'), ed('4', A), ed('5', B));
+      send({ type: 'tabCreated', id: '5' });
+      expect(selected()).toEqual(['5']);
+      send({ type: 'tabCreated', id: '4' });
+      expect(selected()).toEqual(['5']);
+    });
+
+    it('asks again once an unanswered create is old enough to have been refused', () => {
+      render(<App />);
+      list(t('0'));
+      openFiles(A);
+      const now = Date.now();
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 6000);
+      try {
+        openFiles(A);
+      } finally {
+        clock.mockRestore();
+      }
+      expect(server().created).toEqual([
+        { kind: 'editor', url: A },
+        { kind: 'editor', url: A },
+      ]);
+    });
+  });
+
+  describe('web', () => {
+    const URL5173 = 'http://localhost:5173/';
+    it('creates a web tab for a url no tab shows, and answers ok', () => {
+      render(<App />);
+      list(t('0'));
+      expect(openWeb(URL5173)).toEqual({ path: URL5173, ok: true });
+      expect(server().created).toEqual([{ kind: 'web', url: URL5173 }]);
+    });
+
+    it('selects the web tab already on that url and creates nothing', () => {
+      render(<App />);
+      list(t('0'), { id: '4', kind: 'web', url: URL5173 });
+      expect(openWeb(URL5173)).toEqual({ path: URL5173, ok: true });
+      expect(server().created).toEqual([]);
+      expect(selected()).toEqual(['4']);
+    });
+
+    it('answers why when another window shows it or the create cannot be sent', () => {
+      render(<App />);
+      list(t('0'), { id: '4', kind: 'web', url: URL5173, window: WID });
+      expect(openWeb(URL5173)).toEqual({
+        path: URL5173,
+        ok: false,
+        error: 'open in another window',
+      });
+      const ws = server() as unknown as { sendCreateTab: () => boolean };
+      vi.spyOn(ws, 'sendCreateTab').mockReturnValue(false);
+      expect(openWeb('http://localhost:3000/')).toEqual({
+        path: 'http://localhost:3000/',
+        ok: false,
+        error: 'this window is not connected to the server',
+      });
+    });
+  });
+  describe('git', () => {
+    it('From a nested folder: the list is synced, the choice stays local, Source Control opens', async () => {
+      render(<App />);
+      list(t('0'));
+      const before = server().settingsSent.length;
+      expect(gitRepo(REPO)).toEqual({ results: [{ path: REPO, ok: true }] });
+      await act(async () => {});
+      const sent = server().settingsSent.slice(before).at(-1) ?? {};
+      expect(sent['scmRepos']).toEqual([REPO]);
+      expect('scmActiveRepo' in sent).toBe(false);
+      expect(stored()).toMatchObject({ scmRepos: [REPO], scmActiveRepo: REPO });
+      expect(screen.getByTestId('dock')).toHaveAttribute('data-view', 'scm');
+    });
+
+    it('a project already listed is not duplicated, only made active', async () => {
+      localStorage.setItem(
+        'palmux-settings',
+        JSON.stringify({ mobileMode: 'off', scmRepos: [REPO, OTHER_REPO], scmActiveRepo: REPO }),
+      );
+      render(<App />);
+      list(t('0'));
+      expect(gitRepo(`${OTHER_REPO}/`).results).toEqual([{ path: `${OTHER_REPO}/`, ok: true }]);
+      await act(async () => {});
+      expect(stored()).toMatchObject({ scmRepos: [REPO, OTHER_REPO], scmActiveRepo: OTHER_REPO });
+      expect(screen.getByTestId('dock')).toHaveAttribute('data-view', 'scm');
+    });
+
+    it('two requests handled before a render keep both projects', async () => {
+      render(<App />);
+      list(t('0'));
+      act(() => {
+        cliPane.props!.onCliGit(REPO);
+        cliPane.props!.onCliGit(OTHER_REPO);
+      });
+      await act(async () => {});
+      expect(server().settingsSent.at(-1)?.['scmRepos']).toEqual([REPO, OTHER_REPO]);
+      expect(stored()).toMatchObject({ scmRepos: [REPO, OTHER_REPO], scmActiveRepo: OTHER_REPO });
+    });
+
+    it('a window whose control socket is down changes nothing and says why', async () => {
+      render(<App />);
+      list(t('0'));
+      const ws = server() as unknown as { isOpen: () => boolean };
+      const open = vi.spyOn(ws, 'isOpen').mockReturnValue(false);
+      const before = server().settingsSent.length;
+      expect(gitRepo(REPO)).toEqual({
+        results: [{ path: REPO, ok: false, error: 'this window is not connected to the server' }],
+      });
+      await act(async () => {});
+      open.mockRestore();
+      expect(server().settingsSent.length).toBe(before);
+      expect(stored()['scmRepos'] ?? []).toEqual([]);
+      expect(screen.queryByTestId('dock')?.getAttribute('data-view')).not.toBe('scm');
+    });
+
+    it('A window with no Source Control panel: applies the settings and says so', async () => {
+      history.replaceState(null, '', `/window/${WID}?tab=1`);
+      render(<App />);
+      list(t('1', { window: WID }));
+      const before = server().settingsSent.length;
+      expect(gitRepo(REPO)).toEqual({
+        results: [{ path: REPO, ok: true }],
+        note: 'this window has no Source Control panel',
+      });
+      await act(async () => {});
+      expect(server().settingsSent.slice(before).at(-1)?.['scmRepos']).toEqual([REPO]);
+      expect(stored()).toMatchObject({ scmRepos: [REPO], scmActiveRepo: REPO });
+      expect(screen.queryByTestId('dock')).toBeNull();
     });
   });
 });

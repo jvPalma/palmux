@@ -176,7 +176,7 @@ describe('FileTree', () => {
     render(<FileTree onOpenFile={onOpenFile} />);
 
     fireEvent.click(await screen.findByTestId('ft-row-/CLAUDE.md'));
-    expect(onOpenFile).toHaveBeenCalledWith('/CLAUDE.md');
+    expect(onOpenFile).toHaveBeenCalledWith('/CLAUDE.md', { preview: true });
 
     const body = screen.getByTestId('file-tree-body');
     body.scrollTop = 40;
@@ -192,6 +192,29 @@ describe('FileTree', () => {
     expect(screen.getByTestId('file-tree-body')).toBe(body); // never remounted
     expect(body.scrollTop).toBe(40);
     expect(screen.getByTestId('ft-row-/packages')).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('Double-click keeps the file open: the second click is a pinned open, Enter never is', async () => {
+    serve({ '/': [file('CLAUDE.md')] });
+    const onOpenFile = vi.fn();
+    render(<FileTree onOpenFile={onOpenFile} />);
+    const row = await screen.findByTestId('ft-row-/CLAUDE.md');
+
+    fireEvent.click(row, { detail: 1 });
+    fireEvent.click(row, { detail: 2 });
+    expect(onOpenFile.mock.calls).toEqual([
+      ['/CLAUDE.md', { preview: true }],
+      ['/CLAUDE.md', { preview: false }],
+    ]);
+
+    // Enter on a focused button is a click with `detail` 0: two presses are two preview opens.
+    onOpenFile.mockClear();
+    fireEvent.click(row, { detail: 0 });
+    fireEvent.click(row, { detail: 0 });
+    expect(onOpenFile.mock.calls).toEqual([
+      ['/CLAUDE.md', { preview: true }],
+      ['/CLAUDE.md', { preview: true }],
+    ]);
   });
 
   it('collapses without re-fetching an already loaded folder', async () => {
@@ -1860,7 +1883,7 @@ describe('Explorer context menu', () => {
     await screen.findByTestId('ft-row-/a.txt');
     fireEvent.contextMenu(screen.getByTestId('ft-row-/a.txt'));
     fireEvent.click(await screen.findByTestId('ft-menu-/a.txt-open'));
-    expect(onOpenFile).toHaveBeenCalledWith('/a.txt');
+    expect(onOpenFile).toHaveBeenCalledWith('/a.txt', { preview: true });
   });
 });
 
