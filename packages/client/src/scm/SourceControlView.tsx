@@ -66,10 +66,16 @@ import {
   describeWrites,
   undoWrites,
 } from '../review/review-writes';
-import { useComments } from '../review/use-comments';
+import { commentsStore, useComments } from '../review/use-comments';
 import { forgetWrites, recordWrite, type LoggedWrite } from '../review/write-log';
 import { loadSettings, onSettingsChange, type ClientSettings } from '../settings/settings';
-import { commentsMarkdown, copyPendingText } from './copy-comments';
+import {
+  commentCount,
+  commentsMarkdown,
+  confirmClearAll,
+  copyPendingText,
+} from './copy-comments';
+import { addScmProject } from './scm-projects';
 import {
   DISCARD_UNDO_MS,
   forgetDiscard,
@@ -812,11 +818,7 @@ export const SourceControlView = ({
       return;
     }
     // The same project twice is not a second entry: it only becomes the active one.
-    onChange(
-      latest.current.repos.includes(top)
-        ? { scmActiveRepo: top }
-        : { scmRepos: [...latest.current.repos, top], scmActiveRepo: top },
-    );
+    onChange(addScmProject({ scmRepos: latest.current.repos }, top));
     closeForm();
   }, [checking, draft, onChange, closeForm]);
 
@@ -1005,13 +1007,19 @@ export const SourceControlView = ({
       // Not awaited here: the clipboard has to be asked inside the tap, so it takes
       // the document while the file reads are still running.
       const copied = await copyPendingText(commentsMarkdown(activeRepo, status, comments));
-      const count = `${comments.length} ${comments.length === 1 ? 'comment' : 'comments'}`;
+      const count = commentCount(comments.length);
       onNotice?.(copied ? `Copied ${count}` : 'Could not copy the comments');
     } finally {
       copyingRef.current = false;
       setCopying(false);
     }
   }, [comments, activeRepo, status, onNotice]);
+
+  const clearComments = useCallback(async () => {
+    if (!confirmClearAll(comments.length, activeRepo)) return;
+    const result = await commentsStore.clearAll();
+    if (!result.ok) onNotice?.(`Could not delete the comments: ${result.message}`);
+  }, [comments.length, activeRepo, onNotice]);
 
   const form = (
     <AddForm
@@ -1081,19 +1089,6 @@ export const SourceControlView = ({
               <Icon name="close" size={14} />
             </IconButton>
             <IconButton
-              label="Copy comments"
-              title={
-                comments.length === 0
-                  ? 'No comments to copy'
-                  : `Copy ${comments.length} ${comments.length === 1 ? 'comment' : 'comments'} as markdown`
-              }
-              disabled={comments.length === 0 || copying}
-              data-testid="scm-copy-comments"
-              {...pressMove(() => void copyComments())}
-            >
-              <Icon name="comment" size={14} />
-            </IconButton>
-            <IconButton
               label={tree ? 'View as list' : 'View as tree'}
               data-testid="scm-view-toggle"
               {...pressMove(() => onChange({ scmTree: !tree }))}
@@ -1111,6 +1106,27 @@ export const SourceControlView = ({
               </IconButton>
             )}
           </div>
+          {comments.length > 0 && (
+            <div className="scm-comments-bar" data-testid="scm-comments-bar">
+              <Button
+                size="sm"
+                disabled={copying}
+                title={`Copy ${commentCount(comments.length)} as markdown`}
+                data-testid="scm-copy-comments"
+                {...pressMove(() => void copyComments())}
+              >
+                <Icon name="comment" size={12} />
+                Copy comments
+              </Button>
+              <Button
+                size="sm"
+                data-testid="scm-clear-comments"
+                {...pressMove(() => void clearComments())}
+              >
+                Clear all comments
+              </Button>
+            </div>
+          )}
           {adding && form}
           {status && (
             <div className="scm-meta" data-testid="scm-branch" title={activeRepo}>

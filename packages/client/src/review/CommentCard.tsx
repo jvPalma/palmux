@@ -2,7 +2,7 @@
 //
 // Under the last line of its range, with its range and side, or in the list at the
 // end of a file when it has no line to hang from (then the code it was about is
-// quoted, since the quote is all that is left to find it by). Edit and Delete are
+// quoted, since the quote is all that is left to find it by). Edit, Resolve and Delete are
 // in a scroller, so they act on release inside the slop (`pressMove`).
 
 import type { ScmComment } from '@palmux/shared';
@@ -11,7 +11,7 @@ import { IconButton } from '../ui';
 import { Icon } from '../ui/icons';
 import type { CommentActions } from './comment-actions';
 import type { UnplacedItem } from './rows';
-import { UNREAD_REASON } from './comment-placement';
+import { UNREAD_REASON } from '@palmux/shared';
 import { QUOTE_MAX_LINES } from './review-metrics';
 
 export interface CommentCardProps {
@@ -61,6 +61,15 @@ export const CommentCard = ({ comment, side, start, end, unplaced, actions }: Co
           {...pressMove(() => actions.edit(comment))}
         >
           <Icon name="pencil" size={14} />
+        </IconButton>
+        <IconButton
+          label="Resolve"
+          size="sm"
+          disabled={actions.readOnly}
+          data-testid="review-comment-resolve"
+          {...pressMove(() => actions.resolve(comment))}
+        >
+          <Icon name="check" size={14} />
         </IconButton>
         <IconButton
           label="Delete comment"

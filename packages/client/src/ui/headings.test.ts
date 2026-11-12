@@ -197,7 +197,6 @@ describe('the section title', () => {
     ['ui/ui.css', '.ui-collapsible-trigger'],
     ['panes/files.css', '.ft-sect-trigger'],
     ['dictation/dictation-view.css', '.dictation-group'],
-    ['index.css', '.swatch-row-label'],
     ['index.css', '.dash-label'],
   ])('%s %s carries the one style', (file, selector) => {
     const own = new Map<string, string>();
@@ -226,7 +225,6 @@ describe('the section title', () => {
     ['ft-sect-trigger', 'panes/files.css'],
     ['dictation-group', 'dictation/dictation-view.css'],
     ['dash-label', 'index.css'],
-    ['swatch-row-label', 'index.css'],
   ])('.%s is styled by its own rule in %s and by nothing that out-specifies it', (cls, file) => {
     expect(restatements(cls, (d) => d.selector === `.${cls}` && d.file === file)).toEqual([]);
     // One owner: a second sheet declaring the same selector would make "later

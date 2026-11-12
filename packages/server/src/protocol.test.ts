@@ -575,3 +575,62 @@ describe('detached windows — client messages', () => {
     }
   });
 });
+
+describe('palmux CLI frames', () => {
+  it('round-trips cliOpen and keeps only non-empty string paths', () => {
+    const msg: ServerMessage = { type: 'cliOpen', requestId: 'r1', paths: ['/a.ts', '/b.md'] };
+    expect(parseServerMessage(encodeServerMessage(msg))).toEqual(msg);
+    expect(
+      parseServerMessage(JSON.stringify({ type: 'cliOpen', requestId: 'r1', paths: ['/a', 3, ''] })),
+    ).toEqual({ type: 'cliOpen', requestId: 'r1', paths: ['/a'] });
+  });
+
+  it('drops a cliOpen with no paths, or without a string requestId', () => {
+    expect(parseServerMessage(JSON.stringify({ type: 'cliOpen', requestId: 'r1', paths: [] }))).toBeNull();
+    expect(parseServerMessage(JSON.stringify({ type: 'cliOpen', requestId: 'r1', paths: '/a' }))).toBeNull();
+    expect(parseServerMessage(JSON.stringify({ type: 'cliOpen', requestId: 7, paths: ['/a'] }))).toBeNull();
+  });
+
+  it('round-trips cliGit and drops one without a string repo or requestId', () => {
+    const msg: ServerMessage = { type: 'cliGit', requestId: 'r2', repo: '/work/app' };
+    expect(parseServerMessage(encodeServerMessage(msg))).toEqual(msg);
+    expect(parseServerMessage(JSON.stringify({ type: 'cliGit', requestId: 'r2' }))).toBeNull();
+    expect(parseServerMessage(JSON.stringify({ type: 'cliGit', repo: '/work/app' }))).toBeNull();
+  });
+
+  it('round-trips cliResult with its note and per-path errors', () => {
+    const msg: ClientMessage = {
+      type: 'cliResult',
+      requestId: 'r1',
+      results: [
+        { path: '/a.ts', ok: true },
+        { path: '/b.ts', ok: false, error: 'open in another window' },
+      ],
+      note: 'this window has no Source Control panel',
+    };
+    expect(parseClientMessage(encodeClientMessage(msg))).toEqual(msg);
+  });
+
+  it('drops a cliResult entry whose ok is not a boolean, and keeps the rest', () => {
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: 'cliResult',
+          requestId: 'r1',
+          results: [
+            { path: '/a.ts', ok: 'yes' },
+            { path: '/b.ts', ok: true, error: 5 },
+            'junk',
+            { ok: true },
+          ],
+          note: 3,
+        }),
+      ),
+    ).toEqual({ type: 'cliResult', requestId: 'r1', results: [{ path: '/b.ts', ok: true }] });
+  });
+
+  it('drops a cliResult without a requestId or a results array', () => {
+    expect(parseClientMessage(JSON.stringify({ type: 'cliResult', results: [] }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({ type: 'cliResult', requestId: 'r', results: {} }))).toBeNull();
+  });
+});

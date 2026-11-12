@@ -4,6 +4,51 @@ All notable changes to palmux are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] — unreleased
+
+### Added
+
+- **`palmux open <file>...`.** Run it in a palmux terminal and the window opens each file as a
+  pinned editor tab, showing the last one. A file already open is selected. A missing file, a
+  folder or a file over the editor limit is refused with its reason.
+- **`palmux open file:line[:col]`.** Opens the file with the cursor on that line and column, the
+  form compilers and agents print. A file whose own name ends in `:N` still opens as itself.
+- **`palmux open --wait`.** Returns once every tab it opened is closed, so `palmux open --wait` can be
+  your `core.editor` / `GIT_EDITOR`.
+- **`palmux web <port | url>`.** Shows a port on the palmux machine or an http(s) url in a web tab.
+- **`palmux status`.** Prints the CLI's and the server's versions, the server's address, and the
+  palmux terminal and window the shell is in.
+- **`palmux -v` / `--version`**, `-h` / `--help` after any command, and `--` before a path that
+  starts with `-`. An unknown option is an error (exit 2).
+- **`palmux git`.** From any folder inside a git work tree, the window adds that work tree to
+  Source Control, makes it the active project and opens Source Control.
+- **`palmux comments`.** Prints the work tree's review comments as markdown for an agent such as
+  Claude Code. It needs no palmux terminal and changes nothing.
+- **An agent-ready comment document.** Copy comments now opens with an instruction to address the
+  comments, and each comment is headed `<path>:L<start>-L<end> (<side>)`.
+- **Copy comments everywhere.** A labelled Copy comments button in the review's top bar (in View
+  options on a narrow pane) and in Source Control, and a per-file copy on each file header that has
+  comments.
+- **Resolve and Clear all.** Resolve removes a comment without asking and offers Undo. Clear all
+  deletes every comment of the project after one confirmation that names the count.
+
+### Changed
+
+- Window commands (`open`, `git`) now report back: the CLI exits 1 when no palmux window answers
+  within 3 seconds, instead of claiming success.
+- **Tab colours are fifteen named colours** that follow the theme: white, gray, pink, magenta,
+  purple, blue, light-blue, cyan, green, lime, yellow, orange, red, crimson-red and black, in one
+  row. The normal/bright split is gone. Tabs and groups coloured before keep their colour.
+- **A tab's colour is a bar on the pill's left edge**, dimmed on an inactive tab and full on the
+  active one, where it was a dot.
+
+### Upgrade
+
+- The new commands (`web`, `status`, `open --wait`, `file:line`), the window answers and Clear all
+  need a server restart, which ends every live
+  terminal. Until then the CLI says the server predates the command, and `palmux download` keeps
+  working.
+
 ## [1.2.0] — 2026-10-30
 
 Source Control with a full review pane, a desktop content area split into panes like VS Code's

@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { JsonObject, ScmGroup, TabMeta, WebAppLink } from '@palmux/shared';
+import type {
+  CliGoto,
+  CliResultEntry,
+  JsonObject,
+  ScmGroup,
+  TabMeta,
+  WebAppLink,
+} from '@palmux/shared';
 import {
   DEFAULT_MAX_UPLOAD_BYTES,
   forgivingOrder,
@@ -141,7 +148,9 @@ import {
   type CreateSpec,
 } from './panes/DashboardBody';
 import { focusedEditor } from './panes/editor-registry';
+import { requestGoto, takeGoto } from './panes/editor-goto';
 import { SourceControlView, type ScmOpenTarget } from './scm/SourceControlView';
+import { addScmProject } from './scm/scm-projects';
 import { ReviewHostContext, type ReviewHost } from './review/review-host';
 import { reviewApiFor } from './review/review-registry';
 import { commentsStore, connectCommentsToStatus } from './review/use-comments';
@@ -150,8 +159,13 @@ import { editorKeyAction } from './mobile/editor-keys';
 import type { KeyMods } from './mobile/key-encoder';
 import { ReviewBar } from './mobile/ReviewBar';
 
-/** How long a `createTab` for a review url blocks a second one while it is unanswered. */
+/** How long an unanswered `createTab` for a review url or a pinned open blocks a second one. */
 const PENDING_REVIEW_MS = 5000;
+
+/** What an open did: `held` when another window holds the file, `failed` when nothing was sent. */
+type OpenResult = 'opened' | 'held' | 'failed';
+/** The key of `pendingCreatesRef`: one create per kind and target. */
+const createKey = (kind: string, url: string): string => `${kind}\0${url}`;
 
 /** How long a single-file review's move to another file waits for a broadcast to show it. */
 const SHOW_FILE_MS = 2000;
@@ -168,6 +182,8 @@ interface PendingPreview {
   latestUrl: string;
   pinLatest: boolean;
   replaces?: string;
+  /** A later open selected another tab, so the answer lands this one without showing it. */
+  silent?: boolean;
   at: number;
 }
 
@@ -307,12 +323,7 @@ function softKeyboardUp(): boolean {
 
 // No 'settings' member: settings have TWO hosts now, the dock on desktop and
 // the drawer on mobile, and neither is a modal. The third one was the modal.
-type Panel =
-  | 'none'
-  | 'tips'
-  | 'keybindings'
-  | 'commandPalette'
-  | 'dictationHistory';
+type Panel = 'none' | 'tips' | 'keybindings' | 'commandPalette' | 'dictationHistory';
 
 /**
  * The ids of the strip's VISIBLE entries in display order: collapsed-group members are excluded.
@@ -472,18 +483,19 @@ export function App() {
   // window has no dock: nothing opens there, and no view is ever written to the
   // device-wide key the main window reads.
   const openDockView = useCallback(
-    (next: DockView | null) => {
-      if (detached) return;
+    (next: DockView | null): boolean => {
+      if (detached) return false;
       if (dockViewRef.current === 'settings' && next !== 'settings' && configDirtyRef.current) {
         if (!window.confirm(DISCARD_CONFIG)) {
           setCfgMode('raw');
-          return;
+          return false;
         }
         configDirtyRef.current = false;
       }
       setDockBusy(true);
       setDockView(next);
       writeDockView(next);
+      return true;
     },
     [detached],
   );
@@ -982,6 +994,11 @@ export function App() {
   // Review urls this window sent a `createTab` for and has no answer to yet, with
   // when it was sent. See `openReview`.
   const pendingReviewsRef = useRef(new Map<string, number>());
+  // Pinned opens this window sent a `createTab` for and has no answer to yet, keyed by
+  // `createKey`: when it was sent, and whether the answer should leave the selection alone. The
+  // server makes a second editor for a second create of the same file, and the list that would
+  // show the first has not arrived yet. See `openPreview`.
+  const pendingCreatesRef = useRef(new Map<string, { at: number; silent: boolean }>());
   useEffect(() => {
     if (bootSpent.current) return;
     bootSpent.current = true;
@@ -1106,7 +1123,7 @@ export function App() {
    * whose tab no list has shown yet.
    */
   const answerPreview = useCallback(
-    (id: string): 'matched' | 'unlisted' | 'other' => {
+    (id: string): 'matched' | 'silent' | 'unlisted' | 'other' => {
       const tab = tabsRef.current.find((t) => t.id === id);
       if (!tab) return 'unlisted';
       for (const [leafId, entry] of pendingPreviewRef.current) {
@@ -1122,11 +1139,12 @@ export function App() {
               latestUrl,
               pinLatest: entry.pinLatest,
               replaces: id,
+              ...(entry.silent ? { silent: true } : {}),
               at: Date.now(),
             });
           } else showToast('Not connected — try again');
         } else if (entry.pinLatest) pinTab(id);
-        return 'matched';
+        return entry.silent ? 'silent' : 'matched';
       }
       return 'other';
     },
@@ -1293,26 +1311,23 @@ export function App() {
    * The bar is present on every mobile tab but a review (it is the only way to the
    * drawer), so without this its keys would be visible and dead on half the tabs.
    */
-  const sendKeyToEditor = useCallback(
-    (name: string, mods: KeyMods) => {
-      // The ACTIVE TAB decides, not the pane registry. Panes stay mounted while
-      // their tab exists, so a terminal from another tab is still registered and
-      // still "focused" — checking that sent every key to an invisible shell and
-      // the editor never saw one. Measured: END did nothing on an editor tab.
-      if (activeKindRef.current === 'terminal') return false;
-      const editor = focusedEditor();
-      if (!editor) return false;
-      const action = editorKeyAction(name, mods);
-      if (action.kind === 'none') return false;
-      if (action.kind === 'type') editor.type(action.text);
-      else editor.run(action.id);
-      // The press moved DOM focus onto the bar's button; put it back or the
-      // NEXT press has nothing to act on.
-      editor.focus();
-      return true;
-    },
-    [],
-  );
+  const sendKeyToEditor = useCallback((name: string, mods: KeyMods) => {
+    // The ACTIVE TAB decides, not the pane registry. Panes stay mounted while
+    // their tab exists, so a terminal from another tab is still registered and
+    // still "focused" — checking that sent every key to an invisible shell and
+    // the editor never saw one. Measured: END did nothing on an editor tab.
+    if (activeKindRef.current === 'terminal') return false;
+    const editor = focusedEditor();
+    if (!editor) return false;
+    const action = editorKeyAction(name, mods);
+    if (action.kind === 'none') return false;
+    if (action.kind === 'type') editor.type(action.text);
+    else editor.run(action.id);
+    // The press moved DOM focus onto the bar's button; put it back or the
+    // NEXT press has nothing to act on.
+    editor.focus();
+    return true;
+  }, []);
   const onPasteImage = useCallback(
     (file: File) => registry.focusedApi()?.pasteImage(file),
     [registry],
@@ -2087,10 +2102,14 @@ export function App() {
         if (answered?.kind === 'review' && answered.url !== undefined) {
           pendingReviewsRef.current.delete(answered.url);
         }
-        if (pendingPreviewRef.current.size > 0 && answerPreview(msg.id) === 'unlisted') {
-          heldAnswersRef.current.push(msg.id);
-        }
-        dispatch({ type: 'tabCreated', id: msg.id });
+        const preview = pendingPreviewRef.current.size > 0 ? answerPreview(msg.id) : 'other';
+        if (preview === 'unlisted') heldAnswersRef.current.push(msg.id);
+        const key = answered?.url !== undefined ? createKey(answered.kind, answered.url) : '';
+        const create = pendingCreatesRef.current.get(key);
+        pendingCreatesRef.current.delete(key);
+        // A silent create is one of `palmux open`'s paths before the last: it joins the focused pane
+        // without being shown. The New-tab page cannot be up, since a terminal ran the command.
+        if (!create?.silent && preview !== 'silent') dispatch({ type: 'tabCreated', id: msg.id });
       } else if (msg.type === 'sessions') {
         // The tab that replaced `id` in place (design D3a), counted only on the broadcast that
         // first lists it: the server keeps the hint on the record, so a later broadcast can still
@@ -2368,10 +2387,12 @@ export function App() {
   // Source Control lives in the dock on desktop and in the drawer's own view on
   // mobile, where the dock never renders. The review bar's file list is the same
   // route, so the chord, the palette entry and that button open one thing.
-  const openSourceControl = () => {
+  /** False when the user kept Settings open over unsaved config.json text. */
+  const openSourceControl = (): boolean => {
     if (!mobileActiveRef.current) return openDockView('scm');
     setDrawerView('scm');
     openDrawer();
+    return true;
   };
 
   // The review keys act on the review the user is looking at, and ONLY then: with
@@ -2715,18 +2736,21 @@ export function App() {
    * Open a file or a single-file review (design D3). `pin` false is a preview open: it replaces the
    * focused pane's preview tab in place (`replaceTab`), or creates a preview. `pin` true shows the
    * tab already open and keeps it, or creates a pinned tab; it never replaces anything. Without
-   * server support every open is a pinned one.
+   * server support every open is a pinned one. `'failed'` means the control socket took nothing.
    */
   const openPreview = useCallback(
     ({
       kind,
       url,
       pin,
+      select = true,
     }: {
       kind: 'editor' | 'review';
       url: string;
       pin: boolean;
-    }): 'opened' | 'held' => {
+      /** False opens a pinned target without selecting it (`palmux open`'s paths but the last). */
+      select?: boolean;
+    }): OpenResult => {
       const supported = previewSupportedRef.current;
       const keep = pin || !supported;
       const current = layoutRef.current;
@@ -2743,23 +2767,37 @@ export function App() {
         at: Date.now(),
       });
 
+      // An open that selects supersedes the selection an older pending create was going to make.
+      if (select) {
+        const own = createKey(kind, url);
+        for (const [key, create] of pendingCreatesRef.current)
+          if (key !== own) create.silent = true;
+      }
+
       // 1. The target has a tab already.
       const existing = tabsRef.current.find((t) => t.kind === kind && t.url === url);
       if (existing) {
-        if (visibleTabsRef.current.some((t) => t.id === existing.id)) selectTab(existing.id);
-        else if (kind === 'editor') {
+        if (visibleTabsRef.current.some((t) => t.id === existing.id)) {
+          if (select) selectTab(existing.id);
+        } else if (kind === 'editor') {
           // Another window holds it. It is not moved here: this window cannot see that buffer, so
           // the discard confirm would be blind and an editor with unsaved text would lose it.
           showToast(`${displayTitle(existing)} is open in another window`);
           return 'held';
         }
         // A review holds no unsaved state, so one another window holds moves here.
-        else if (moveTabsToWindow([existing.id], myWindow)) selectTab(existing.id);
-        // The pane's pending answer lands only its own tab now.
+        else if (!moveTabsToWindow([existing.id], myWindow)) return 'failed';
+        else if (select) selectTab(existing.id);
+        // The pane's pending answer lands only its own tab now, pinned if that tab was asked to be,
+        // and not shown when this open selected another.
         if (pending) {
+          if (pending.latestKind !== pending.sentKind || pending.latestUrl !== pending.sentUrl) {
+            pending.pinLatest = false;
+          }
           pending.latestKind = pending.sentKind;
           pending.latestUrl = pending.sentUrl;
-          pending.pinLatest = false;
+          if (select && (kind !== pending.sentKind || url !== pending.sentUrl))
+            pending.silent = true;
         }
         if (pin && existing.preview) pinTab(existing.id);
         return 'opened';
@@ -2769,11 +2807,14 @@ export function App() {
       if (pending) {
         if (kind === pending.latestKind && url === pending.latestUrl) {
           if (pin) pending.pinLatest = true;
+          // Asked for again, so a later open's silence no longer applies.
+          if (select) delete pending.silent;
           return 'opened';
         }
         if (!pin && !pending.pinLatest) {
           pending.latestKind = kind;
           pending.latestUrl = url;
+          if (select) delete pending.silent;
           return 'opened';
         }
         if (!pin) {
@@ -2784,8 +2825,17 @@ export function App() {
           dropPendingPreview(leafId);
           keptPreviewSeq.current += 1;
           recordPendingPreview(`${leafId}~${keptPreviewSeq.current}`, pending);
-          if (createTab({ kind, url, preview: true })) recordPendingPreview(leafId, entry());
+          if (!createTab({ kind, url, preview: true })) return 'failed';
+          recordPendingPreview(leafId, entry());
           return 'opened';
+        }
+      }
+
+      // This open did not join a pending one, so a pending answer that lands later is not shown in
+      // its place.
+      if (select) {
+        for (const other of pendingPreviewRef.current.values()) {
+          if (other.latestKind !== kind || other.latestUrl !== url) other.silent = true;
         }
       }
 
@@ -2805,15 +2855,29 @@ export function App() {
 
       // 3. Swapped in place, whatever its kind; nothing changes on screen until the answer.
       if (replace) {
-        if (wsControlRef.current?.sendReplaceTab(replace.id, kind, url)) {
-          recordPendingPreview(leafId, entry(replace.id));
-        } else showToast('Not connected — try again');
+        if (!wsControlRef.current?.sendReplaceTab(replace.id, kind, url)) {
+          showToast('Not connected — try again');
+          return 'failed';
+        }
+        recordPendingPreview(leafId, entry(replace.id));
         return 'opened';
       }
-      // 4. A new tab.
-      if (createTab(keep ? { kind, url } : { kind, url, preview: true }) && !keep) {
-        recordPendingPreview(leafId, entry());
+      // 4. A new tab. A pinned one already asked for is on its way: asked again before the list
+      // shows it, the server would make a second tab for the same target.
+      if (keep) {
+        const key = createKey(kind, url);
+        const asked = pendingCreatesRef.current.get(key);
+        if (asked && Date.now() - asked.at < PENDING_REVIEW_MS) {
+          // An open that selects outranks one that did not ask to.
+          if (select) asked.silent = false;
+          return 'opened';
+        }
+        if (!createTab({ kind, url })) return 'failed';
+        pendingCreatesRef.current.set(key, { at: Date.now(), silent: !select });
+        return 'opened';
       }
+      if (!createTab({ kind, url, preview: true })) return 'failed';
+      recordPendingPreview(leafId, entry());
       return 'opened';
     },
     [
@@ -2829,12 +2893,95 @@ export function App() {
   );
   /**
    * Open a server file as a TAB, or focus the tab already showing it (the contract in design D3):
-   * `'held'` exactly when another window holds that file's editor tab. `preview` defaults to false.
+   * `'held'` exactly when another window holds that file's editor tab, `'failed'` when nothing could
+   * be sent. `preview` defaults to false.
    */
   const openFileTab = useCallback(
-    (path: string, opts?: { preview?: boolean }): 'opened' | 'held' =>
+    (path: string, opts?: { preview?: boolean }): OpenResult =>
       openPreview({ kind: 'editor', url: path, pin: !(opts?.preview ?? false) }),
     [openPreview],
+  );
+
+  // `palmux open`: the paths open in the order typed and only the last one is selected. A create is
+  // answered after every tab this call selects at once, so an earlier path that is shown would end
+  // selected in place of the last.
+  const onCliOpen = useCallback(
+    (paths: string[], goto: CliGoto[] = []): CliResultEntry[] => {
+      // Asked before the open, so a tab created now finds its position waiting; a held or failed
+      // file's request is taken back below.
+      for (const at of goto) {
+        requestGoto(
+          at.path,
+          at.column === undefined ? { line: at.line } : { line: at.line, column: at.column },
+        );
+      }
+      const results = paths.map((path, i): CliResultEntry => {
+        const res = openPreview({
+          kind: 'editor',
+          url: path,
+          pin: true,
+          select: i === paths.length - 1,
+        });
+        if (res === 'held') return { path, ok: false, error: 'open in another window' };
+        if (res === 'failed') {
+          return { path, ok: false, error: 'this window is not connected to the server' };
+        }
+        return { path, ok: true };
+      });
+      // The last path could not be opened, so the last one that was is selected instead. Its tab
+      // is open or its create is pending, so this asks the server for nothing.
+      const shown = results.at(-1)?.ok ? undefined : results.findLast((r) => r.ok);
+      if (shown) openPreview({ kind: 'editor', url: shown.path, pin: true });
+      for (const r of results) if (!r.ok) takeGoto(r.path);
+      return results;
+    },
+    [openPreview],
+  );
+  // `palmux web`: the web tab already on that url, else a new one (its `tabCreated` shows it).
+  const onCliWeb = useCallback(
+    (url: string): CliResultEntry => {
+      const existing = tabsRef.current.find((t) => t.kind === 'web' && t.url === url);
+      if (existing) {
+        if (!visibleTabsRef.current.some((t) => t.id === existing.id)) {
+          return { path: url, ok: false, error: 'open in another window' };
+        }
+        selectTab(existing.id);
+        return { path: url, ok: true };
+      }
+      return createTab({ kind: 'web', url })
+        ? { path: url, ok: true }
+        : { path: url, ok: false, error: 'this window is not connected to the server' };
+    },
+    [selectTab, createTab],
+  );
+  // `palmux git`: the window writes the settings (a synced save for the list, a local
+  // write for this device's active project), then shows Source Control if it has one.
+  const openSourceControlRef = useRef(openSourceControl);
+  openSourceControlRef.current = openSourceControl;
+  const onCliGit = useCallback(
+    (repo: string): { results: CliResultEntry[]; note?: string } => {
+      // A synced save sent while the control socket is down would be lost, and the CLI would still
+      // report the project added: refuse instead, so the command can be run again.
+      if (!wsControlRef.current?.isOpen()) {
+        return {
+          results: [{ path: repo, ok: false, error: 'this window is not connected to the server' }],
+        };
+      }
+      const patch = addScmProject(settingsRef.current, repo);
+      // Two requests handled before a render would otherwise both read the same settings and the
+      // second would drop the first's project.
+      settingsRef.current = { ...settingsRef.current, ...patch };
+      updateSettings(patch);
+      const results: CliResultEntry[] = [{ path: repo, ok: true }];
+      if (detached) return { results, note: 'this window has no Source Control panel' };
+      if (!openSourceControlRef.current()) {
+        const error =
+          'the project was added, but Source Control did not open: config.json has unsaved changes';
+        return { results: [{ path: repo, ok: false, error }] };
+      }
+      return { results };
+    },
+    [updateSettings, detached],
   );
 
   // The file each review tab should scroll to once it shows, keyed by the review's
@@ -2897,7 +3044,7 @@ export function App() {
    * continuous review scrolled to the file.
    */
   const openFileReview = useCallback(
-    (target: ScmOpenTarget, opts?: { preview?: boolean }): 'opened' | 'held' => {
+    (target: ScmOpenTarget, opts?: { preview?: boolean }): OpenResult => {
       const repo = activeScmRepoRef.current;
       if (!previewSupportedRef.current || !repo) {
         openReview(target);
@@ -3490,6 +3637,9 @@ export function App() {
               paneBlocked={paneBlocked}
               onAutoCopy={onAutoCopy}
               onTransferError={onTransferError}
+              onCliOpen={onCliOpen}
+              onCliGit={onCliGit}
+              onCliWeb={onCliWeb}
               onFocusRequest={focusLeafById}
               takeSpawnTmux={takeSpawnTmux}
               terminalGestures={terminalGestures}
@@ -3556,7 +3706,6 @@ export function App() {
               onStop={dictation.toggle}
             />
           )}
-
         </div>
 
         {/* The main window on desktop only: on mobile the drawer is the view container and the rail

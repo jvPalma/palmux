@@ -752,6 +752,9 @@ describe('side-by-side and unified layouts', () => {
         // The code size: a minus and a plus, neither of which closes the menu.
         { label: 'Smaller code', role: 'menuitem', checked: false, disabled: false },
         { label: 'Larger code', role: 'menuitem', checked: false, disabled: false },
+        // The project has no comments here, so neither comment command can run.
+        { label: 'Copy comments', role: 'menuitem', checked: false, disabled: true },
+        { label: 'Clear all comments', role: 'menuitem', checked: false, disabled: true },
       ]);
       await userEvent.click(screen.getByTestId('review-view-menu-algorithm-patience'));
       await settle();

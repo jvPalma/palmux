@@ -284,6 +284,11 @@ export function deleteComment(top: string, id: string): Promise<ScmCommentList> 
   );
 }
 
+/** Clear all: one write that empties the list and bumps the rev, even if it was empty. */
+export function deleteAllComments(top: string): Promise<ScmCommentList> {
+  return transact(top, () => []);
+}
+
 /**
  * The newest rev of a project's comments, synchronously. The first call after a
  * start reads the file once; every later one is a map lookup kept current by the

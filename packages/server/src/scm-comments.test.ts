@@ -171,6 +171,19 @@ describe('operations answer the whole list and its rev', () => {
     expect(await store.listComments(TOP)).toEqual(removed);
   });
 
+  it('clears every comment in one write that bumps the rev', async () => {
+    const { dir, store } = await freshStore();
+    await store.createComment(TOP, input());
+    await store.createComment(TOP, input({ body: 'other' }));
+    const cleared = await store.deleteAllComments(TOP);
+    expect(cleared).toEqual({ rev: 3, comments: [] });
+    expect(await store.listComments(TOP)).toEqual({ rev: 3, comments: [] });
+    expect(store.latestRev(TOP)).toBe(3);
+    expect(JSON.parse(readFileSync(storeFile(dir), 'utf8'))).toMatchObject({ rev: 3, comments: [] });
+    // Clearing an empty list is still a write: the answer is the new rev.
+    expect((await store.deleteAllComments(TOP)).rev).toBe(4);
+  });
+
   it('allows an empty body, since an empty comment is deleted without asking', async () => {
     const { store } = await freshStore();
     const { comments } = await store.createComment(TOP, input({ body: '' }));

@@ -509,11 +509,7 @@ turns on the on-screen affordances:
   tools). Also works as a plain URL: `GET /download?path=<path-or-glob>` (cookie-gated like
   everything else — same trust boundary as the shell itself, which can already read any file).
   Caps: 500 files / 256 MB per zip.
-- **`palmux download` from the shell** — inside a palmux terminal (tmux in it is fine), run
-  `palmux download <path>...` and the browser window showing that terminal downloads each path:
-  relative paths are read from the current directory, `~/` is your home, a folder or a quoted glob
-  (`'*.mp4'`) arrives as one zip. Paths that cannot be downloaded are listed and the rest still go.
-  Put it on your PATH once: `ln -s "$PWD/scripts/palmux" ~/.local/bin/palmux` (from the checkout).
+- **`palmux download` from the shell**: see [The palmux CLI](#the-palmux-cli).
 
 ### Install as an app (PWA)
 
@@ -532,6 +528,52 @@ Two things to know:
 
 There is deliberately no service worker: a terminal is useless offline, and stale-cache
 bugs against an authed WebSocket app are worse than a network-fresh load.
+
+## The palmux CLI
+
+`scripts/palmux` drives the palmux window your shell is shown in. Put it on your PATH once, from
+the checkout: `ln -s "$PWD/scripts/palmux" ~/.local/bin/palmux`.
+
+| Command | What it does |
+|---|---|
+| `palmux download <path>...` | The window downloads each path. A folder or a quoted glob (`'*.mp4'`) arrives as one zip. |
+| `palmux open <file>[:line[:col]]...` | The window opens each file as a pinned editor tab and shows the last one. A file already open is selected. A `:line` or `:line:col` suffix puts the cursor there. |
+| `palmux open --wait <file>...` | The same, then waits until you close every tab it opened. |
+| `palmux web <port \| url>` | The window shows a port on the palmux machine (`5173`) or any http(s) url in a web tab. A web tab already on that url is selected. |
+| `palmux git` | The window adds the git work tree your shell is in to Source Control (from any folder inside it), makes it the active project and opens Source Control. |
+| `palmux comments` | Prints the work tree's review comments to standard output, as the markdown Copy comments produces. |
+| `palmux status` | Prints this checkout's version, the server's version and address, and which palmux terminal and window your shell is in. |
+
+- **Paths** are read the way the shell reads them: relative paths from the current directory,
+  `~/` is your home. `~user` is not expanded.
+- **Run window commands inside a palmux terminal.** tmux in one is fine: the CLI asks tmux for the
+  tty of the client showing your session. The window that receives the command is the one the
+  terminal is attached to.
+- **`file:line` is the form compilers, linters and agents print**, so you can paste it. The suffix is
+  read as a position only when the name as typed is not a file: a file really named `notes:12`
+  opens as itself. A markdown file opened at a line opens in Edit, not Read.
+- **`palmux open --wait` makes palmux your git editor**: `git config --global core.editor
+  'palmux open --wait'` (or `GIT_EDITOR` / `EDITOR`). Save with Ctrl+S, then close the tab. Closing
+  a tab with unsaved text still asks first, and an empty or discarded commit message aborts the
+  commit, as with any editor. The wait survives a window reload, a move to a detached window and a
+  server restart of up to a minute, because it watches the server's tab list, not a window.
+- **`palmux web 5173`** shows `http://localhost:5173` through the loopback proxy, so a dev server on
+  the palmux machine opens from a phone too. A host with no scheme gets `http://`.
+- **`palmux status`** works outside a palmux terminal too, and says when the server runs another
+  build than the checkout (restart it to pick the checkout up).
+- **`palmux comments` needs no palmux terminal and no open window**, so an agent such as Claude
+  Code can run it as a subprocess and read the comments. It never changes what is staged.
+- **`palmux open` refuses** a missing file, a folder, a file that is not a regular file and one over
+  the editor's size limit, before the window sees anything. A file open in another palmux window
+  is reported and left there.
+- **Exit statuses:** 0 when everything worked, 1 when anything failed (a refused path, no palmux
+  terminal, no window answered within 3 seconds, the server unreachable), 2 for a usage error.
+  `palmux`, `palmux help`, `-h` and `--help` print the usage, and so does `-h` or `--help` after a
+  command (`palmux open --help`). Any other option is an error (exit 2).
+- **`palmux -v`**, `--version` and `palmux version` print the checkout's version and commit
+  (`palmux 1.2.0+cf7d3b6`) without contacting the server.
+- **A path that starts with `-`** goes after `--`: `palmux open -- -notes.md`.
+- A server started before a command existed answers that it predates it: restart the server.
 
 ## Images in the terminal
 

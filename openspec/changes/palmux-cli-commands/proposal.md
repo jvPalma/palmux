@@ -30,7 +30,8 @@ Goldfish reviewers; its decisions are kept here.
 - **The export becomes agent-ready**: a short preamble telling the reader what to do, then
   `path:Lstart-Lend` headings. One exporter serves the button and the CLI.
 - **Copy comments is visible**: a labelled button in the review's top bar and a per-file copy on each
-  file header that has comments (the Source Control icon stays).
+  file header that has comments. In Source Control the icon becomes a labelled button in a row of its
+  own, beside Clear all.
 - **Resolve** deletes a comment without asking and offers Undo; **Clear all** deletes every comment of
   the project after one confirmation that names the count.
 - `palmux download` is unchanged and is specified for the first time.
@@ -60,12 +61,10 @@ Goldfish reviewers; its decisions are kept here.
   comment exporter, comment placement, line anchoring and the language table move from the client to
   `packages/shared` so the server can produce the same markdown.
 - **Client**: `TerminalPane.tsx` (handle the two frames, answer), `App.tsx` (open / git handlers), the
-  review bar and file header (copy buttons), `CommentCard.tsx` (Resolve), Copy comments wiring.
+  review bar and file header (copy buttons), `CommentCard.tsx` (Resolve), the Source Control view's
+  comments row (Copy comments, Clear all), the comments store (`clearAll`), `scm/scm-projects.ts`.
 - **Restart**: the new commands and routes need a server restart (under systemd that costs every live
   terminal; it needs the owner's OK at deploy time). Until then the CLI says the server predates them.
-- **Depends on** sibling change `preview-tabs` for the pinned entry point of `openFileTab`; if it is
-  not there yet this change uses `openFileTab(path, { preview: false })` and adds the opened/held result
-  itself (see design D3).
-- **Not run here**: the config rule asks for an `opsx-zoom-out` pass on this proposal. This change was
-  written by a worker that may not spawn agents, so that pass is owed before `/opsx:apply`; the brief it
-  comes from already had one (0 critical).
+- **Depends on** sibling change `preview-tabs`, which has landed (archived 2026-11-08):
+  `openFileTab(path, { preview: false })` already returns `'opened' | 'held'` (see design D3).
+- **Zoom-out**: a pass ran at the start of `/opsx:apply` (2026-11-08) and found nothing blocking.

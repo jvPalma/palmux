@@ -8,7 +8,7 @@
 //
 // The contract (ui-rework, tabs as pills): every tab is a bordered pill, the
 // active one is raised and ringed from the eight tokens, inactive text is dimmed
-// a step, colour is a dot and nothing else, a group is a framed cluster whose
+// a step, colour is a bar on the pill's left edge and nothing else, a group is a framed cluster whose
 // chip never reacts to the active tab, and each pane's strip box ends in a 1px
 // edge that the focused pane takes in the accent.
 
@@ -140,14 +140,26 @@ describe('tab strip shape', () => {
   });
 
   // Replaces the 8% tint, the coloured top border and the colour fill. A tab's
-  // colour is its dot: --tab-accent may be read by the dot rule and by nothing else.
-  it('uses a tab colour for its 7px dot only — never a fill, tint or border', () => {
+  // colour is a bar on the pill's left edge: --tab-accent may be read by the bar
+  // rule and by nothing else. The bar fills the pill's inner height (the pill
+  // less its 1px border a side) and sits over the pill's left padding, so it
+  // follows --ctl-h on a phone. Inactive it is dimmed; the active pill shows it
+  // at full strength (owner, 2026-11-11).
+  it('uses a tab colour for its edge bar only — never a fill, tint or border', () => {
     const readers = stripBlocks.filter((b) => b.body.includes('--tab-accent'));
     expect(readers.map((b) => b.sel)).toEqual(['.ctab-dot']);
-    const dot = bodyOf('.ctab-dot');
-    expect(dot).toMatch(/width:\s*7px/);
-    expect(dot).toMatch(/height:\s*7px/);
-    expect(dot).toMatch(/background:\s*var\(--tab-accent\)/);
+    const bar = bodyOf('.ctab-dot');
+    expect(bar).toMatch(/width:\s*11px/);
+    expect(bar).toMatch(/height:\s*calc\(var\(--ctl-h\) - 2px\)/);
+    expect(bar).toMatch(/margin-left:\s*calc\(-1 \* var\(--sp-2\)\)/);
+    expect(bodyOf('.ctab')).toMatch(/padding:\s*0 var\(--sp-2\)/);
+    expect(bar).toMatch(/border-top-left-radius:\s*calc\(var\(--r-2\) - 1px\)/);
+    expect(bar).toMatch(/border-bottom-left-radius:\s*calc\(var\(--r-2\) - 1px\)/);
+    expect(bar).toMatch(/background:\s*var\(--tab-accent\)/);
+    expect(bar).toMatch(/opacity:\s*0\.4/);
+    expect(bodyOf('.ctab.active > .ctab-dot')).toMatch(/opacity:\s*1/);
+    // The join cue is an inset ring, which the bar would paint over.
+    expect(bodyOf('.ctab.join-armed > .ctab-dot')).toMatch(/visibility:\s*hidden/);
     expect(stripCss).not.toMatch(/border-top[^;]*(accent|--tab)/);
   });
 

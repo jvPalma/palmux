@@ -624,6 +624,29 @@ describe('/scm/comments', () => {
     expect(body<ScmCommentList>(await call('GET', url()))).toEqual(created);
   });
 
+  it('clears every comment with all=1, tells every client the new rev, and still refuses a bare delete', async () => {
+    const dir = await makeRepo();
+    for (const text of ['one', 'two']) {
+      await call('POST', route('/scm/comments', { repo: dir }), comment({ body: text }));
+    }
+    const a = await listen();
+    try {
+      const res = await call('DELETE', route('/scm/comments', { repo: dir, all: '1' }));
+      expect(res.statusCode).toBe(200);
+      expect(body<ScmCommentList>(res)).toEqual({ rev: 3, comments: [] });
+      expect(body<ScmCommentList>(await call('GET', route('/scm/comments', { repo: dir })))).toEqual({
+        rev: 3,
+        comments: [],
+      });
+      expectRefusal(await call('DELETE', route('/scm/comments', { repo: dir })), 400);
+      expectRefusal(await call('DELETE', route('/scm/comments', { repo: dir, all: '0' })), 400);
+      await settled(a);
+      expect(revFrames(a)).toEqual([{ repo: dir, rev: 3 }]);
+    } finally {
+      a.ws.close();
+    }
+  });
+
   it('answers a delete of an unknown id with the unchanged list', async () => {
     const dir = await makeRepo();
     const created = body<ScmCommentList>(

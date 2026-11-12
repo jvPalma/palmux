@@ -757,6 +757,11 @@ export interface SnapshotRequest {
   path: string;
   oldPath?: string | undefined;
   algorithm: ScmAlgorithm;
+  /**
+   * Whether a staging token is cached for a work tree read (default true). A caller that
+   * only reads, like `palmux comments`, passes false so it never evicts live receipts.
+   */
+  keepToken?: boolean;
 }
 
 export type SnapshotResult = { ok: true; snapshot: ScmFileSnapshot } | ScmFailure;
@@ -1006,7 +1011,7 @@ export async function readSnapshot(req: SnapshotRequest): Promise<SnapshotResult
   }
 
   let token: string | undefined;
-  if (work && (work.kind !== 'absent' || indexEntry !== null)) {
+  if (req.keepToken !== false && work && (work.kind !== 'absent' || indexEntry !== null)) {
     token = putToken({
       top,
       path,

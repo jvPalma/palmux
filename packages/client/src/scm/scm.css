@@ -55,6 +55,14 @@
   flex: 0 0 auto;
 }
 
+.scm-comments-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 0 0 auto;
+}
+
 /* The selector takes the room the two icon buttons leave; `min-width: 0` lets a
    long project name end in the trigger's ellipsis instead of pushing them out. */
 .scm-select {

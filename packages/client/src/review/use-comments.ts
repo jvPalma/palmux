@@ -17,6 +17,7 @@ import {
   createScmComment,
   deleteScmComment,
   fetchScmComments,
+  deleteAllScmComments,
   updateScmComment,
 } from '../scm/scm-api';
 import type { ScmStatusStore } from '../scm/status-store';
@@ -33,6 +34,7 @@ export const commentsStore: CommentsStore = createCommentsStore({
   create: createScmComment,
   update: updateScmComment,
   remove: deleteScmComment,
+  removeAll: deleteAllScmComments,
 });
 
 /**

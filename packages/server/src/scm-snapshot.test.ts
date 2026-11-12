@@ -1235,6 +1235,20 @@ describe('the token cache', () => {
     expect(scmCacheStats().bytes).toBeLessThanOrEqual(3000);
   });
 
+  it('keeps no token when the caller only reads (keepToken false)', async () => {
+    const dir = await makeRepo({ 'a.txt': 'one\n' });
+    await put(dir, 'a.txt', 'two\n');
+    const before = scmCacheStats().entries;
+    const result = await readSnapshot({ top: dir, group: 'changes', path: 'a.txt', algorithm: 'histogram', keepToken: false });
+    if (!result.ok) throw new Error(result.error);
+    expect(result.snapshot.token).toBeUndefined();
+    expect(result.snapshot.new.text).toBe('two\n');
+    expect(scmCacheStats().entries).toBe(before);
+    // The default still stages.
+    expect((await snap(dir, 'changes', 'a.txt')).token).toEqual(expect.any(String));
+    expect(scmCacheStats().entries).toBe(before + 1);
+  });
+
   it('is filled by a snapshot and holds the canonical bytes, not a path', async () => {
     const dir = await makeRepo({ 'a.txt': 'one\n' });
     await writeFile(join(dir, '.gitattributes'), 'a.txt text eol=crlf\n');

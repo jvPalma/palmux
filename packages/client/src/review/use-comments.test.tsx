@@ -133,7 +133,7 @@ describe('connectCommentsToStatus', () => {
   it('tells the store the rev of every status answer', () => {
     const observed: [string, number][] = [];
     const comments = {
-      ...createCommentsStore({ list: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn() }),
+      ...createCommentsStore({ list: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), removeAll: vi.fn() }),
     };
     comments.observeRev = (repo, rev) => observed.push([repo, rev]);
     const status = fakeStatus(state({ commentsRev: 3 }));
@@ -152,6 +152,7 @@ describe('connectCommentsToStatus', () => {
       create: vi.fn(),
       update: vi.fn(),
       remove: vi.fn(),
+      removeAll: vi.fn(),
     });
     comments.observeRev = (...args) => observed.push(args);
     const status = fakeStatus(state({ status: null }));
@@ -166,6 +167,7 @@ describe('connectCommentsToStatus', () => {
       create: vi.fn(),
       update: vi.fn(),
       remove: vi.fn(),
+      removeAll: vi.fn(),
     });
     const status = fakeStatus(state());
     const off = connectCommentsToStatus(status.store, comments);
@@ -183,6 +185,7 @@ describe('connectCommentsToStatus', () => {
       create: vi.fn(),
       update: vi.fn(),
       remove: vi.fn(),
+      removeAll: vi.fn(),
     });
     comments.setActiveRepo(REPO);
     comments.register().set(REPO, true);
@@ -225,6 +228,7 @@ describe('connectCommentsToStatus', () => {
       create: vi.fn(),
       update: vi.fn(),
       remove: vi.fn(),
+      removeAll: vi.fn(),
     });
     comments.observeRev = (_repo, rev) => observed.push(rev);
     connectCommentsToStatus(status, comments);

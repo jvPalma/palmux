@@ -12,7 +12,6 @@
 // callbacks; the group model + view state live in App.
 
 import {
-  Fragment,
   memo,
   useEffect,
   useRef,
@@ -166,39 +165,30 @@ export interface TabGrouping {
   onMoveGroup?: ((gid: string, index: number, anchor?: GroupEdge) => void) | undefined;
 }
 
-/** The 16 ANSI swatches split into the two labeled picker rows. */
-const SWATCH_ROWS: { label: string; colors: typeof TAB_COLORS }[] = [
-  { label: 'normal', colors: TAB_COLORS.slice(0, 8) },
-  { label: 'bright', colors: TAB_COLORS.slice(8, 16) },
-];
-
 interface SwatchRowsProps {
-  /** Testid prefix, e.g. `menu-color` → `menu-color-ansi3`. */
+  /** Testid prefix, e.g. `menu-color` → `menu-color-light-blue`. */
   testidPrefix: string;
-  /** Currently selected slot (resolved from a slot OR legacy color name). */
+  /** Currently selected slot (resolved from a palette OR older color name). */
   selectedSlot: string | undefined;
   onPick: (name: string) => void;
 }
 
-/** Two labeled rows of ANSI swatches, shared by the tab and group pickers. */
-export const SwatchRows = ({ testidPrefix, selectedSlot, onPick }: SwatchRowsProps) =>
-  SWATCH_ROWS.map((row) => (
-    <Fragment key={row.label}>
-      <span className="swatch-row-label">{row.label}</span>
-      <div className="swatch-row">
-        {row.colors.map((c) => (
-          <button
-            key={c.name}
-            className={`tab-swatch${selectedSlot === c.name ? ' selected' : ''}`}
-            style={{ background: c.value }}
-            aria-label={`Color ${c.name}`}
-            data-testid={`${testidPrefix}-${c.name}`}
-            onClick={() => onPick(c.name)}
-          />
-        ))}
-      </div>
-    </Fragment>
-  ));
+/** One row of the palette's swatches, shared by the tab and group pickers. */
+export const SwatchRows = ({ testidPrefix, selectedSlot, onPick }: SwatchRowsProps) => (
+  <div className="swatch-row">
+    {TAB_COLORS.map((c) => (
+      <button
+        key={c.name}
+        className={`tab-swatch${selectedSlot === c.name ? ' selected' : ''}`}
+        style={{ background: c.value }}
+        aria-label={`Color ${c.name}`}
+        title={c.name}
+        data-testid={`${testidPrefix}-${c.name}`}
+        onClick={() => onPick(c.name)}
+      />
+    ))}
+  </div>
+);
 
 export const SessionTabs = memo(function SessionTabs({
   paneId,

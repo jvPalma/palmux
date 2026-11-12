@@ -9,6 +9,7 @@
 // of these; the mobile input surfaces route to the focused one via the registry.
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type Ref } from 'react';
+import type { CliGoto, CliResultEntry } from '@palmux/shared';
 import type { ClientSettings } from '../settings/settings';
 import { resolveMobileMode } from '../settings/settings';
 import { useTerminal } from './useTerminal';
@@ -55,6 +56,12 @@ interface TerminalPaneProps {
   isBlocked: () => boolean;
   onAutoCopy: () => void;
   onTransferError: (msg: string) => void;
+  /** `palmux open` ran in this terminal: open the paths (at `goto`'s positions) and report each one. */
+  onCliOpen: (paths: string[], goto?: CliGoto[]) => CliResultEntry[];
+  /** `palmux git` ran in this terminal: add the project and report it. */
+  onCliGit: (repo: string) => { results: CliResultEntry[]; note?: string };
+  /** `palmux web` ran in this terminal: show the url in a web tab and report it. */
+  onCliWeb: (url: string) => CliResultEntry;
   /** Tap/click focuses this slot. */
   onFocusRequest: (slot: string) => void;
   /** Read-and-clear the tmux session a freshly chosen terminal should open in.
@@ -87,6 +94,9 @@ export const TerminalPane = ({
   isBlocked,
   onAutoCopy,
   onTransferError,
+  onCliOpen,
+  onCliGit,
+  onCliWeb,
   onFocusRequest,
   takeSpawnTmux,
   window: windowId,
@@ -107,6 +117,12 @@ export const TerminalPane = ({
   settingsRef.current = settings;
   const onTransferErrorRef = useRef(onTransferError);
   onTransferErrorRef.current = onTransferError;
+  const onCliOpenRef = useRef(onCliOpen);
+  onCliOpenRef.current = onCliOpen;
+  const onCliGitRef = useRef(onCliGit);
+  onCliGitRef.current = onCliGit;
+  const onCliWebRef = useRef(onCliWeb);
+  onCliWebRef.current = onCliWeb;
   const [exited, setExited] = useState(false);
   const [detached, setDetached] = useState(false);
   const [reconnectNonce, setReconnectNonce] = useState(0);
@@ -382,6 +398,30 @@ export const TerminalPane = ({
             if (error) onTransferErrorRef.current(`${error}: ${path}`);
           }
         })();
+      } else if (msg.type === 'cliOpen') {
+        // `palmux open` ran in this terminal. The answer goes back on this same socket, which is
+        // how the server knows which request it belongs to.
+        ws.sendCliResult({
+          type: 'cliResult',
+          requestId: msg.requestId,
+          results: msg.goto
+            ? onCliOpenRef.current(msg.paths, msg.goto)
+            : onCliOpenRef.current(msg.paths),
+        });
+      } else if (msg.type === 'cliWeb') {
+        ws.sendCliResult({
+          type: 'cliResult',
+          requestId: msg.requestId,
+          results: [onCliWebRef.current(msg.url)],
+        });
+      } else if (msg.type === 'cliGit') {
+        const { results, note } = onCliGitRef.current(msg.repo);
+        ws.sendCliResult({
+          type: 'cliResult',
+          requestId: msg.requestId,
+          results,
+          ...(note !== undefined ? { note } : {}),
+        });
       }
       // sessions / settings / extraKeys / fonts / ready / tabCreated arrive here
       // too (broadcasts go to every socket) but are the control socket's job.

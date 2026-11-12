@@ -18,10 +18,11 @@
 import { useEffect, useRef, useState } from 'react';
 import type * as Monaco from 'monaco-editor';
 import { editorFontSize, loadSettings, onSettingsChange } from '../settings/settings';
-import { languageOf } from './editor-language';
+import { languageOf } from '@palmux/shared';
 import { Icon } from '../ui/icons';
 import { editorLayoutOptions, observeEditorWidth } from './editor-layout';
 import { focusEditor, registerEditor, unregisterEditor } from './editor-registry';
+import { onGoto, takeGoto } from './editor-goto';
 
 const AUTOSAVE_MS = 2000;
 
@@ -101,6 +102,8 @@ export const EditorPane = ({
   useEffect(() => {
     let disposed = false;
     let stopWidthWatch: (() => void) | null = null;
+    let stopGoto: (() => void) | null = null;
+    let waitLayout: { dispose(): void } | null = null;
     let instance: Monaco.editor.IStandaloneCodeEditor | undefined;
     let autosave: ReturnType<typeof setTimeout> | undefined;
     // A new source starts from scratch: the previous file's error must not
@@ -223,6 +226,31 @@ export const EditorPane = ({
           if (save() === 'clean') onSavedRef.current?.();
         });
         setState('ready');
+        // `palmux open file:line`: a request made before the text loaded, or any later one.
+        if (filePath) {
+          const go = () => {
+            const at = takeGoto(filePath);
+            if (!at) return;
+            const position = { lineNumber: at.line, column: at.column ?? 1 };
+            editor.setPosition(position);
+            // A hidden pane has no height to centre in, so it scrolls when it is first laid out.
+            waitLayout?.dispose();
+            waitLayout = null;
+            if (editor.getLayoutInfo().height > 0) {
+              editor.revealPositionInCenter(position);
+              return;
+            }
+            const sub = editor.onDidLayoutChange((info) => {
+              if (info.height <= 0) return;
+              sub.dispose();
+              waitLayout = null;
+              editor.revealPositionInCenter(position);
+            });
+            waitLayout = sub;
+          };
+          go();
+          stopGoto = onGoto(filePath, go);
+        }
       } catch (e) {
         if (!disposed) {
           setFailure(e instanceof Error ? e.message : String(e));
@@ -242,6 +270,8 @@ export const EditorPane = ({
       clearTimeout(autosave);
       document.removeEventListener('visibilitychange', onHide);
       stopWidthWatch?.();
+      stopGoto?.();
+      waitLayout?.dispose();
       unregisterEditor(regId);
       editorRef.current = null;
       instance?.dispose();

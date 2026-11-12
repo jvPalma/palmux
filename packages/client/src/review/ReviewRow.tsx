@@ -78,6 +78,9 @@ export interface ReviewRowProps {
   onToggle: (path: string) => void;
   onExpand: (path: string, gap: GapRow, direction: GapDirection) => void;
   onOpenFile: (path: string) => void;
+  /** How many comments each file holds; a file header with some offers to copy them. */
+  commentCounts: ReadonlyMap<string, number>;
+  onCopyFileComments: (path: string) => void;
   onRetry: (path: string) => void;
   /** Report a row's laid-out height; returns the way to stop. */
   observe: (element: HTMLElement) => () => void;
@@ -242,15 +245,19 @@ const FileHeader = ({
   repo,
   compact,
   writes,
+  commentCount,
   onToggle,
   onOpenFile,
+  onCopyFileComments,
 }: {
   row: FileHeaderRow;
   repo: string;
   compact: boolean;
   writes: ReviewWrites;
+  commentCount: number;
   onToggle: (path: string) => void;
   onOpenFile: (path: string) => void;
+  onCopyFileComments: (path: string) => void;
 }) => {
   const { dir, name } = splitPath(row.path);
   const renamed = row.oldPath !== undefined && row.oldPath !== row.path;
@@ -258,6 +265,8 @@ const FileHeader = ({
   const openFile = pressMove(() =>
     onOpenFile(repo === '/' ? `/${row.path}` : `${repo}/${row.path}`),
   );
+  const copyLabel = `Copy comments for ${row.path}`;
+  const copyComments = pressMove(() => onCopyFileComments(row.path));
   return (
     <div className="rv-sticky rv-head-inner">
       <button
@@ -293,6 +302,27 @@ const FileHeader = ({
         </span>
       )}
       <ReviewButton path={row.path} writes={writes} compact={compact} />
+      {commentCount > 0 &&
+        (compact ? (
+          <RowButton
+            compact
+            aria-label={copyLabel}
+            title={copyLabel}
+            data-testid="review-copy-file-comments"
+            {...copyComments}
+          >
+            <Icon name="copy" size={14} />
+          </RowButton>
+        ) : (
+          <IconButton
+            label={copyLabel}
+            size="sm"
+            data-testid="review-copy-file-comments"
+            {...copyComments}
+          >
+            <Icon name="copy" size={14} />
+          </IconButton>
+        ))}
       {compact ? (
         <RowButton
           compact
@@ -662,6 +692,8 @@ export const ReviewRow = ({
   onToggle,
   onExpand,
   onOpenFile,
+  commentCounts,
+  onCopyFileComments,
   onRetry,
   observe,
 }: RowComponentProps<ReviewRowProps>) => {
@@ -714,8 +746,10 @@ export const ReviewRow = ({
           repo={repo}
           compact={compact}
           writes={writes}
+          commentCount={commentCounts.get(row.path) ?? 0}
           onToggle={onToggle}
           onOpenFile={onOpenFile}
+          onCopyFileComments={onCopyFileComments}
         />
       )}
       {row.type === 'notice' && (

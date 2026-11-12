@@ -266,6 +266,16 @@ describe('A project is accepted only inside a git work tree', () => {
     expect(onChange).toHaveBeenCalledWith({ scmRepos: [APP, LIB], scmActiveRepo: LIB });
   });
 
+  it('only activates a project already listed under another spelling', async () => {
+    stubServer({ repo: () => ({ body: { top: `${APP}/` } }) });
+    const { onChange } = mount({ repos: [APP, LIB], active: LIB });
+    press(screen.getByTestId('scm-add'));
+    type(APP);
+    await submit();
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith({ scmActiveRepo: APP });
+  });
+
   it('refuses a plain folder with the server’s reason and leaves the list alone', async () => {
     stubServer({
       repo: () => ({ body: { error: 'path is not a git repository' }, httpStatus: 400 }),

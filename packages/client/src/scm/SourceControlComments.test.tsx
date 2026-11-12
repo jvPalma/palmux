@@ -128,14 +128,53 @@ const copy = async () => {
   await settle();
 };
 
-describe('Copy comments', () => {
-  it('is disabled while the project has no comments, and says why', async () => {
+describe('Clear all comments', () => {
+  const clear = async () => {
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('scm-clear-comments'));
+    });
+    await settle();
+  };
+  const deletes = () =>
+    vi.mocked(fetch).mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'DELETE');
+
+  it('asks naming the count and the project, then clears', async () => {
+    statusEntries = [{ path: 'a.ts' }];
+    comments = [comment('c1', 'a.ts'), comment('c2', 'a.ts')];
+    const confirm = vi.fn(() => true);
+    vi.stubGlobal('confirm', confirm);
     await mount();
-    const button = screen.getByTestId('scm-copy-comments');
-    expect(button).toBeDisabled();
-    expect(button).toHaveAttribute('title', 'No comments to copy');
-    fireEvent.click(button);
-    expect(writeText).not.toHaveBeenCalled();
+    await clear();
+    expect(confirm).toHaveBeenCalledWith(
+      'Delete all 2 comments in app? This cannot be undone.',
+    );
+    expect(deletes()).toHaveLength(1);
+  });
+
+  it('clears nothing when cancelled', async () => {
+    statusEntries = [{ path: 'a.ts' }];
+    comments = [comment('c1', 'a.ts')];
+    vi.stubGlobal('confirm', vi.fn(() => false));
+    await mount();
+    await clear();
+    expect(deletes()).toHaveLength(0);
+  });
+});
+
+describe('Copy comments', () => {
+  it('shows no comments row while the project has no comments', async () => {
+    await mount();
+    expect(screen.queryByTestId('scm-comments-bar')).toBeNull();
+    expect(screen.queryByTestId('scm-copy-comments')).toBeNull();
+  });
+
+  it('names the button Copy comments', async () => {
+    statusEntries = [{ path: 'a.ts' }];
+    comments = [comment('c1', 'a.ts')];
+    await mount();
+    expect(screen.getByRole('button', { name: 'Copy comments' })).toBe(
+      screen.getByTestId('scm-copy-comments'),
+    );
   });
 
   it('puts three comments in two files on the clipboard as one document', async () => {
@@ -154,10 +193,6 @@ describe('Copy comments', () => {
     ];
     const notice = await mount();
     expect(screen.getByTestId('scm-copy-comments')).toBeEnabled();
-    expect(screen.getByTestId('scm-copy-comments')).toHaveAttribute(
-      'title',
-      'Copy 3 comments as markdown',
-    );
     await copy();
 
     expect(writeText).toHaveBeenCalledTimes(1);
@@ -168,7 +203,8 @@ describe('Copy comments', () => {
     for (const body of ['first of a', 'second of a', 'first of b']) expect(text).toContain(body);
     expect(text.indexOf('first of a')).toBeLessThan(text.indexOf('second of a'));
     expect(text.indexOf('second of a')).toBeLessThan(text.indexOf('first of b'));
-    expect(text).toContain('**L2** (new)');
+    expect(text).toMatch(/^# Review comments\n\nAddress each review comment below in /);
+    expect(text).toContain('### a.ts:L2 (new)');
     expect(notice).toHaveBeenCalledWith('Copied 3 comments');
   });
 
@@ -194,10 +230,10 @@ describe('Copy comments', () => {
     await mount();
     await copy();
     const text = writeText.mock.calls[0]?.[0] ?? '';
-    expect(text).toMatch(/\*\*L20\*\* \(new\) \(outdated\)/);
+    expect(text).toMatch(/^### a\.ts:L20 \(new\) \(outdated\)$/m);
     expect(text).toContain('deleted line');
     expect(text).toContain('about deleted code');
-    expect(text).toMatch(/\*\*L2\*\* \(new\)\n/);
+    expect(text).toMatch(/^### a\.ts:L2 \(new\)\n/m);
   });
 
   it('reads only the files that have comments, once each', async () => {
@@ -274,7 +310,7 @@ describe('Copy comments with a ClipboardItem', () => {
     const text = await written();
     expect(text).toContain('## a.ts');
     expect(text).toContain('kept');
-    expect(text).toMatch(/\*\*L20\*\* \(new\) \(outdated\)/);
+    expect(text).toMatch(/^### a\.ts:L20 \(new\) \(outdated\)$/m);
     expect(files).toEqual(['a.ts']);
     expect(writeText).not.toHaveBeenCalled();
     expect(notice).toHaveBeenCalledWith('Copied 2 comments');

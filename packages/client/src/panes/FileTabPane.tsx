@@ -16,8 +16,9 @@
 // share one toggle), so it lives here, per mounted tab — which also means it
 // survives switching tabs, because PaneHost keeps every pane mounted.
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { FilePane, type FileMode } from './FilePane';
+import { hasGoto, onGoto } from './editor-goto';
 
 export interface FileTabPaneProps {
   /** Absolute path on the server. */
@@ -41,8 +42,10 @@ export function FileTabPane({
 }: FileTabPaneProps) {
   // Read first for anything with a rendered form; FilePane downgrades to Edit
   // by itself for a file that has none, so this is a preference, not a claim.
-  const [mode, setMode] = useState<FileMode>('read');
+  // A `palmux open file:line` asks for a line, which only the editor can show.
+  const [mode, setMode] = useState<FileMode>(() => (hasGoto(path) ? 'edit' : 'read'));
   const onMode = useCallback((next: FileMode) => setMode(next), []);
+  useEffect(() => onGoto(path, () => setMode('edit')), [path]);
   return (
     <FilePane
       path={path}

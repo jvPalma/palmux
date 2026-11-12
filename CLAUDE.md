@@ -883,8 +883,8 @@ one heading style at the wrong size and no hierarchy. Every Collapsible is a sec
 rule is the heading of Settings and of the New-tab chooser; the others wear the same style by
 restating it, because they are plain elements and not Collapsibles — the Explorer root header
 (`.ft-sect-trigger`, whose path beside the name steps down by weight 400 and the theme's dim ANSI
-slot), the Dictation history label (`.dictation-group`), the swatch captions
-(`.swatch-row-label`), the theme browser's Dark / Light labels, and `.dash-label`, which nothing
+slot), the Dictation history label (`.dictation-group`), the theme browser's Dark / Light labels,
+and `.dash-label`, which nothing
 renders today and is kept in step so a reuse cannot bring the old style back. No
 `text-transform: uppercase` remains in any client stylesheet; a keycap or badge that genuinely
 needs one is named in the test's `ALLOWED` map with the reason, so it is a decision somebody made.
@@ -1013,16 +1013,23 @@ apart, so it is gone. Every tab is a bordered pill on ONE centre line (`.session
 `flex: 1 1 auto`, so a title shows in full while there is room and the strip scrolls only once every
 pill is at its minimum. The look is defined ONCE, as `--pill-*` custom properties on `.session-tabs, .drawer-sessions`
 (the mobile drawer's rows are the same pills) derived from the eight tokens — a colour literal would not follow a theme change.
-**Active is a fill and a ring, never a colour.** The active pill takes
+**Active is a fill and a ring; colour only follows it.** The active pill takes
 `color-mix(surface, text 10.5%)` (fill step 1.5 × 7%), a 1.5px ring at 60% text, full-strength text
 and weight 600. Inactive text is 85% toward mantle with no fill at rest, and hover fills only a pill
 that is NOT active. The fill clears
 one surface step off the strip in every built-in theme; `tab-strip-css.test.ts` checks the numbers,
 because the CSS only names a mix, and mixing the surface TOWARD the text moves it away from the
-mantle on a light theme as well as a dark one. A tab's colour is a 7px dot (`.ctab-dot`) before the
-title and nothing else — `--tab-accent` is read by the dot rule alone. Colour used to carry state (a
-fill, a tint, a top border) and, in the old fused split pill, a saturated member colour
-out-shouted its focused half. The kind icon renders for non-terminal kinds
+mantle on a light theme as well as a dark one. A tab's colour is an 11px BAR (`.ctab-dot`, the
+class kept) flush with the pill's left edge and nothing else — `--tab-accent` is read by the bar
+rule alone. It is the pill's inner height (`calc(var(--ctl-h) - 2px)`, so it follows the 36px phone
+height), pulled over the pill's padding (`calc(-1 * var(--sp-2))`) and rounded at
+`calc(var(--r-2) - 1px)`, concentric inside the 1px border. It is at 40% on an inactive pill and full
+strength on the active one (owner, 2026-11-11): on a COLOURED tab the colour is now also an active
+cue, beside the fill and ring that every tab still gets. A black bar on a dark theme or a white one on
+a light theme is close to invisible at 40%: accepted. The join cue (`.join-armed`) is an INSET ring and
+a child paints over an inset shadow, so the bar is `visibility: hidden` while a pill is armed. Colour used to carry state alone (a fill, a
+tint, a top border) and, in the old fused split pill, a saturated member colour out-shouted its
+focused half; the bar is a dim stripe, not a fill. The kind icon renders for non-terminal kinds
 only (`kindIcon`). The active pill differs from the rest in fill, ring and text ONLY — no height,
 padding, margin or border change — or the taller active tab comes back and, on a centred strip, the
 pill shifts a pixel on every switch.
@@ -2181,7 +2188,7 @@ review pane must use the control socket and never attach by id; widen the whitel
 `scm` view on a desktop and the drawer's fourth segment on a phone, and it only lists: a row hands
 `{ group, path, oldPath }` to its host (`onOpenFile`), and the diff is a `review` tab in the content
 area, never drawn inside a 300px dock. It starts with NO project. A project is an absolute path the
-user types, validated by `/scm/repo` and stored as the canonical top that answer returns; nothing is
+user types (or the work tree top `palmux git` names for its shell's directory, the one explicit exception), validated by `/scm/repo` and stored as the canonical top that answer returns; nothing is
 inferred from the server's cwd, a terminal or an open file. **`scmRepos` is SYNCED** (canonicalised
 with `normalizePin`: the paths are on the server's filesystem, so the same list is right on every
 device, like `explorerPins`) and **`scmActiveRepo`, `scmLayout`, `scmAlgorithm`, `scmWrap` and
@@ -2422,7 +2429,7 @@ visible row's file, side, line number and pixel offset, scanning up to 12 rows b
 headers and gaps come first, or the file's header when a placeholder is at the top, which stays and so
 opens the view onto the first lines of what loaded. When a snapshot is REPLACED the model calls
 `onReplace` while both texts are at hand, and `relocateAnchor` finds the line again with the same function
-that places a comment (`anchor.ts`): every exact match of the line's text is scored by how many of three
+that places a comment (`shared/anchor.ts`): every exact match of the line's text is scored by how many of three
 context lines either side agree, then by distance from the old number, and **the old position gets no
 head start**, because a `}` or a blank line left at the old number must never beat the real line ten
 rows down; a tie is not a guess. A deleted line falls back to the nearest surviving line of its hunk, then
@@ -2636,9 +2643,17 @@ line, so a one-line comment is one tap and Comment), Enter or Space on a focused
 Shift to widen. The editor is a real `<textarea>` so the soft keyboard and IME work as anywhere; Escape
 cancels it, and focus returns to `#mobile-kbd` after a save or cancel only if that held focus when the
 draft opened (recorded per draft in the pane, since the editor unmounts). Delete asks once, and only for
-a non-empty body. **Export** (`export-md.ts`, "Copy comments" in the view) writes files in path order, a
-comment as `**L10–14** (new)`, a fenced block in the file's language holding the STORED lines (the fence
-one backtick longer than any run in the code), then the body. `copy-comments.ts` reads the snapshot of
+a non-empty body; **Resolve** (`review-comment-resolve`) deletes without asking and the write toast's
+Undo stores the same comment again (a new id), and **Clear all** (`DELETE /scm/comments?all=1`,
+`deleteAllComments`, one write under the file's mutex, broadcast like any write) asks once, naming the
+count. **Export** (`shared/export-md.ts`, "Copy comments" in the Source Control view's `scm-comments-bar`,
+the review's top bar and, per file, the file header) is an AGENT document: a `# Review comments` title,
+a two-line instruction naming the project top, `## <path>` per file in path order, each comment headed
+`### <path>:L<start>-L<end> (<side>)<mark>` (`:L<n>` for one line, ASCII hyphen), a fenced block in the
+file's language holding the STORED lines (the fence one backtick longer than any run in the code), then
+the body; no comments is `''`. The exporter, placement, anchoring, the language table and the marks
+(`shared/comment-marks.ts`, `read` injected) live in `@palmux/shared` so `palmux comments` runs the SAME
+code on the server: one document for the button and the CLI. `commentMarks` reads the snapshot of
 each group a file is in and places the comments exactly as the review does, so the copy and the screen
 cannot disagree: a comment is "(outdated)" only if it anchors in NONE of its file's groups, and a file in no
 group, or a read that failed, marks nothing, because "unknown" must not be reported as "outdated".
@@ -3021,6 +3036,46 @@ user-facing interaction.
   the rest still go. A request with an `Origin` is refused (403): only the CLI posts here, and a
   cross-site browser POST would carry the cookie. No terminal on the tty, or none attached: 409.
   The old `packages/cli` + `focusTab` design is on branch `jvPalma/dev` (6db54ba), not here.
+  **`palmux open <file>...`, `palmux git` and `palmux comments`** (`openspec/changes/palmux-cli-commands`,
+  D1–D10) extend the same route. `open` and `git` ride the same DATA socket (D1: that socket IS the
+  caller's window, detached ones included; `app.terminalSocket(id)` replaced `sendToTerminal`). Unlike
+  `download` they are ANSWERED (D2): the server sends `cliOpen {requestId, paths}` / `cliGit {requestId,
+  repo}`, the pane hands it to App and sends `cliResult {requestId, results, note?}` back on the SAME
+  socket, and an answer counts only from the socket the frame went on; nothing within 3 s
+  (`CLI_ANSWER_MS`) is `504 no palmux window answered within 3 s`, because a window on an older bundle
+  drops an unknown frame and fire-and-forget would exit 0 having done nothing. `open` paths are refused
+  on the SERVER before any frame (`regularFile` and the editor cap, D4); the window opens each pinned
+  (`openFileTab(path, {preview: false})`, `'held'` → `open in another window`). `git` resolves the top on
+  the server (`resolveRepo`) and the WINDOW writes the settings (D5, `addScmProject`), because the active
+  project is per device and a server write would race a window's stale save; a detached window answers
+  `note: 'this window has no Source Control panel'`. `comments` needs no tty (D6): `listComments`,
+  `getStatus` and the shared `commentsMarkdown` with `readSnapshot({…, keepToken: false})`, so a CLI loop
+  never fills the staging-token cache. Every reply carries `commands` (D8) and the CLI says the server
+  "predates" a command it does not list; a JSON reply with no `commands` is the 1.2 server, which knows
+  `download` only. One `palmux: cli <cmd> tty=<tty> -> <status> <outcome>` line per request (D10), never
+  file contents or comment text. `-v`/`--version`/`version` print `APP_VERSION` (imported lazily in
+  `palmux-cli-main.ts`, because `version.ts` runs `git` at load) and never post; `-h`/`--help` anywhere
+  before `--` prints the usage; any other `-x` before `--` is `unknown option` + usage, exit 2; `--` makes
+  every later argument a path (`-` alone is an operand).
+  **`open file:line[:col]`, `open --wait`, `web` and `status`** (owner, 2026-11-09, after `code`'s
+  `-g`, `-w` and `--status`). `open` tries each argument as typed first and strips a `:N[:M]` suffix
+  only when that is not a file, so a file named `notes:12` opens as itself; the position rides
+  `cliOpen.goto` (an older bundle drops it and opens at the top), App parks it in
+  `panes/editor-goto.ts` (keyed by path), the file's `EditorPane` takes it once Monaco holds the text
+  (or at once when it is open, and scrolls a hidden pane on its first non-zero layout), and its
+  `FileTabPane` switches Read to Edit. `web` normalises on the SERVER (`webTarget`: a bare port is
+  `http://localhost:<port>/`, a scheme-less host gets `http://`, only http(s) passes) and sends
+  `cliWeb`; the window selects the web tab on that url or `createTab`s one, and a tab another window
+  holds is `open in another window`. `status` answers `APP_VERSION` and the terminal on the tty
+  (`id`, `window`, whether a socket is attached); the CLI prints its own version first, so it still
+  says something when the server is down or predates the command. **`--wait` polls the SERVER's tab
+  list, never a window**: after `open`, the CLI loops `POST /cli { cmd: 'wait', paths, appear? }`,
+  each held up to 20 s (`CLI_WAIT_MS`, checked every 100 ms) until no `editor` tab in any window has
+  that url. One long request was rejected: undici's `fetch` gives up on headers after 300 s. The
+  first request carries `appear`, which gives a file with no tab 5 s (`CLI_APPEAR_MS`) to be created,
+  because the window answers `open` on its data socket while its `createTab` travels on the control
+  socket. An unreachable server is retried once a second for 60 s (tabs survive a restart). The
+  registry's `onListChanged` has one slot (`broadcastSessions`), which is why `wait` polls `tabs()`.
 - **Inline images** (`@xterm/addon-image` + `terminal/image-support.ts`, `settings.inlineImages`,
   DEFAULT ON): real pixels in the terminal — **SIXEL** and **iTerm2 IIP**, drawn onto the addon's own
   `xterm-image-layer` canvas above the WebGL one (verified live: `timg -ps` renders in colour with
@@ -3362,16 +3417,39 @@ null once the process is gone, so nothing after the exit could find it.
   `deriveUiTokens(profile)` computes the seven `--t-*` UI tokens (base/mantle/surface/text/subtext/
   accent/accent-alt) — luminance-aware shade direction (light themes darken surface), canonical
   Catppuccin values pinned via per-profile `ui` overrides so the DEFAULT stays pixel-identical.
-  Tab colors are the theme's OWN 16 ANSI slots: `applyThemeTokens` emits `--tab-c-ansi<N>` +
-  a luminance-flipped `--tab-c-ansi<N>-ink` per slot straight from `profile.ansi16` (plus
-  `--t-accent-ink`), `color-scheme` on `:root` — called PRE-PAINT in main.tsx (no flash) and on
+  `applyThemeTokens` emits `--tab-c-ansi<N>` + a luminance-flipped `--tab-c-ansi<N>-ink` per slot
+  straight from `profile.ansi16` (Source Control, dictation and the config editor colour text from
+  those), the fifteen tab colours `--tab-c-<name>` + `-ink` from `deriveTabColors` (shared), plus
+  `--t-accent-ink` and `color-scheme` on `:root` — called PRE-PAINT in main.tsx (no flash) and on
   a change of the RESOLVED theme id via an App useLayoutEffect (useTerminal only owns the xterm canvas
   theme now; see "One RESOLVED theme id").
-  `TAB_COLORS` (tab-meta.ts) is the 16 `ansi0`–`ansi15` slots; the 12 LEGACY names persisted in old
-  tabs.json/groups.json resolve FOREVER via a static name→slot map in `resolveColorSlot` (no data
-  rewrite; the server still assigns legacy names as group defaults). On the strip a tab colour is a
-  7px dot and never marks the active pill (the pill's own fill and ring do); the picker is two
-  labeled rows (normal/bright) of theme-resolved swatches; a group colour is the 1px frame of its
+  **Tab colours are fifteen NAMES** (owner, 2026-11-11): white, gray, pink, magenta, purple, blue,
+  light-blue, cyan, green, lime, yellow, orange, red, crimson-red, black (`TAB_COLOR_NAMES` in
+  shared, `TAB_COLORS` in tab-meta.ts), in one picker row with no normal/bright split. The bright
+  slots went because many themes repeat the normal colour there (Catppuccin's ansi9 IS ansi1), so a
+  bright swatch drew the same colour twice. `deriveTabColors` anchors the eight ANSI hues on the
+  theme's own slots 0–7, takes gray as the midpoint of black and white (slot 8 sits on slot 0 in
+  Solarized), and puts the other six BETWEEN two anchors in HSL hue (orange red→yellow, lime
+  green→yellow, light-blue blue→cyan, purple blue→magenta, pink magenta→red lighter, crimson-red
+  red→magenta darker). Each chromatic anchor is first held inside a wide hue band (`ANCHOR_BANDS`;
+  outside it the slot is turned to the band's canonical hue, keeping its saturation and lightness),
+  because Ayu Dark's magenta slot is orange (50°) and made purple green and pink orange; the bands
+  are wide enough that Gruvbox's teal-ish blue (183°) and green-ish aqua (122°) stay. Measured first:
+  reusing `deriveAccents` (whose mauve is ansi5) put two names on one colour in EVERY built-in theme
+  (purple on magenta in ten, pink on magenta in the two Catppuccins). A test holds each derived name
+  inside its hue band in every built-in theme, and another holds every built-in theme to
+  fifteen colours at least 15 RGB units apart; the closest pair is Catppuccin's magenta~pink (18),
+  because that theme's magenta slot is already pink, which the anchoring keeps by choice. **What would
+  invalidate that floor:** a new built-in theme whose own slots collide, or a change of the anchors.
+  Every older persisted name resolves FOREVER through `OLDER_COLOR_NAMES` in `resolveColorSlot`, with
+  no data rewrite: `ansi0`–`ansi15` read as their hue (a bright slot as its normal hue, 8 as gray), and
+  the pre-ANSI names as their nearest colour (peach→orange, maroon→crimson-red, mauve→purple,
+  teal→cyan, sky and lavender→light-blue; red, green, yellow, blue, gray and pink are names already).
+  The server still assigns those pre-ANSI names as group defaults and needed no change. A window on an
+  older bundle shows a new name uncoloured until it reloads. On the strip a tab colour is the left
+  bar described in the tab-strip paragraph. The context menus size to their content, so their swatch
+  row is capped at eight a line (`.tab-menu .swatch-row`); a phone's sheet keeps its own width. A group
+  colour is the 1px frame of its
   cluster plus the always-filled chip (`--group-accent` / `--group-ink`), unchanged by which member
   is active. (`deriveAccents` still exists in shared for other consumers but the client no longer
   emits its 12 vars.)

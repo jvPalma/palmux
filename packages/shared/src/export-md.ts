@@ -1,14 +1,18 @@
-// ── Copy comments: the markdown a person pastes to an agent ───────────────────
+// ── Copy comments: the markdown a person or an agent reads ────────────────────
 //
-// One document for the whole project: a section per file in path order, and under
-// it each comment's range and side, the code it covers as a fenced block and its
-// text. A comment is quoted as it was STORED (its own lines and range) because the
-// export covers files nobody has open, and the quote is what lets a reader find the
-// code when the range has moved. `outdated` is told in, not found here: only the
-// view knows which comments it could still anchor.
+// One document for the whole project (or for one file of it): a short instruction
+// naming the project, then a section per file in path order, and under it each
+// comment headed `path:Lstart-Lend (side)`, the code it covers as a fenced block and
+// its text. The heading carries the path as well as the section does, so an agent
+// that reads one heading alone still knows where to go. A comment is quoted as it was
+// STORED (its own lines and range) because the export covers files nobody has open,
+// and the quote is what lets a reader find the code when the range has moved.
+// `outdated` is told in, not found here: only a look at the file can say
+// (`comment-marks.ts`). The Source Control view, a review's copy buttons and
+// `palmux comments` all print this one function's output.
 
-import type { ScmComment } from '@palmux/shared';
-import { languageOf } from '../panes/editor-language';
+import type { ScmComment } from './scm-comments';
+import { languageOf } from './editor-language';
 import { UNREAD_REASON } from './comment-placement';
 
 export interface ExportOptions {
@@ -48,8 +52,8 @@ function markOf(comment: ScmComment, options: ExportOptions): string {
 
 function renderComment(comment: ScmComment, mark: string): string {
   const range =
-    comment.start === comment.end ? `L${comment.start}` : `L${comment.start}–${comment.end}`;
-  const parts = [`**${range}** (${comment.side})${mark}`];
+    comment.start === comment.end ? `L${comment.start}` : `L${comment.start}-L${comment.end}`;
+  const parts = [`### ${comment.path}:${range} (${comment.side})${mark}`];
   if (comment.lines.length > 0) {
     const fence = fenceFor(comment.lines);
     // A plaintext file gets a bare fence: naming `plaintext` would only add noise.
@@ -62,8 +66,17 @@ function renderComment(comment: ScmComment, mark: string): string {
   return parts.join('\n\n');
 }
 
-/** Every comment as one markdown document; empty when there are none. */
+/** What the document opens with: what to do, and how to read a heading. */
+function preamble(top: string): string {
+  return [
+    '# Review comments',
+    `Address each review comment below in ${top}. A heading names the file, the line range and the side\n(old = before the change, new = after it); the fenced block is the code the comment was written on.`,
+  ].join('\n\n');
+}
+
+/** Every comment of the project `top` as one markdown document; empty when there are none. */
 export function exportCommentsMarkdown(
+  top: string,
   comments: readonly ScmComment[],
   options: ExportOptions = {},
 ): string {
@@ -79,5 +92,19 @@ export function exportCommentsMarkdown(
       .map((comment) => renderComment(comment, markOf(comment, options)));
     return [`## ${path}`, ...rendered].join('\n\n');
   });
-  return sections.length === 0 ? '' : `${sections.join('\n\n')}\n`;
+  return sections.length === 0 ? '' : `${[preamble(top), ...sections].join('\n\n')}\n`;
+}
+
+/** The same document for one file's comments alone: the copy on a review's file header. */
+export function exportFileCommentsMarkdown(
+  top: string,
+  path: string,
+  comments: readonly ScmComment[],
+  options: ExportOptions = {},
+): string {
+  return exportCommentsMarkdown(
+    top,
+    comments.filter((comment) => comment.path === path),
+    options,
+  );
 }

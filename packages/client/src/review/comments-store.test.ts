@@ -125,6 +125,13 @@ function createServer() {
           }
           return answer(`remove ${repo}`, list());
         },
+        removeAll: (repo) => {
+          if (comments.length > 0) {
+            comments = [];
+            wrote();
+          }
+          return answer(`removeAll ${repo}`, list());
+        },
       });
       const window = { store, http, frames, requests };
       windows.push(window);
@@ -261,12 +268,27 @@ describe('writing', () => {
     expect(store.getSnapshot().rev).toBe(4);
   });
 
+  it('clears every comment of the active project with one request', async () => {
+    const server = createServer();
+    server.seed('one');
+    server.seed('two');
+    const { store, requests } = server.open();
+    show(store);
+    await settle();
+
+    expect(await store.clearAll()).toEqual({ ok: true });
+    expect(bodies(store)).toEqual([]);
+    expect(store.getSnapshot().rev).toBe(3);
+    expect(requests.filter((r) => r.startsWith('removeAll'))).toEqual([`removeAll ${REPO}`]);
+  });
+
   it('answers the failure and leaves the state alone', async () => {
     const store = createCommentsStore({
       list: () => Promise.resolve({ ok: true, value: { rev: 3, comments: [] } }),
       create: () => Promise.resolve({ ok: false, message: 'body is too large', httpStatus: 400 }),
       update: () => Promise.resolve({ ok: false, message: 'comment not found', httpStatus: 404 }),
       remove: () => Promise.resolve({ ok: false, message: 'Cannot reach palmux', httpStatus: 0 }),
+      removeAll: () => Promise.reject(new Error('unused')),
     });
     show(store);
     await settle();
@@ -546,6 +568,7 @@ describe('frames', () => {
       create: () => Promise.reject(new Error('unused')),
       update: () => Promise.reject(new Error('unused')),
       remove: () => Promise.reject(new Error('unused')),
+      removeAll: () => Promise.reject(new Error('unused')),
     });
     show(store);
     await settle();
@@ -641,6 +664,7 @@ describe('failures', () => {
       create: () => Promise.reject(new Error('unused')),
       update: () => Promise.reject(new Error('unused')),
       remove: () => Promise.reject(new Error('unused')),
+      removeAll: () => Promise.reject(new Error('unused')),
     });
     show(store);
     await settle();

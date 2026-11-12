@@ -187,6 +187,53 @@ export interface DownloadMessage {
   paths: string[];
 }
 
+/**
+ * `palmux open`: open each file, in order, as a pinned editor tab in this window, on
+ * the data socket of the terminal the command ran in. The paths are absolute and the
+ * server already checked each is a regular file within the editor's limit. The window
+ * answers with a `cliResult` naming `requestId`, on the same socket.
+ */
+export interface CliOpenMessage {
+  type: 'cliOpen';
+  requestId: string;
+  paths: string[];
+  /**
+   * Where to put the cursor in a file, from a `file:line[:col]` argument; one entry per such
+   * argument, in order (a later one for the same path wins). Lines and columns count from 1. An
+   * older client drops the field and opens the file at the top.
+   */
+  goto?: CliGoto[];
+}
+
+/** A cursor position `palmux open file:line[:col]` asked for. */
+export interface CliGoto {
+  path: string;
+  line: number;
+  column?: number;
+}
+
+/**
+ * `palmux web`: show `url` (http or https, already normalised by the server) in a web tab of
+ * this window, selecting the one already open on it. Answered with a `cliResult` whose one
+ * entry's `path` is `url`.
+ */
+export interface CliWebMessage {
+  type: 'cliWeb';
+  requestId: string;
+  url: string;
+}
+
+/**
+ * `palmux git`: add `repo` (a work tree's canonical top) to the project list when it
+ * is missing, make it this device's active project and open Source Control. Answered
+ * with a `cliResult` whose one entry's `path` is `repo`.
+ */
+export interface CliGitMessage {
+  type: 'cliGit';
+  requestId: string;
+  repo: string;
+}
+
 /** Outcome of an `importTheme`, reported back to the client that asked. */
 export interface ThemeImportedMessage {
   type: 'themeImported';
@@ -297,6 +344,9 @@ export type ServerMessage =
   | ExitMessage
   | DetachedMessage
   | DownloadMessage
+  | CliOpenMessage
+  | CliGitMessage
+  | CliWebMessage
   | ThemeImportedMessage
   | FontsMessage
   | ThemesMessage
@@ -437,6 +487,26 @@ export interface ImportThemeMessage {
   source: string;
 }
 
+/** One path's outcome in a `cliResult`. */
+export interface CliResultEntry {
+  path: string;
+  ok: boolean;
+  /** Why it failed, when `ok` is false. */
+  error?: string;
+}
+
+/**
+ * The window's answer to a `cliOpen` or `cliGit`, on the data socket it came on: one
+ * entry per path for an open, one (`path` = the repo) for a git. `note` is something
+ * the user should hear that is not a failure (a window with no Source Control panel).
+ */
+export interface CliResultMessage {
+  type: 'cliResult';
+  requestId: string;
+  results: CliResultEntry[];
+  note?: string;
+}
+
 export type ClientMessage =
   | ResizeMessage
   | ClientSettingsMessage
@@ -451,6 +521,7 @@ export type ClientMessage =
   | ImportThemeMessage
   | MoveToWindowMessage
   | WindowClosingMessage
+  | CliResultMessage
   | PingMessage;
 
 // ── Encode / decode helpers ───────────────────────────────────────────────────
@@ -544,6 +615,17 @@ function parseWebApps(v: unknown): WebAppLink[] {
 }
 
 /** Parse a text frame into a ServerMessage, or null if it isn't one we know. */
+const isPosition = (n: unknown): n is number =>
+  typeof n === 'number' && Number.isInteger(n) && n >= 1;
+
+/** One `goto` entry, or nothing when it is malformed. */
+function parseCliGoto(raw: unknown): CliGoto[] {
+  if (typeof raw !== 'object' || raw === null) return [];
+  const { path, line, column } = raw as Record<string, unknown>;
+  if (typeof path !== 'string' || path === '' || !isPosition(line)) return [];
+  return [isPosition(column) ? { path, line, column } : { path, line }];
+}
+
 export function parseServerMessage(data: string): ServerMessage | null {
   let raw: unknown;
   try {
@@ -592,6 +674,23 @@ export function parseServerMessage(data: string): ServerMessage | null {
       const paths = raw['paths'].filter((p): p is string => typeof p === 'string' && p !== '');
       return paths.length ? { type: 'download', paths } : null;
     }
+    case 'cliOpen': {
+      if (typeof raw['requestId'] !== 'string' || !Array.isArray(raw['paths'])) return null;
+      const paths = raw['paths'].filter((p): p is string => typeof p === 'string' && p !== '');
+      if (!paths.length) return null;
+      const out: CliOpenMessage = { type: 'cliOpen', requestId: raw['requestId'], paths };
+      const goto = Array.isArray(raw['goto']) ? raw['goto'].flatMap(parseCliGoto) : [];
+      if (goto.length) out.goto = goto;
+      return out;
+    }
+    case 'cliWeb':
+      return typeof raw['requestId'] === 'string' && typeof raw['url'] === 'string'
+        ? { type: 'cliWeb', requestId: raw['requestId'], url: raw['url'] }
+        : null;
+    case 'cliGit':
+      return typeof raw['requestId'] === 'string' && typeof raw['repo'] === 'string'
+        ? { type: 'cliGit', requestId: raw['requestId'], repo: raw['repo'] }
+        : null;
     case 'themeImported': {
       const out: ThemeImportedMessage = { type: 'themeImported', ok: raw['ok'] === true };
       if (typeof raw['id'] === 'string') out.id = raw['id'];
@@ -707,7 +806,9 @@ export function parseClientMessage(data: string): ClientMessage | null {
     case 'kill':
       return typeof raw['id'] === 'string' ? { type: 'kill', id: raw['id'] } : null;
     case 'importTheme':
-      return typeof raw['source'] === 'string' ? { type: 'importTheme', source: raw['source'] } : null;
+      return typeof raw['source'] === 'string'
+        ? { type: 'importTheme', source: raw['source'] }
+        : null;
     case 'createTab':
       if (!isTabKind(raw['kind'])) return null;
       return {
@@ -749,6 +850,31 @@ export function parseClientMessage(data: string): ClientMessage | null {
     }
     case 'windowClosing':
       return { type: 'windowClosing' };
+    case 'cliResult': {
+      if (typeof raw['requestId'] !== 'string' || !Array.isArray(raw['results'])) return null;
+      const results: CliResultEntry[] = [];
+      for (const item of raw['results']) {
+        // A malformed entry is dropped, not the frame: the rest still answer the CLI.
+        if (
+          !isRecord(item) ||
+          typeof item['path'] !== 'string' ||
+          typeof item['ok'] !== 'boolean'
+        ) {
+          continue;
+        }
+        results.push({
+          path: item['path'],
+          ok: item['ok'],
+          ...(typeof item['error'] === 'string' ? { error: item['error'] } : {}),
+        });
+      }
+      return {
+        type: 'cliResult',
+        requestId: raw['requestId'],
+        results,
+        ...(typeof raw['note'] === 'string' ? { note: raw['note'] } : {}),
+      };
+    }
     case 'groupCreate': {
       const ids = parseTabIdList(raw['ids']); // member ids are tab ids
       if (ids === null) return null;

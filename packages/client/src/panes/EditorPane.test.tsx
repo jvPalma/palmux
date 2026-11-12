@@ -19,6 +19,7 @@ import {
   type ClientSettings,
 } from '../settings/settings';
 import { Icon } from '../ui/icons';
+import { hasGoto, requestGoto, resetEditorGoto } from './editor-goto';
 
 // ── fake monaco ───────────────────────────────────────────────────────────────
 let value = '';
@@ -41,7 +42,17 @@ const fakeEditor = {
   onDidFocusEditorText: vi.fn(),
   trigger: vi.fn(),
   focus: vi.fn(),
+  // `palmux open file:line` moves the cursor, and waits for a hidden pane to be laid out.
+  setPosition: vi.fn(),
+  revealPositionInCenter: vi.fn(),
+  getLayoutInfo: vi.fn(() => ({ height: layoutHeight })),
+  onDidLayoutChange: vi.fn((cb: (info: { height: number }) => void) => {
+    layoutListeners.push(cb);
+    return { dispose: () => (layoutListeners = layoutListeners.filter((l) => l !== cb)) };
+  }),
 };
+let layoutHeight = 600;
+let layoutListeners: ((info: { height: number }) => void)[] = [];
 const fakeMonaco = {
   editor: { create: vi.fn(() => fakeEditor) },
   KeyMod: { CtrlCmd: 2048 },
@@ -61,6 +72,9 @@ beforeEach(() => {
   value = '';
   version = 1;
   contentListeners = [];
+  layoutHeight = 600;
+  layoutListeners = [];
+  resetEditorGoto();
   fetchMock = vi.fn(async () => ({ ok: true, status: 200, text: async () => 'stored note' }));
   vi.stubGlobal('fetch', fetchMock);
 });
@@ -261,7 +275,9 @@ describe('EditorPane word wrap', () => {
   it('creates with wordWrap off when editorWrap is false, and updates live', async () => {
     saveSettings(sanitize({ ...DEFAULTS, editorWrap: false }));
     await renderPane();
-    const opts = (fakeMonaco.editor.create.mock.calls[0] as unknown as [unknown, { wordWrap: string }])[1];
+    const opts = (
+      fakeMonaco.editor.create.mock.calls[0] as unknown as [unknown, { wordWrap: string }]
+    )[1];
     expect(opts.wordWrap).toBe('off');
     const next = sanitize({ ...DEFAULTS, editorWrap: true });
     saveSettings(next);
@@ -353,6 +369,54 @@ describe('EditorPane over a file path', () => {
         ? { ok: true, status: 200, json: async () => ({ ok: true }) }
         : { ok: true, status: 200, json: async () => ({ text, path: FILE, size: text.length }) },
     );
+
+  it('puts the cursor where palmux open asked, once the file has loaded, and only once', async () => {
+    serveFile('a\nb\nc');
+    requestGoto(FILE, { line: 3, column: 2 });
+    render(<EditorPane tabId={FILE} filePath={FILE} active onDirtyChange={vi.fn()} />);
+    await screen.findByText('saved');
+    expect(fakeEditor.setPosition).toHaveBeenCalledWith({ lineNumber: 3, column: 2 });
+    expect(fakeEditor.revealPositionInCenter).toHaveBeenCalledWith({ lineNumber: 3, column: 2 });
+    expect(hasGoto(FILE)).toBe(false);
+
+    // An editor already open moves when asked again; no column means the line's start.
+    requestGoto(FILE, { line: 1 });
+    expect(fakeEditor.setPosition).toHaveBeenLastCalledWith({ lineNumber: 1, column: 1 });
+    // Another file's request is left for that file.
+    requestGoto('/other.ts', { line: 9 });
+    expect(fakeEditor.setPosition).toHaveBeenCalledTimes(2);
+    expect(hasGoto('/other.ts')).toBe(true);
+  });
+
+  it('a hidden editor moves its cursor and scrolls once it is laid out', async () => {
+    serveFile('a\nb');
+    layoutHeight = 0;
+    requestGoto(FILE, { line: 2 });
+    render(<EditorPane tabId={FILE} filePath={FILE} active onDirtyChange={vi.fn()} />);
+    await screen.findByText('saved');
+    expect(fakeEditor.revealPositionInCenter).not.toHaveBeenCalled();
+    layoutListeners.forEach((cb) => cb({ height: 0 }));
+    expect(fakeEditor.revealPositionInCenter).not.toHaveBeenCalled();
+    layoutListeners.forEach((cb) => cb({ height: 400 }));
+    expect(fakeEditor.revealPositionInCenter).toHaveBeenCalledWith({ lineNumber: 2, column: 1 });
+    expect(layoutListeners).toHaveLength(0);
+  });
+
+  it('a markdown file asked to go to a line opens in Edit, not Read', async () => {
+    serveFile('# t');
+    requestGoto(FILE, { line: 1 });
+    render(<FileTabPane path={FILE} focused onChangePath={vi.fn()} onDirtyChange={vi.fn()} />);
+    await waitFor(() =>
+      expect(screen.getByTestId('file-pane-edit').getAttribute('data-active')).toBe('true'),
+    );
+  });
+
+  it('a markdown file with no request opens in Read', async () => {
+    serveFile('# t');
+    render(<FileTabPane path={FILE} focused onChangePath={vi.fn()} onDirtyChange={vi.fn()} />);
+    await waitFor(() => expect(fakeMonaco.editor.create).toHaveBeenCalled());
+    expect(screen.getByTestId('file-pane-read').getAttribute('data-active')).toBe('true');
+  });
 
   it('reads the file route and unwraps the JSON envelope', async () => {
     serveFile('on disk');

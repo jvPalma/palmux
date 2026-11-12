@@ -31,6 +31,7 @@ import {
   parseReviewUrl,
   registerDynamicThemes,
   reviewUrl,
+  type CliResultMessage,
   type JsonObject,
   type ScmCommentList,
   type TabGroup,
@@ -48,8 +49,10 @@ declare module 'fastify' {
     closeSockets(): void;
     /** Tell every client a project's review comments reached `rev` (see scm-comments.ts). */
     broadcastScmComments(repo: string, rev: number): void;
-    /** Send a text frame to the data socket attached to terminal `id`. False = none is attached. */
-    sendToTerminal(id: string, msg: string): boolean;
+    /** The open data socket attached to terminal `id`, if any. */
+    terminalSocket(id: string): WebSocket | undefined;
+    /** A window's `cliResult` arrived on `ws`; resolves the CLI request it answers (cli-api.ts). */
+    cliAnswered(ws: WebSocket, msg: CliResultMessage): void;
   }
 }
 import {
@@ -111,6 +114,7 @@ import { readTextFile, writeTextFile } from './file-rw';
 import {
   ScmCommentError,
   createComment,
+  deleteAllComments,
   deleteComment,
   latestRev,
   listComments,
@@ -1098,6 +1102,10 @@ export const WINDOW_CLOSE_GRACE_MS = 3_000;
 export interface ServerOptions {
   windowGraceMs?: number;
   windowCloseGraceMs?: number;
+  /** How long `palmux open` / `git` wait for a window's answer (tests shorten it). */
+  cliAnswerMs?: number;
+  /** How long one `POST /cli` `wait` holds; tests shorten it. */
+  cliWaitMs?: number;
 }
 
 export async function createServer(
@@ -1535,7 +1543,13 @@ export async function createServer(
   );
   app.delete(
     '/scm/comments',
-    commentRoute((top, req) => deleteComment(top, commentId(req)), true),
+    commentRoute((top, req) => {
+      // `all=1` without an id clears the project; an id always wins and deletes one.
+      const q = req.query as Record<string, unknown>;
+      return q['all'] === '1' && textOrBlank(q['id']) === ''
+        ? deleteAllComments(top)
+        : deleteComment(top, commentId(req));
+    }, true),
   );
 
   // One audit line per batch write and per refusal, so a discard that went wrong
@@ -1754,7 +1768,6 @@ export async function createServer(
   // PUT re-runs the boot parser and refuses anything it would ignore, so a
   // saved setting is a setting that will actually load (see config-file.ts).
   await registerConfigFileRoutes(app);
-  registerCliRoutes(app, { registry, maxDownloadBytes: cfg.maxDownloadBytes });
 
   // GET /ports — TCP ports this user is listening on, for the loopback pane
   // picker (see ports.ts).
@@ -1791,6 +1804,14 @@ export async function createServer(
   // taken the limit off deliberately; every check below still runs, it just
   // never trips. The client is told the raw 0 so it stops pre-rejecting too.
   const maxUploadBytes = cfg.maxUploadBytes || Number.MAX_SAFE_INTEGER;
+  registerCliRoutes(app, {
+    registry,
+    maxDownloadBytes: cfg.maxDownloadBytes,
+    // The editor cap `GET /file` applies.
+    maxEditBytes: maxUploadBytes,
+    answerMs: opts.cliAnswerMs,
+    waitMs: opts.cliWaitMs,
+  });
   await app.register(async (scope) => {
     // `'*'` is a FALLBACK, not a catch-all: Fastify ships parsers for
     // application/json and text/plain, and a more specific parser always wins.
@@ -2102,11 +2123,9 @@ function attachWebSocket(
   // The data socket each terminal's PTY is attached to (last attach wins, as in `PtySession`).
   // The `palmux` CLI reaches the browser window it ran in through it.
   const terminalSockets = new Map<string, WebSocket>();
-  app.decorate('sendToTerminal', (id: string, msg: string) => {
+  app.decorate('terminalSocket', (id: string) => {
     const ws = terminalSockets.get(id);
-    if (!ws || ws.readyState !== ws.OPEN) return false;
-    ws.send(msg);
-    return true;
+    return ws && ws.readyState === ws.OPEN ? ws : undefined;
   });
 
   app.decorate('broadcastUpdating', (stage: UpdatingMessage['stage'], version?: string) => {
@@ -2284,6 +2303,7 @@ function attachWebSocket(
         webApps: cfg.webApps,
         windows,
         terminalSockets,
+        cliAnswered: (socket, msg) => app.cliAnswered(socket, msg),
       });
       ws.on('close', () => {
         connections.delete(ws);
@@ -2302,6 +2322,8 @@ interface ConnectionDeps {
   maxUploadBytes: number;
   webApps: WebAppLink[];
   terminalSockets: Map<string, WebSocket>;
+  /** A `cliResult` arrived on `ws`. */
+  cliAnswered: (ws: WebSocket, msg: CliResultMessage) => void;
   windows: {
     /** Tabs were moved to `window` (null = the main window). */
     moved(window: string | null): void;
@@ -2478,6 +2500,9 @@ function handleConnection(
         deps.killTab(msg.id);
         break;
       }
+      case 'cliResult':
+        deps.cliAnswered(ws, msg);
+        break;
       case 'importTheme': {
         // Async: the fetch must not block the socket. On success the themes-dir
         // watcher rebroadcasts `themes` to everyone; the reply goes only to the

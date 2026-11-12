@@ -10,7 +10,7 @@
 // recognise the same row after a rebuild.
 
 import type { ScmComment, ScmEntry, ScmFileSnapshot, ScmHunk, ScmHunkLine } from '@palmux/shared';
-import { splitLines } from './anchor';
+import { splitLines } from '@palmux/shared';
 import type { DraftTarget } from './comments-store';
 
 export type RowsLayout = 'unified' | 'split';

@@ -193,6 +193,11 @@ export function deleteScmComment(
   );
 }
 
+/** Delete every comment of `repo`: `DELETE /scm/comments?all=1`. */
+export function deleteAllScmComments(repo: string): Promise<ScmFetchResult<ScmCommentList>> {
+  return requestJson('DELETE', `/scm/comments?${repoQuery(repo)}&all=1`, parseCommentList);
+}
+
 // ── Index writes ──────────────────────────────────────────────────────────────
 
 // A stage or unstage always answers a receipt; a restore answers null when it leaves

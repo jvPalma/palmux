@@ -79,11 +79,9 @@ the CLI would exit 0 having done nothing (systems review).
 ### D3 — `openFileTab` reports what it did
 
 `palmux open` calls the pinned entry point the sibling change `preview-tabs` defines in its design
-("Contract for scm-row-actions and palmux-cli-commands"). Until that lands, this change uses
-`openFileTab(path, { preview: false })` and changes its return type to `'opened' | 'held'`: `'held'` when
-another window holds the tab (its existing toast still shows), else `'opened'` (focused or created).
-`preview` is accepted and ignored until `preview-tabs` implements it. If `preview-tabs` lands first with a
-different signature, task 3.2 adapts to it; the outcome values do not change.
+("Contract for scm-row-actions and palmux-cli-commands"). `preview-tabs` landed first and already gives
+`openFileTab(path, { preview: false })` the return type `'opened' | 'held'`: `'held'` when another window
+holds the tab (its existing toast still shows), else `'opened'` (focused or created).
 
 The window opens the paths in order (the last one ends selected, because every successful open selects
 or creates in the focused pane) and answers `{path, ok: true}` or `{path, ok: false, error: 'open in
@@ -133,11 +131,12 @@ The move to `packages/shared/src/` (flat, like the package's other modules; plai
 | `review/comment-placement.ts` (+ test) | `comment-placement.ts` |
 | `review/export-md.ts` (+ test) | `export-md.ts` |
 | `panes/editor-language.ts` (+ test) | `editor-language.ts` |
-| `commentMarks` / `commentsMarkdown` / `ReadSnapshot` from `scm/copy-comments.ts` | `comment-marks.ts` (`read` becomes a required argument) |
+| `commentMarks` / `commentsMarkdown` / `ReadSnapshot` from `scm/copy-comments.ts` | `comment-marks.ts` (`read` becomes a required argument; the marks tests move to `comment-marks.test.ts`) |
 
 `packages/shared/src/index.ts` re-exports all five. Every client importer switches to `@palmux/shared`
-(no client re-export files are left behind: one implementation). `scm/copy-comments.ts` keeps only
-`copyPendingText` and a thin `commentsMarkdown(repo, status, comments)` that passes `fetchScmFile`.
+(no client re-export files are left behind: one implementation). `scm/copy-comments.ts` keeps
+`copyPendingText`, a thin `commentsMarkdown(repo, status, comments, path?)` that passes `fetchScmFile`
+(`path` filters to one file for the per-file copy), and the `commentCount` / `confirmClearAll` text helpers.
 
 ### D7 — The agent-ready document
 
@@ -169,7 +168,9 @@ the comments filtered to one path. No comments → `''` (no preamble). The CLI p
 `cli-api.ts` exports `CLI_COMMANDS = ['download', 'open', 'git', 'comments'] as const` and every reply
 body (200, 400, 403, 409, 504) carries `commands: CLI_COMMANDS`. The CLI prints `palmux: this palmux
 server predates \`palmux <cmd>\`; restart it` when the body is not JSON, or has no `commands` array, or
-the array lacks `<cmd>`. A 400 that lists the command prints its `error` as today.
+the array lacks `<cmd>`. A 400 that lists the command prints its `error` as today. One exception keeps
+the deployed 1.2 server usable: its `download` answers are JSON with no `commands`, so for `download` alone
+a JSON body without the array is read as a server that knows `download`.
 
 ### D9 — Resolve and Clear all
 

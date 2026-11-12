@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ScmEntry, ScmFileSnapshot, ScmHunk, ScmHunkLine } from '@palmux/shared';
-import { splitLines } from './anchor';
+import { splitLines } from '@palmux/shared';
 import {
   buildFileRows,
   DEFAULT_LINE_HEIGHT,

@@ -2,7 +2,7 @@
 // mocked at their seams; the data socket is a fake that this test speaks for.
 import { act, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ServerMessage } from '@palmux/shared';
+import type { CliGoto, CliResultEntry, CliResultMessage, ServerMessage } from '@palmux/shared';
 import { DEFAULTS } from '../settings/settings';
 import { createSplitRegistry } from '../session/SplitFocusContext';
 import { TerminalPane } from './TerminalPane';
@@ -13,6 +13,7 @@ const { sockets } = vi.hoisted(() => ({
     message: (msg: ServerMessage) => void;
     open: () => void;
     stopped: boolean;
+    results: CliResultMessage[];
   }>,
 }));
 
@@ -20,6 +21,7 @@ vi.mock('../lib/ws', () => ({
   WsClient: class {
     url: string;
     stopped = false;
+    results: CliResultMessage[] = [];
     private readonly messageHandlers: Array<(msg: ServerMessage) => void> = [];
     private readonly openHandlers: Array<() => void> = [];
     constructor(url: string) {
@@ -46,6 +48,10 @@ vi.mock('../lib/ws', () => ({
     destroy() {}
     sendResize() {}
     sendInput() {
+      return true;
+    }
+    sendCliResult(msg: CliResultMessage) {
+      this.results.push(msg);
       return true;
     }
   },
@@ -94,7 +100,15 @@ const { downloadFromServer } = vi.hoisted(() => ({
 }));
 vi.mock('./download', () => ({ downloadFromServer }));
 
-const pane = (sessionId: string, onTransferError: (msg: string) => void = () => {}) => (
+const pane = (
+  sessionId: string,
+  onTransferError: (msg: string) => void = () => {},
+  cli: {
+    onCliOpen?: (paths: string[], goto?: CliGoto[]) => CliResultEntry[];
+    onCliGit?: (repo: string) => { results: CliResultEntry[]; note?: string };
+    onCliWeb?: (url: string) => CliResultEntry;
+  } = {},
+) => (
   <TerminalPane
     slot="p0"
     sessionId={sessionId}
@@ -107,6 +121,9 @@ const pane = (sessionId: string, onTransferError: (msg: string) => void = () => 
     isBlocked={() => false}
     onAutoCopy={() => {}}
     onTransferError={onTransferError}
+    onCliOpen={cli.onCliOpen ?? (() => [])}
+    onCliGit={cli.onCliGit ?? (() => ({ results: [] }))}
+    onCliWeb={cli.onCliWeb ?? ((url) => ({ path: url, ok: true }))}
     onFocusRequest={() => {}}
     gestures={{ getFontSize: () => 14, setFontSize: () => {}, focusKeyboard: () => {} }}
   />
@@ -192,5 +209,80 @@ describe('TerminalPane download', () => {
     await act(async () => release());
     expect(order).toEqual(['/a.mp4', '/b.mp4', '/c']);
     expect(errors).toEqual(['not found: /b.mp4']);
+  });
+});
+
+// `palmux open` / `palmux git` in this terminal: the window's answer goes back on this pane's socket.
+describe('TerminalPane CLI requests', () => {
+  beforeEach(() => {
+    sockets.length = 0;
+  });
+
+  it('answers cliOpen with what App reports, on the socket the request came on', () => {
+    const onCliOpen = vi.fn((paths: string[]) => paths.map((path) => ({ path, ok: true })));
+    render(pane('3', () => {}, { onCliOpen }));
+    act(() =>
+      socketFor('3').message({ type: 'cliOpen', requestId: 'r1', paths: ['/a.ts', '/b.ts'] }),
+    );
+    expect(onCliOpen).toHaveBeenCalledWith(['/a.ts', '/b.ts']);
+    expect(socketFor('3').results).toEqual([
+      {
+        type: 'cliResult',
+        requestId: 'r1',
+        results: [
+          { path: '/a.ts', ok: true },
+          { path: '/b.ts', ok: true },
+        ],
+      },
+    ]);
+  });
+
+  it('hands App the positions of a cliOpen, and nothing extra when it carries none', () => {
+    const onCliOpen = vi.fn((paths: string[]) => paths.map((path) => ({ path, ok: true })));
+    render(pane('3', () => {}, { onCliOpen }));
+    const goto = [{ path: '/a.ts', line: 4, column: 2 }];
+    act(() => socketFor('3').message({ type: 'cliOpen', requestId: 'r1', paths: ['/a.ts'], goto }));
+    expect(onCliOpen).toHaveBeenLastCalledWith(['/a.ts'], goto);
+  });
+
+  it('answers cliWeb with the entry App reports, on the same socket', () => {
+    const onCliWeb = vi.fn((url: string) => ({
+      path: url,
+      ok: false,
+      error: 'open in another window',
+    }));
+    render(pane('3', () => {}, { onCliWeb }));
+    act(() =>
+      socketFor('3').message({ type: 'cliWeb', requestId: 'w1', url: 'http://localhost:5173/' }),
+    );
+    expect(onCliWeb).toHaveBeenCalledWith('http://localhost:5173/');
+    expect(socketFor('3').results).toEqual([
+      {
+        type: 'cliResult',
+        requestId: 'w1',
+        results: [{ path: 'http://localhost:5173/', ok: false, error: 'open in another window' }],
+      },
+    ]);
+  });
+
+  it('answers cliGit with its result and note, and leaves note out when there is none', () => {
+    let note: string | undefined = 'this window has no Source Control panel';
+    const onCliGit = (repo: string) => ({
+      results: [{ path: repo, ok: true }],
+      ...(note !== undefined ? { note } : {}),
+    });
+    render(pane('3', () => {}, { onCliGit }));
+    act(() => socketFor('3').message({ type: 'cliGit', requestId: 'g1', repo: '/w/app' }));
+    note = undefined;
+    act(() => socketFor('3').message({ type: 'cliGit', requestId: 'g2', repo: '/w/app' }));
+    expect(socketFor('3').results).toEqual([
+      {
+        type: 'cliResult',
+        requestId: 'g1',
+        results: [{ path: '/w/app', ok: true }],
+        note: 'this window has no Source Control panel',
+      },
+      { type: 'cliResult', requestId: 'g2', results: [{ path: '/w/app', ok: true }] },
+    ]);
   });
 });

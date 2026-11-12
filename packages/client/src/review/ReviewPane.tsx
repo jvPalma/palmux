@@ -47,6 +47,10 @@ import {
   type ScmGroup,
   type ScmStatus,
   type TabMeta,
+  splitLines,
+  captureRange,
+  commentInput,
+  type CapturedRange,
 } from '@palmux/shared';
 import { buildMonacoTheme, editorProfile, onEditorProfile } from '../panes/monaco-theme';
 import { pressMove } from '../panes/press';
@@ -57,7 +61,13 @@ import {
   type ScmLayoutPref,
 } from '../settings/settings';
 import { displayTitle } from '../session/tab-meta';
-import { restoreScmWrite, stageScmFile, unstageScmFile } from '../scm/scm-api';
+import {
+  commentCount,
+  commentsMarkdown,
+  confirmClearAll,
+  copyPendingText,
+} from '../scm/copy-comments';
+import { createScmComment, restoreScmWrite, stageScmFile, unstageScmFile } from '../scm/scm-api';
 import { scmStatusStore, useScmStatus } from '../scm/status-store';
 import {
   Button,
@@ -69,9 +79,7 @@ import {
   type DropdownMenuItemSpec,
 } from '../ui';
 import { Icon } from '../ui/icons';
-import { splitLines } from './anchor';
 import type { CommentActions } from './comment-actions';
-import { captureRange, commentInput, type CapturedRange } from './comment-placement';
 import { draftKey, type DraftTarget } from './comments-store';
 import {
   beginSelection,
@@ -113,12 +121,7 @@ import {
   type WriteDeps,
   type WriteOutcome,
 } from './review-writes';
-import {
-  ReviewButton,
-  ReviewRow,
-  type ReviewRowProps,
-  type ReviewWrites,
-} from './ReviewRow';
+import { ReviewButton, ReviewRow, type ReviewRowProps, type ReviewWrites } from './ReviewRow';
 import { commentsStore, useComments } from './use-comments';
 import { forgetWrites, recordWrite, type LoggedWrite } from './write-log';
 import {
@@ -558,6 +561,42 @@ const ReviewView = ({ tabId, url, repo, group, file, tab, visible, focused }: Re
   const [notice, setNotice] = useState<string | null>(null);
   const hostRef = useRef(host);
   hostRef.current = host;
+  // What Copy and Clear all act on: the store's list, while it is this project's.
+  // A paused review's retained comments are drawn, but are not the store's to copy.
+  const storeComments =
+    commentState.active && commentState.loaded ? commentState.comments : NO_COMMENTS;
+  const commentCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const comment of storeComments)
+      counts.set(comment.path, (counts.get(comment.path) ?? 0) + 1);
+    return counts;
+  }, [storeComments]);
+  // Called straight from the tap: the clipboard write has to be asked for inside it.
+  const copyComments = useCallback(
+    (path?: string) => {
+      const count = path === undefined ? storeComments.length : (commentCounts.get(path) ?? 0);
+      if (count === 0) return;
+      void copyPendingText(commentsMarkdown(repo, status, storeComments, path))
+        .catch(() => false)
+        .then((copied) =>
+          hostRef.current.notify(
+            copied ? `Copied ${commentCount(count)}` : 'Could not copy the comments',
+          ),
+        );
+    },
+    [repo, status, storeComments, commentCounts],
+  );
+  const copyFileComments = useCallback((path: string) => copyComments(path), [copyComments]);
+  const clearComments = useCallback(() => {
+    if (storeComments.length === 0 || !confirmClearAll(storeComments.length, repo)) return;
+    if (commentsStore.getSnapshot().repo !== repo) {
+      setNotice(PAUSED_MESSAGE);
+      return;
+    }
+    void commentsStore.clearAll().then((result) => {
+      if (!result.ok) setNotice(`Could not delete the comments: ${result.message}`);
+    });
+  }, [storeComments, repo]);
   // Before paint: a comment that arrives with its file must not show up a frame late,
   // under a view that has already been scrolled.
   useLayoutEffect(() => {
@@ -737,6 +776,44 @@ const ReviewView = ({ tabId, url, repo, group, file, tab, visible, focused }: Re
         if (comment.body.trim() !== '' && !window.confirm('Delete this comment?')) return;
         void commentsStore.remove(comment.id).then((result) => {
           if (!result.ok) setNotice(`Could not delete the comment: ${result.message}`);
+        });
+      },
+      resolve: (comment) => {
+        if (commentsStore.getSnapshot().repo !== repo) {
+          setNotice(PAUSED_MESSAGE);
+          return;
+        }
+        void commentsStore.remove(comment.id).then((result) => {
+          if (!result.ok) {
+            setNotice(`Could not resolve the comment: ${result.message}`);
+            return;
+          }
+          hostRef.current.notify('Comment resolved', {
+            label: 'Undo',
+            onClick: () => {
+              const input = {
+                path: comment.path,
+                version: comment.version,
+                side: comment.side,
+                start: comment.start,
+                end: comment.end,
+                lines: comment.lines,
+                before: comment.before,
+                after: comment.after,
+                body: comment.body,
+              };
+              // The store writes only the active project. Once the device has moved to another,
+              // the comment goes straight back to the project it came from, which hears of the
+              // write through the `scmComments` frame like any other window's.
+              const added =
+                commentsStore.getSnapshot().repo === repo
+                  ? commentsStore.add(input)
+                  : createScmComment(repo, input);
+              void added.then((answer) => {
+                if (!answer.ok) setNotice(`Could not restore the comment: ${answer.message}`);
+              });
+            },
+          });
         });
       },
       takeFocus: (target) => {
@@ -1002,6 +1079,8 @@ const ReviewView = ({ tabId, url, repo, group, file, tab, visible, focused }: Re
       onToggle,
       onExpand,
       onOpenFile: openFile,
+      commentCounts,
+      onCopyFileComments: copyFileComments,
       onRetry,
       observe,
     }),
@@ -1019,6 +1098,8 @@ const ReviewView = ({ tabId, url, repo, group, file, tab, visible, focused }: Re
       onToggle,
       onExpand,
       openFile,
+      commentCounts,
+      copyFileComments,
       onRetry,
       observe,
     ],
@@ -1217,8 +1298,39 @@ const ReviewView = ({ tabId, url, repo, group, file, tab, visible, focused }: Re
         },
         separatorBefore: true,
       },
+      {
+        id: 'copy-comments',
+        label: 'Copy comments',
+        disabled: storeComments.length === 0,
+        separatorBefore: true,
+        onSelect: () => copyComments(),
+      },
+      // Clear all writes, so a paused review does not offer it.
+      ...(writable
+        ? [
+            {
+              id: 'clear-comments',
+              label: 'Clear all comments',
+              danger: true,
+              disabled: storeComments.length === 0,
+              onSelect: clearComments,
+            },
+          ]
+        : []),
     ],
-    [host.layout, host.algorithm, layout, wrap, setPreferences, codeFontPx, stepCode],
+    [
+      host.layout,
+      host.algorithm,
+      layout,
+      wrap,
+      setPreferences,
+      codeFontPx,
+      stepCode,
+      storeComments,
+      copyComments,
+      clearComments,
+      writable,
+    ],
   );
 
   // The position reads the group's list, so a single-file review counts its neighbours.
@@ -1267,6 +1379,15 @@ const ReviewView = ({ tabId, url, repo, group, file, tab, visible, focused }: Re
           </DropdownMenu>
         ) : (
           <>
+            <Button
+              size="sm"
+              disabled={storeComments.length === 0}
+              data-testid="review-copy-comments"
+              onClick={() => copyComments()}
+            >
+              <Icon name="copy" size={14} />
+              Copy comments
+            </Button>
             <Segmented<ScmLayoutPref>
               label="Review layout"
               value={host.layout}

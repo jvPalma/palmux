@@ -19,7 +19,7 @@
 
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode, RefObject } from 'react';
-import type { TabMeta, WebAppLink } from '@palmux/shared';
+import type { CliGoto, CliResultEntry, TabMeta, WebAppLink } from '@palmux/shared';
 import { TerminalPane, type MobileGestures } from '../terminal/TerminalPane';
 import { PaneHost } from '../panes/PaneHost';
 import { ErrorBoundary } from '../ui/ErrorBoundary';
@@ -84,6 +84,9 @@ interface GroupsViewProps {
   paneBlocked: () => boolean;
   onAutoCopy: () => void;
   onTransferError: (msg: string) => void;
+  onCliOpen: (paths: string[], goto?: CliGoto[]) => CliResultEntry[];
+  onCliGit: (repo: string) => { results: CliResultEntry[]; note?: string };
+  onCliWeb: (url: string) => CliResultEntry;
   onFocusRequest: (slot: string) => void;
   takeSpawnTmux: (id: string) => string | null | undefined;
   terminalGestures: MobileGestures;
@@ -130,6 +133,9 @@ export const GroupsView = (props: GroupsViewProps) => {
     paneBlocked,
     onAutoCopy,
     onTransferError,
+    onCliOpen,
+    onCliGit,
+    onCliWeb,
     onFocusRequest,
     takeSpawnTmux,
     terminalGestures,
@@ -257,6 +263,9 @@ export const GroupsView = (props: GroupsViewProps) => {
                 isBlocked={paneBlocked}
                 onAutoCopy={onAutoCopy}
                 onTransferError={onTransferError}
+                onCliOpen={onCliOpen}
+                onCliGit={onCliGit}
+                onCliWeb={onCliWeb}
                 onFocusRequest={onFocusRequest}
                 takeSpawnTmux={takeSpawnTmux}
                 window={windowId ?? undefined}
